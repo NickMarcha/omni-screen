@@ -1,4 +1,10 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import TwitterEmbed from './embeds/TwitterEmbed'
+import YouTubeEmbed from './embeds/YouTubeEmbed'
+import TikTokEmbed from './embeds/TikTokEmbed'
+import RedditEmbed from './embeds/RedditEmbed'
+import VideoEmbed from './embeds/VideoEmbed'
+import ImageEmbed from './embeds/ImageEmbed'
 import twitterIcon from '../assets/icons/third-party/twitter.png'
 import youtubeIcon from '../assets/icons/third-party/youtube.png'
 import tiktokIcon from '../assets/icons/third-party/tiktok.png'
@@ -104,23 +110,33 @@ function loadSettings(): Settings {
   try {
     const saved = localStorage.getItem('omni-screen-settings')
     if (saved) {
-      return JSON.parse(saved)
+      const parsed = JSON.parse(saved)
+      console.log('Loaded settings from localStorage:', parsed)
+      return parsed
     }
   } catch (e) {
     console.error('Failed to load settings:', e)
   }
-  return {
+  const defaults = {
     filter: 'mrMouton',
     showNSFW: false,
     showNSFL: false,
     bannedTerms: '',
   }
+  console.log('Using default settings:', defaults)
+  return defaults
 }
 
 // Save settings to localStorage
 function saveSettings(settings: Settings) {
   try {
     localStorage.setItem('omni-screen-settings', JSON.stringify(settings))
+    console.log('Saved settings to localStorage:', settings)
+    // Verify it was saved
+    const verify = localStorage.getItem('omni-screen-settings')
+    if (!verify) {
+      console.error('Settings were not saved - localStorage may be disabled')
+    }
   } catch (e) {
     console.error('Failed to save settings:', e)
   }
@@ -318,7 +334,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Render text with clickable links
-function renderTextWithLinks(text: string): JSX.Element {
+function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
@@ -334,16 +350,21 @@ function renderTextWithLinks(text: string): JSX.Element {
     
     // Add the link
     const url = match[0]
+    // If this URL should be replaced with a shorter text
+    const shouldReplace = replaceUrl && url === replaceUrl
+    const displayText = shouldReplace && replaceWith ? replaceWith : url
+    
     parts.push(
       <a
         key={match.index}
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className="link link-primary"
+        className="link link-primary break-words overflow-wrap-anywhere"
         onClick={(e) => e.stopPropagation()}
+        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
-        {url}
+        {displayText}
       </a>
     )
     
@@ -379,6 +400,8 @@ function LinkScroller() {
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(true)
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
+  const [autoplayEnabled, setAutoplayEnabled] = useState(true) // Default to true for highlight mode
+  const [muteEnabled, setMuteEnabled] = useState(false) // Default to false (sound on)
 
   // Update temp settings when settings modal opens
   useEffect(() => {
@@ -402,38 +425,102 @@ function LinkScroller() {
   const SIZE = 150
 
   const fetchMentions = useCallback(async (username: string, currentOffset: number, append: boolean = false) => {
+    console.log(`[Renderer] fetchMentions called:`, {
+      username,
+      currentOffset,
+      append,
+      size: SIZE,
+      timestamp: new Date().toISOString()
+    })
+    
     if (append) {
       setLoadingMore(true)
+      console.log(`[Renderer] Loading more mentions (offset: ${currentOffset})...`)
     } else {
       setLoading(true)
       setError(null)
+      console.log(`[Renderer] Fetching fresh mentions (offset: ${currentOffset})...`)
     }
     
     try {
+      const startTime = Date.now()
+      console.log(`[Renderer] Invoking IPC: fetch-mentions with username="${username}", size=${SIZE}, offset=${currentOffset}`)
+      
       const result = await window.ipcRenderer.invoke('fetch-mentions', username, SIZE, currentOffset)
+      
+      const fetchTime = Date.now() - startTime
+      console.log(`[Renderer] IPC call completed in ${fetchTime}ms:`, {
+        success: result.success,
+        dataLength: result.success ? (Array.isArray(result.data) ? result.data.length : 'not an array') : 'N/A',
+        error: result.success ? null : result.error
+      })
+      
       if (result.success) {
         const newData = result.data as MentionData[]
+        console.log(`[Renderer] Processing ${newData.length} mentions`)
+        
+        // Log the order of mentions (first 3 and last 3)
+        if (newData.length > 0) {
+          const firstFew = newData.slice(0, 3).map(m => ({
+            date: new Date(m.date).toISOString(),
+            text: m.text.substring(0, 50) + '...'
+          }))
+          const lastFew = newData.slice(-3).map(m => ({
+            date: new Date(m.date).toISOString(),
+            text: m.text.substring(0, 50) + '...'
+          }))
+          console.log(`[Renderer] First 3 mentions:`, firstFew)
+          console.log(`[Renderer] Last 3 mentions:`, lastFew)
+          
+          // Check if they're sorted (newest first or oldest first)
+          const dates = newData.map(m => m.date)
+          const isDescending = dates.every((date, i) => i === 0 || dates[i - 1] >= date)
+          const isAscending = dates.every((date, i) => i === 0 || dates[i - 1] <= date)
+          console.log(`[Renderer] Order check: ${isDescending ? 'DESCENDING (newest first)' : isAscending ? 'ASCENDING (oldest first)' : 'UNSORTED'}`)
+        }
+        
+        // Sort by date descending (newest first) to ensure consistent ordering
+        const sortedData = [...newData].sort((a, b) => b.date - a.date)
+        console.log(`[Renderer] Sorted mentions by date (newest first)`)
+        
         if (append) {
-          setMentions(prev => [...prev, ...newData])
+          setMentions(prev => {
+            const combined = [...prev, ...sortedData]
+            console.log(`[Renderer] Appended mentions. Total now: ${combined.length}`)
+            return combined
+          })
         } else {
-          setMentions(newData)
+          console.log(`[Renderer] Setting new mentions (replacing existing)`)
+          setMentions(sortedData)
         }
         
         // If we got fewer results than requested, we've reached the end
-        setHasMore(newData.length === SIZE)
+        const hasMore = newData.length === SIZE
+        setHasMore(hasMore)
         setOffset(currentOffset + newData.length)
+        console.log(`[Renderer] Updated state: offset=${currentOffset + newData.length}, hasMore=${hasMore}`)
       } else {
-        setError(result.error || 'Failed to fetch mentions')
+        const errorMsg = result.error || 'Failed to fetch mentions'
+        console.error(`[Renderer] Fetch failed: ${errorMsg}`)
+        setError(errorMsg)
         setHasMore(false)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error')
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      console.error(`[Renderer] Exception in fetchMentions:`, err)
+      console.error(`[Renderer] Error details:`, {
+        message: errorMsg,
+        stack: err instanceof Error ? err.stack : 'No stack trace'
+      })
+      setError(errorMsg)
       setHasMore(false)
     } finally {
       if (append) {
         setLoadingMore(false)
+        console.log(`[Renderer] Finished loading more`)
       } else {
         setLoading(false)
+        console.log(`[Renderer] Finished fetching`)
       }
     }
   }, [])
@@ -527,7 +614,7 @@ function LinkScroller() {
           isDirectMedia: mediaInfo.isMedia,
           mediaType: mediaInfo.type,
           linkType: getLinkType(url), // Keep original URL for link type detection
-          embedUrl,
+          embedUrl: embedUrl || undefined,
           isYouTube,
           isTwitter,
           isTikTok,
@@ -541,220 +628,6 @@ function LinkScroller() {
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
-  const [twitterEmbedHtml, setTwitterEmbedHtml] = useState<string | null>(null)
-  const [loadingTwitterEmbed, setLoadingTwitterEmbed] = useState(false)
-  const [twitterEmbedError, setTwitterEmbedError] = useState<string | null>(null)
-  const [tiktokEmbedHtml, setTiktokEmbedHtml] = useState<string | null>(null)
-  const [loadingTikTokEmbed, setLoadingTikTokEmbed] = useState(false)
-  const [tiktokEmbedError, setTiktokEmbedError] = useState<string | null>(null)
-  const [redditEmbedHtml, setRedditEmbedHtml] = useState<string | null>(null)
-  const [loadingRedditEmbed, setLoadingRedditEmbed] = useState(false)
-  const [redditEmbedError, setRedditEmbedError] = useState<string | null>(null)
-
-  // Fetch Twitter embed when a Twitter link is highlighted
-  useEffect(() => {
-    if (highlightedCard?.isTwitter && !highlightedCard.twitterEmbedHtml) {
-      setLoadingTwitterEmbed(true)
-      setTwitterEmbedError(null)
-      // Determine theme based on current theme (you can make this configurable)
-      const theme = 'dark' // or 'light' - can be made configurable later
-      
-      window.ipcRenderer.invoke('fetch-twitter-embed', highlightedCard.url, theme)
-        .then((result) => {
-          if (result.success && result.data?.html) {
-            setTwitterEmbedHtml(result.data.html)
-            setTwitterEmbedError(null)
-          } else {
-            setTwitterEmbedHtml(null)
-            setTwitterEmbedError(result.error || 'Failed to load Twitter embed')
-          }
-        })
-        .catch((err) => {
-          console.error('Error fetching Twitter embed:', err)
-          setTwitterEmbedHtml(null)
-          setTwitterEmbedError(err?.message || 'Unknown error occurred')
-        })
-        .finally(() => {
-          setLoadingTwitterEmbed(false)
-        })
-    } else if (!highlightedCard?.isTwitter) {
-      setTwitterEmbedHtml(null)
-      setTwitterEmbedError(null)
-    }
-  }, [highlightedCard?.id, highlightedCard?.isTwitter, highlightedCard?.url])
-
-  // Fetch TikTok embed when a TikTok link is highlighted
-  useEffect(() => {
-    if (highlightedCard?.isTikTok && !highlightedCard.tiktokEmbedHtml) {
-      setLoadingTikTokEmbed(true)
-      setTiktokEmbedError(null)
-      console.log('Fetching TikTok embed for:', highlightedCard.url)
-      
-      window.ipcRenderer.invoke('fetch-tiktok-embed', highlightedCard.url)
-        .then((result) => {
-          console.log('TikTok embed result:', result)
-          if (result.success && result.data?.html) {
-            console.log('Setting TikTok embed HTML')
-            setTiktokEmbedHtml(result.data.html)
-            setTiktokEmbedError(null)
-          } else {
-            console.error('TikTok embed failed:', result.error)
-            setTiktokEmbedHtml(null)
-            setTiktokEmbedError(result.error || 'Failed to load TikTok embed')
-          }
-        })
-        .catch((err) => {
-          console.error('Error fetching TikTok embed:', err)
-          setTiktokEmbedHtml(null)
-          setTiktokEmbedError(err?.message || 'Unknown error occurred')
-        })
-        .finally(() => {
-          setLoadingTikTokEmbed(false)
-        })
-    } else if (!highlightedCard?.isTikTok) {
-      setTiktokEmbedHtml(null)
-      setTiktokEmbedError(null)
-    }
-  }, [highlightedCard?.id, highlightedCard?.isTikTok, highlightedCard?.url])
-
-  // Fetch Reddit embed when a Reddit link is highlighted
-  useEffect(() => {
-    if (highlightedCard?.isReddit && !highlightedCard.redditEmbedHtml) {
-      setLoadingRedditEmbed(true)
-      setRedditEmbedError(null)
-      const theme = 'dark' // or 'light' - can be made configurable later
-      
-      window.ipcRenderer.invoke('fetch-reddit-embed', highlightedCard.url, theme)
-        .then((result) => {
-          console.log('Reddit embed result:', result)
-          if (result.success && result.data?.html) {
-            console.log('Setting Reddit embed HTML')
-            setRedditEmbedHtml(result.data.html)
-            setRedditEmbedError(null)
-          } else {
-            console.error('Reddit embed failed:', result.error)
-            setRedditEmbedHtml(null)
-            setRedditEmbedError(result.error || 'Failed to load Reddit embed')
-          }
-        })
-        .catch((err) => {
-          console.error('Error fetching Reddit embed:', err)
-          setRedditEmbedHtml(null)
-          setRedditEmbedError(err?.message || 'Unknown error occurred')
-        })
-        .finally(() => {
-          setLoadingRedditEmbed(false)
-        })
-    } else if (!highlightedCard?.isReddit) {
-      setRedditEmbedHtml(null)
-      setRedditEmbedError(null)
-    }
-  }, [highlightedCard?.id, highlightedCard?.isReddit, highlightedCard?.url])
-
-  // Load Twitter widgets script when Twitter embed is rendered
-  useEffect(() => {
-    if (twitterEmbedHtml) {
-      // Check if script is already loaded
-      if (!document.querySelector('script[src="https://platform.twitter.com/widgets.js"]')) {
-        const script = document.createElement('script')
-        script.src = 'https://platform.twitter.com/widgets.js'
-        script.async = true
-        script.charset = 'utf-8'
-        document.body.appendChild(script)
-      } else {
-        // If script exists, trigger widget reload using the global twttr object
-        // @ts-ignore - Twitter widgets.js adds twttr to window
-        if (typeof window !== 'undefined' && (window as any).twttr && (window as any).twttr.widgets) {
-          (window as any).twttr.widgets.load()
-        }
-      }
-    }
-  }, [twitterEmbedHtml])
-
-  // Load TikTok embed script when TikTok embed is rendered
-  useEffect(() => {
-    if (tiktokEmbedHtml) {
-      // Suppress TikTok SDK errors to reduce console noise
-      const originalError = console.error
-      const errorSuppressor = (...args: any[]) => {
-        const errorMsg = args[0]?.toString() || ''
-        // Suppress TikTok SDK specific errors
-        if (
-          errorMsg.includes('webmssdk') ||
-          errorMsg.includes('Cannot read properties of undefined') ||
-          errorMsg.includes('tiktok_web_embed')
-        ) {
-          return // Suppress these errors
-        }
-        originalError.apply(console, args)
-      }
-      
-      // Temporarily replace console.error
-      console.error = errorSuppressor
-      
-      // Wait for DOM to update with the new HTML, then load/process script
-      setTimeout(() => {
-        // Check if script is already loaded
-        const existingScript = document.querySelector('script[src="https://www.tiktok.com/embed.js"]')
-        if (!existingScript) {
-          const script = document.createElement('script')
-          script.src = 'https://www.tiktok.com/embed.js'
-          script.async = true
-          script.charset = 'utf-8'
-          script.onerror = () => {
-            // Restore original console.error on script error
-            console.error = originalError
-          }
-          document.body.appendChild(script)
-          // TikTok embed.js should automatically process blockquotes when it loads
-        } else {
-          // Script already exists - reload it to trigger processing of new embeds
-          // This ensures TikTok's script processes the newly inserted blockquote
-          existingScript.remove()
-          const script = document.createElement('script')
-          script.src = 'https://www.tiktok.com/embed.js'
-          script.async = true
-          script.charset = 'utf-8'
-          script.onerror = () => {
-            // Restore original console.error on script error
-            console.error = originalError
-          }
-          document.body.appendChild(script)
-        }
-        
-        // Restore original console.error after a delay
-        setTimeout(() => {
-          console.error = originalError
-        }, 2000)
-      }, 200)
-    }
-  }, [tiktokEmbedHtml])
-
-  // Load Reddit embed script when Reddit embed is rendered
-  useEffect(() => {
-    if (redditEmbedHtml) {
-      // Wait for DOM to update
-      setTimeout(() => {
-        // Check if script is already loaded
-        const existingScript = document.querySelector('script[src="https://embed.reddit.com/widgets.js"]')
-        if (!existingScript) {
-          const script = document.createElement('script')
-          script.src = 'https://embed.reddit.com/widgets.js'
-          script.async = true
-          script.charset = 'UTF-8'
-          document.body.appendChild(script)
-        } else {
-          // Script already exists - reload it to trigger processing of new embeds
-          existingScript.remove()
-          const script = document.createElement('script')
-          script.src = 'https://embed.reddit.com/widgets.js'
-          script.async = true
-          script.charset = 'UTF-8'
-          document.body.appendChild(script)
-        }
-      }, 200)
-    }
-  }, [redditEmbedHtml])
 
   const navigateHighlight = (direction: 'prev' | 'next') => {
     if (highlightedIndex === -1) return
@@ -765,6 +638,26 @@ function LinkScroller() {
     
     setHighlightedCardId(linkCards[newIndex].id)
   }
+
+  // Handle refresh - reset feed and fetch from beginning
+  const handleRefresh = useCallback(() => {
+    console.log(`[Renderer] Refresh triggered at ${new Date().toISOString()}`)
+    console.log(`[Renderer] Current state before refresh:`, {
+      mentionsCount: mentions.length,
+      offset,
+      hasMore,
+      highlightedCardId,
+      filter
+    })
+    
+    setMentions([])
+    setOffset(0)
+    setHasMore(true)
+    setHighlightedCardId(null)
+    
+    console.log(`[Renderer] State reset, calling fetchMentions with filter="${filter}", offset=0`)
+    fetchMentions(filter, 0, false)
+  }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId])
 
   // Highlight Layout Component
   if (highlightedCard) {
@@ -789,279 +682,39 @@ function LinkScroller() {
               {highlightedCard.isDirectMedia ? (
                 <div>
                   {highlightedCard.mediaType === 'image' ? (
-                    <img
-                      src={highlightedCard.url}
+                    <ImageEmbed 
+                      url={highlightedCard.url} 
                       alt={highlightedCard.text}
-                      className="w-full max-h-[70vh] object-contain rounded-lg mb-4"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement
-                        target.style.display = 'none'
-                      }}
                     />
                   ) : (
-                    <video
-                      src={highlightedCard.url}
-                      className="w-full max-h-[70vh] rounded-lg mb-4"
-                      controls
-                      onError={(e) => {
-                        const target = e.target as HTMLVideoElement
-                        target.style.display = 'none'
-                      }}
+                    <VideoEmbed 
+                      url={highlightedCard.url}
+                      autoplay={autoplayEnabled}
+                      muted={autoplayEnabled ? muteEnabled : false}
+                      controls={true}
                     />
                   )}
-                  <div className="mt-4 mb-4">
-                    <p className="text-base">{renderTextWithLinks(highlightedCard.text)}</p>
-                  </div>
                 </div>
               ) : highlightedCard.isYouTube && highlightedCard.embedUrl ? (
                 <div>
-                  <div className="aspect-video w-full mb-4 rounded-lg overflow-hidden bg-base-200">
-                    <iframe
-                      width="100%"
-                      height="100%"
-                      src={highlightedCard.embedUrl}
-                      frameBorder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      className="w-full h-full"
-                    />
-                  </div>
-                  <div className="mt-4 mb-4">
-                    <p className="text-base">{renderTextWithLinks(highlightedCard.text)}</p>
-                  </div>
-                  <a
-                    href={highlightedCard.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link link-primary break-all text-sm"
-                  >
-                    {highlightedCard.url}
-                  </a>
+                  <YouTubeEmbed 
+                    url={highlightedCard.url} 
+                    embedUrl={highlightedCard.embedUrl}
+                    autoplay={autoplayEnabled}
+                    mute={autoplayEnabled ? muteEnabled : false}
+                  />
                 </div>
               ) : highlightedCard.isTwitter ? (
                 <div>
-                  {loadingTwitterEmbed ? (
-                    <div className="flex justify-center items-center py-12">
-                      <span className="loading loading-spinner loading-lg"></span>
-                    </div>
-                  ) : twitterEmbedHtml ? (
-                    <div className="mb-4 flex justify-center">
-                      <div 
-                        dangerouslySetInnerHTML={{ __html: twitterEmbedHtml }}
-                        className="twitter-embed-container"
-                      />
-                    </div>
-                  ) : (
-                    <div className="bg-base-200 rounded-lg p-6 mb-4">
-                      <p className="text-base-content/70 mb-2">Failed to load Twitter embed</p>
-                      {twitterEmbedError && (
-                        <p className="text-sm text-error mb-3">{twitterEmbedError}</p>
-                      )}
-                      <div className="flex gap-2 mb-3">
-                        <button
-                          className="btn btn-sm btn-primary"
-                          onClick={() => window.ipcRenderer.invoke('open-login-window', 'twitter')}
-                        >
-                          Login to Twitter
-                        </button>
-                        <button
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => {
-                            setTwitterEmbedError(null)
-                            setTwitterEmbedHtml(null)
-                            // Trigger refetch
-                            const theme = 'dark'
-                            setLoadingTwitterEmbed(true)
-                            window.ipcRenderer.invoke('fetch-twitter-embed', highlightedCard.url, theme)
-                              .then((result) => {
-                                if (result.success && result.data?.html) {
-                                  setTwitterEmbedHtml(result.data.html)
-                                  setTwitterEmbedError(null)
-                                } else {
-                                  setTwitterEmbedError(result.error || 'Failed to load Twitter embed')
-                                }
-                              })
-                              .catch((err) => {
-                                setTwitterEmbedError(err?.message || 'Unknown error occurred')
-                              })
-                              .finally(() => {
-                                setLoadingTwitterEmbed(false)
-                              })
-                          }}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                      <a
-                        href={highlightedCard.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-primary break-all"
-                      >
-                        {highlightedCard.url}
-                      </a>
-                    </div>
-                  )}
-                  <div className="mt-4 mb-4">
-                    <p className="text-base">{renderTextWithLinks(highlightedCard.text)}</p>
-                  </div>
-                  <a
-                    href={highlightedCard.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link link-primary break-all text-sm"
-                  >
-                    {highlightedCard.url}
-                  </a>
+                  <TwitterEmbed url={highlightedCard.url} />
                 </div>
               ) : highlightedCard.isTikTok ? (
                 <div>
-                  {loadingTikTokEmbed ? (
-                    <div className="flex justify-center items-center py-12">
-                      <span className="loading loading-spinner loading-lg"></span>
-                    </div>
-                  ) : tiktokEmbedHtml ? (
-                    <div className="mb-4 flex justify-center">
-                      <div 
-                        dangerouslySetInnerHTML={{ __html: tiktokEmbedHtml }}
-                        className="tiktok-embed-container"
-                      />
-                    </div>
-                  ) : (
-                    <div className="bg-base-200 rounded-lg p-6 mb-4">
-                      <p className="text-base-content/70 mb-2">Failed to load TikTok embed</p>
-                      {tiktokEmbedError && (
-                        <p className="text-sm text-error mb-3">{tiktokEmbedError}</p>
-                      )}
-                      <div className="flex gap-2 mb-3">
-                        <button
-                          className="btn btn-sm btn-primary"
-                          onClick={() => window.ipcRenderer.invoke('open-login-window', 'tiktok')}
-                        >
-                          Login to TikTok
-                        </button>
-                        <button
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => {
-                            setTiktokEmbedError(null)
-                            setTiktokEmbedHtml(null)
-                            setLoadingTikTokEmbed(true)
-                            window.ipcRenderer.invoke('fetch-tiktok-embed', highlightedCard.url)
-                              .then((result) => {
-                                if (result.success && result.data?.html) {
-                                  setTiktokEmbedHtml(result.data.html)
-                                  setTiktokEmbedError(null)
-                                } else {
-                                  setTiktokEmbedError(result.error || 'Failed to load TikTok embed')
-                                }
-                              })
-                              .catch((err) => {
-                                setTiktokEmbedError(err?.message || 'Unknown error occurred')
-                              })
-                              .finally(() => {
-                                setLoadingTikTokEmbed(false)
-                              })
-                          }}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                      <a
-                        href={highlightedCard.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-primary break-all"
-                      >
-                        {highlightedCard.url}
-                      </a>
-                    </div>
-                  )}
-                  <div className="mt-4 mb-4">
-                    <p className="text-base">{renderTextWithLinks(highlightedCard.text)}</p>
-                  </div>
-                  <a
-                    href={highlightedCard.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link link-primary break-all text-sm"
-                  >
-                    {highlightedCard.url}
-                  </a>
+                  <TikTokEmbed url={highlightedCard.url} />
                 </div>
               ) : highlightedCard.isReddit ? (
                 <div>
-                  {loadingRedditEmbed ? (
-                    <div className="flex justify-center items-center py-12">
-                      <span className="loading loading-spinner loading-lg"></span>
-                    </div>
-                  ) : redditEmbedHtml ? (
-                    <div className="mb-4 flex justify-center">
-                      <div 
-                        dangerouslySetInnerHTML={{ __html: redditEmbedHtml }}
-                        className="reddit-embed-container"
-                      />
-                    </div>
-                  ) : (
-                    <div className="bg-base-200 rounded-lg p-6 mb-4">
-                      <p className="text-base-content/70 mb-2">Failed to load Reddit embed</p>
-                      {redditEmbedError && (
-                        <p className="text-sm text-error mb-3">{redditEmbedError}</p>
-                      )}
-                      <div className="flex gap-2 mb-3">
-                        <button
-                          className="btn btn-sm btn-primary"
-                          onClick={() => window.ipcRenderer.invoke('open-login-window', 'reddit')}
-                        >
-                          Login to Reddit
-                        </button>
-                        <button
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => {
-                            setRedditEmbedError(null)
-                            setRedditEmbedHtml(null)
-                            const theme = 'dark'
-                            setLoadingRedditEmbed(true)
-                            window.ipcRenderer.invoke('fetch-reddit-embed', highlightedCard.url, theme)
-                              .then((result) => {
-                                if (result.success && result.data?.html) {
-                                  setRedditEmbedHtml(result.data.html)
-                                  setRedditEmbedError(null)
-                                } else {
-                                  setRedditEmbedError(result.error || 'Failed to load Reddit embed')
-                                }
-                              })
-                              .catch((err) => {
-                                setRedditEmbedError(err?.message || 'Unknown error occurred')
-                              })
-                              .finally(() => {
-                                setLoadingRedditEmbed(false)
-                              })
-                          }}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                      <a
-                        href={highlightedCard.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-primary break-all"
-                      >
-                        {highlightedCard.url}
-                      </a>
-                    </div>
-                  )}
-                  <div className="mt-4 mb-4">
-                    <p className="text-base">{renderTextWithLinks(highlightedCard.text)}</p>
-                  </div>
-                  <a
-                    href={highlightedCard.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link link-primary break-all text-sm"
-                  >
-                    {highlightedCard.url}
-                  </a>
+                  <RedditEmbed url={highlightedCard.url} theme="dark" />
                 </div>
               ) : (
                 <div className="bg-base-200 rounded-lg p-6 mb-4 min-h-[200px]">
@@ -1076,7 +729,6 @@ function LinkScroller() {
                       <div className="badge badge-primary badge-lg">{highlightedCard.linkType}</div>
                     )}
                   </div>
-                  <p className="text-lg mb-4">{renderTextWithLinks(highlightedCard.text)}</p>
                   <a
                     href={highlightedCard.url}
                     target="_blank"
@@ -1088,11 +740,31 @@ function LinkScroller() {
                 </div>
               )}
               
-              <div className="mt-4">
-                <div className="flex items-center gap-4">
+              {/* Text content and metadata in rounded dark grey background */}
+              <div className="mt-4 bg-base-300 rounded-lg p-4">
+                <div className="mb-3 break-words overflow-wrap-anywhere">
+                  <p className="text-base break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                    {highlightedCard.isYouTube 
+                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link')
+                      : highlightedCard.isReddit
+                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link')
+                      : highlightedCard.isTwitter
+                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
+                      : renderTextWithLinks(highlightedCard.text)
+                    }
+                  </p>
+                </div>
+                <div className="flex items-center gap-4 pt-2 border-t border-base-content/20">
                   <div>
                     <span className="text-sm text-base-content/70">Posted by</span>
-                    <span className="ml-2 text-lg font-bold text-primary">{highlightedCard.nick}</span>
+                    <a
+                      href={`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-2 text-lg font-bold text-primary hover:underline"
+                    >
+                      {highlightedCard.nick}
+                    </a>
                   </div>
                   <div className="text-sm text-base-content/50">
                     {new Date(highlightedCard.date).toLocaleString()}
@@ -1131,8 +803,8 @@ function LinkScroller() {
                         )
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs line-clamp-3">{card.text}</p>
+                    <div className="flex-1 min-w-0 break-words overflow-wrap-anywhere">
+                      <p className="text-xs line-clamp-3 break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{card.text}</p>
                       <div className="text-xs text-base-content/50 mt-1">
                         <span className="font-semibold">{card.nick}</span>
                       </div>
@@ -1144,7 +816,7 @@ function LinkScroller() {
           </div>
         </div>
 
-        {/* Navigation arrows */}
+        {/* Navigation arrows and controls */}
         <div className="flex justify-center items-center gap-4 p-4 border-t border-base-300">
           <button
             onClick={() => navigateHighlight('prev')}
@@ -1163,6 +835,61 @@ function LinkScroller() {
           >
             →
           </button>
+          
+          {/* Autoplay toggle */}
+          <div className="divider divider-horizontal mx-2"></div>
+          <div className="flex items-center gap-2">
+            <label className="label cursor-pointer gap-2">
+              <span className="label-text text-sm">Autoplay</span>
+              <input
+                type="checkbox"
+                checked={autoplayEnabled}
+                onChange={(e) => setAutoplayEnabled(e.target.checked)}
+                className="toggle toggle-primary toggle-sm"
+              />
+            </label>
+          </div>
+          
+          {/* Mute toggle (only shown when autoplay is enabled) */}
+          {autoplayEnabled && (
+            <div className="flex items-center gap-2">
+              <label className="label cursor-pointer gap-2">
+                <span className="label-text text-sm">Mute</span>
+                <input
+                  type="checkbox"
+                  checked={muteEnabled}
+                  onChange={(e) => setMuteEnabled(e.target.checked)}
+                  className="toggle toggle-secondary toggle-sm"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* Floating action buttons - bottom right */}
+        <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+          {/* Refresh button */}
+          <button
+            onClick={handleRefresh}
+            className="btn btn-circle btn-primary shadow-lg"
+            title="Refresh feed"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+          </button>
+          
+          {/* Settings button */}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="btn btn-circle btn-primary shadow-lg"
+            title="Settings"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.645-.869l.214-1.281z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
         </div>
       </div>
     )
@@ -1170,39 +897,23 @@ function LinkScroller() {
 
   return (
     <div className="min-h-screen bg-base-100 p-4">
-      {/* Header with settings button */}
-      <div className="max-w-7xl mx-auto mb-6">
-        <div className="flex justify-end mb-4">
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="btn btn-circle btn-ghost"
-            title="Settings"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
+      {loading && mentions.length === 0 && (
+        <div className="flex justify-center items-center py-8">
+          <span className="loading loading-spinner loading-lg"></span>
         </div>
+      )}
 
-        {loading && mentions.length === 0 && (
-          <div className="flex justify-center items-center py-8">
-            <span className="loading loading-spinner loading-lg"></span>
-          </div>
-        )}
+      {error && (
+        <div className="alert alert-error mb-4">
+          <span>Error: {error}</span>
+        </div>
+      )}
 
-        {error && (
-          <div className="alert alert-error mb-4">
-            <span>Error: {error}</span>
-          </div>
-        )}
-
-        {!loading && !error && (
-          <div className="text-sm text-base-content/70">
-            Found {linkCards.length} link{linkCards.length !== 1 ? 's' : ''} from {mentions.length} message{mentions.length !== 1 ? 's' : ''}
-          </div>
-        )}
-      </div>
+      {!loading && !error && (
+        <div className="text-sm text-base-content/70">
+          Found {linkCards.length} link{linkCards.length !== 1 ? 's' : ''} from {mentions.length} message{mentions.length !== 1 ? 's' : ''}
+        </div>
+      )}
 
       {/* Link Cards Grid */}
       {!loading && linkCards.length > 0 && (
@@ -1213,36 +924,33 @@ function LinkScroller() {
                 {card.isDirectMedia ? (
                   <figure className="relative">
                     {card.mediaType === 'image' ? (
-                      <img
-                        src={card.url}
+                      <ImageEmbed 
+                        url={card.url} 
                         alt={card.text}
                         className="w-full h-48 object-cover"
-                        onError={(e) => {
-                          // Fallback if image fails to load
-                          const target = e.target as HTMLImageElement
-                          target.style.display = 'none'
-                        }}
                       />
                     ) : (
-                      <video
-                        src={card.url}
+                      <VideoEmbed 
+                        url={card.url}
+                        autoplay={false}
+                        muted={true}
+                        controls={true}
                         className="w-full h-48 object-cover"
-                        controls
-                        onError={(e) => {
-                          const target = e.target as HTMLVideoElement
-                          target.style.display = 'none'
-                        }}
                       />
                     )}
                   </figure>
                 ) : (
-                  <div className="card-body">
-                    <p className="text-sm">{renderTextWithLinks(card.text)}</p>
+                  <div className="card-body break-words overflow-wrap-anywhere">
+                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {renderTextWithLinks(card.text)}
+                    </p>
                   </div>
                 )}
                 {card.isDirectMedia && (
-                  <div className="card-body pt-2">
-                    <p className="text-sm">{renderTextWithLinks(card.text)}</p>
+                  <div className="card-body pt-2 break-words overflow-wrap-anywhere">
+                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {renderTextWithLinks(card.text)}
+                    </p>
                   </div>
                 )}
                 <div className="card-body pt-2">
@@ -1367,6 +1075,32 @@ function LinkScroller() {
           <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}></div>
         </div>
       )}
+
+      {/* Floating action buttons - bottom right */}
+      <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+        {/* Refresh button */}
+        <button
+          onClick={handleRefresh}
+          className="btn btn-circle btn-primary shadow-lg"
+          title="Refresh feed"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+          </svg>
+        </button>
+        
+        {/* Settings button */}
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="btn btn-circle btn-primary shadow-lg"
+          title="Settings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.645-.869l.214-1.281z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
     </div>
   )
 }
