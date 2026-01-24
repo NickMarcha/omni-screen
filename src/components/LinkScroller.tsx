@@ -5,6 +5,7 @@ import TikTokEmbed from './embeds/TikTokEmbed'
 import RedditEmbed from './embeds/RedditEmbed'
 import StreamableEmbed from './embeds/StreamableEmbed'
 import WikipediaEmbed from './embeds/WikipediaEmbed'
+import BlueskyEmbed from './embeds/BlueskyEmbed'
 import VideoEmbed from './embeds/VideoEmbed'
 import ImageEmbed from './embeds/ImageEmbed'
 import ListManager from './ListManager'
@@ -17,6 +18,7 @@ import redditIcon from '../assets/icons/third-party/reddit.png'
 import streamableIcon from '../assets/icons/third-party/streamable.ico'
 import imgurIcon from '../assets/icons/third-party/imgur.png'
 import wikipediaIcon from '../assets/icons/third-party/wikipedia.png'
+import blueskyIcon from '../assets/icons/third-party/bluesky.svg'
 
 interface MentionData {
   id: string // Unique ID generated from hash of date and username
@@ -67,6 +69,7 @@ interface LinkCard {
   imgurAlbumData?: ImgurAlbumData
   isStreamable?: boolean
   isWikipedia?: boolean
+  isBluesky?: boolean
   isTrusted?: boolean
 }
 
@@ -228,6 +231,7 @@ function getLinkType(url: string): string {
     if (hostname.includes('streamable.com')) return 'Streamable'
     if (hostname.includes('imgur.com')) return 'Imgur'
     if (hostname.includes('wikipedia.org')) return 'Wikipedia'
+    if (hostname.includes('bsky.app')) return 'Bluesky'
     return 'Link'
   } catch {
     return 'Link'
@@ -247,6 +251,7 @@ function getLinkTypeIcon(linkType?: string): string | null {
     'Streamable': streamableIcon,
     'Imgur': imgurIcon,
     'Wikipedia': wikipediaIcon,
+    'Bluesky': blueskyIcon,
   }
   return iconMap[linkType] || null
 }
@@ -363,6 +368,17 @@ function isWikipediaLink(url: string): boolean {
     const urlObj = new URL(url)
     const hostname = urlObj.hostname.toLowerCase()
     return hostname.includes('wikipedia.org')
+  } catch {
+    return false
+  }
+}
+
+// Check if URL is a Bluesky link
+function isBlueskyLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    return hostname.includes('bsky.app')
   } catch {
     return false
   }
@@ -656,6 +672,10 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                   <div className="p-2">
                     <WikipediaEmbed url={card.url} />
                   </div>
+                ) : card.isBluesky ? (
+                  <div className="p-2">
+                    <BlueskyEmbed url={card.url} />
+                  </div>
                 ) : card.isImgur ? (
                   <div className="p-2">
                     <div className="bg-base-200 rounded-lg p-4 text-center">
@@ -702,6 +722,8 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                         ? renderTextWithLinks(card.text, card.url, 'Imgur link')
                         : card.isWikipedia
                         ? renderTextWithLinks(card.text, card.url, 'Wikipedia link')
+                        : card.isBluesky
+                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link')
                         : renderTextWithLinks(card.text)
                       }
                     </p>
@@ -1048,6 +1070,7 @@ function LinkScroller() {
         const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
         const isStreamable = isStreamableLink(actualUrl)
         const isWikipedia = isWikipediaLink(actualUrl)
+        const isBluesky = isBlueskyLink(actualUrl)
         
         const linkType = getLinkType(url)
         
@@ -1081,6 +1104,7 @@ function LinkScroller() {
           isImgur,
           isStreamable,
           isWikipedia,
+          isBluesky,
           isTrusted, // Add trusted flag
         })
       })
@@ -1320,6 +1344,10 @@ function LinkScroller() {
             ) : highlightedCard.isWikipedia ? (
               <div>
                 <WikipediaEmbed url={highlightedCard.url} />
+              </div>
+            ) : highlightedCard.isBluesky ? (
+              <div>
+                <BlueskyEmbed url={highlightedCard.url} />
               </div>
             ) : highlightedCard.isImgur ? (
               <div>
