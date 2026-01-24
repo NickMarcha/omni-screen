@@ -679,6 +679,374 @@ ipcMain.handle('fetch-tiktok-embed', async (_event, tiktokUrl: string) => {
   }
 })
 
+ipcMain.handle('fetch-imgur-album', async (_event, imgurUrl: string) => {
+  let browserView: BrowserView | null = null
+  const win = BrowserWindow.getFocusedWindow()
+  
+  try {
+    console.log('[Main Process] Fetching Imgur album for URL:', imgurUrl)
+    console.log('[Main Process] Request time:', new Date().toISOString())
+    
+    // Check if this is an album/gallery link
+    // Supports both /gallery/ID and /a/ID formats (short album links)
+    const urlObj = new URL(imgurUrl)
+    const pathname = urlObj.pathname // Don't lowercase - album IDs are case-sensitive!
+    const pathnameLower = pathname.toLowerCase()
+    const isAlbum = pathnameLower.startsWith('/gallery/') || pathnameLower.startsWith('/a/')
+    
+    if (!isAlbum) {
+      // Not an album, return null to treat as regular link
+      return { success: false, error: 'Not an Imgur album link' }
+    }
+    
+    // Extract album ID from URL (preserve case - album IDs are case-sensitive!)
+    const albumIdMatch = pathname.match(/\/(?:gallery|a)\/([^\/]+)/i)
+    const albumId = albumIdMatch ? albumIdMatch[1] : null
+    
+    if (!albumId) {
+      return { success: false, error: 'Could not extract album ID from URL' }
+    }
+    
+    console.log('[Main Process] Extracted album ID:', albumId)
+    
+    // Try the Imgur API first - this is much simpler and more reliable
+    try {
+      const apiUrl = `https://api.imgur.com/post/v1/albums/${albumId}?client_id=d70305e7c3ac5c6&include=media%2Cadconfig%2Caccount%2Ctags`
+      console.log('[Main Process] Fetching from Imgur API:', apiUrl)
+      const apiStartTime = Date.now()
+      
+      const response = await fetchWithCookies(apiUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      })
+      
+      const apiFetchTime = Date.now() - apiStartTime
+      console.log(`[Main Process] Imgur API response status: ${response.status} (took ${apiFetchTime}ms)`)
+      
+      if (response.ok) {
+        const apiData = await response.json()
+        console.log('[Main Process] Got album data from API:', {
+          id: apiData.id,
+          title: apiData.title,
+          image_count: apiData.image_count,
+          media_count: apiData.media?.length || 0
+        })
+        
+        // Extract media URLs and descriptions
+        const media = (apiData.media || []).map((item: any) => ({
+          id: item.id,
+          url: item.url,
+          description: item.metadata?.description || '',
+          title: item.metadata?.title || item.name || '',
+          width: item.width || 0,
+          height: item.height || 0,
+          type: item.type,
+          mime_type: item.mime_type
+        }))
+        
+        return {
+          success: true,
+          data: {
+            id: apiData.id,
+            title: apiData.title || '',
+            description: apiData.description || '',
+            media: media,
+            image_count: apiData.image_count || media.length,
+            is_album: apiData.is_album || false
+          }
+        }
+      } else {
+        const errorText = await response.text().catch(() => '')
+        console.log(`[Main Process] Imgur API returned status ${response.status}:`, errorText.substring(0, 200))
+      }
+    } catch (apiError) {
+      console.log('[Main Process] Imgur API request failed, falling back to page extraction:', apiError)
+    }
+    
+    // Fallback: Create a hidden BrowserView to load the page and extract data
+    browserView = new BrowserView({
+      webPreferences: {
+        partition: 'persist:main',
+        webSecurity: false,
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    })
+    
+    if (win) {
+      win.setBrowserView(browserView)
+      browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      browserView.setAutoResize({ width: false, height: false })
+    }
+    
+    const result = await new Promise<any>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout loading Imgur page'))
+      }, 15000)
+      
+      browserView!.webContents.once('did-finish-load', async () => {
+        clearTimeout(timeout)
+        
+        try {
+          // Wait for the React app to load and populate the page
+          // Try multiple times as the data loads asynchronously
+          let albumData = null
+          let attempts = 0
+          const maxAttempts = 10
+          
+          while (!albumData && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500))
+            attempts++
+            
+            albumData = await browserView!.webContents.executeJavaScript(`
+              (() => {
+                try {
+                  // Method 1: Try to access window.postDataJSON directly (for /gallery/ links)
+                  if (window.postDataJSON && typeof window.postDataJSON === 'object') {
+                    return window.postDataJSON
+                  }
+                  
+                  // Method 2: Look for the script tag with window.postDataJSON (for /gallery/ links)
+                  const scripts = document.querySelectorAll('script')
+                  for (const script of scripts) {
+                    if (script.textContent && script.textContent.includes('window.postDataJSON')) {
+                      // Extract the JSON string - it's in the format: window.postDataJSON="..."
+                      const match = script.textContent.match(/window\\.postDataJSON\\s*=\\s*"([^"]+)"/)
+                      if (match && match[1]) {
+                        // The JSON is escaped in the HTML, so we need to unescape it
+                        let jsonStr = match[1]
+                          .replace(/\\\\"/g, '"')
+                          .replace(/\\\\n/g, '\\n')
+                          .replace(/\\\\t/g, '\\t')
+                          .replace(/\\\\\\\\/g, '\\\\')
+                          .replace(/\\\\u([0-9a-fA-F]{4})/g, (match, hex) => String.fromCharCode(parseInt(hex, 16)))
+                        
+                        try {
+                          const data = JSON.parse(jsonStr)
+                          return data
+                        } catch (e) {
+                          console.error('Failed to parse postDataJSON:', e)
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Method 3: For /a/ links, try to extract from React app state
+                  // Look for data in window.__INITIAL_STATE__ or similar
+                  if (window.__INITIAL_STATE__) {
+                    const state = window.__INITIAL_STATE__
+                    // Try to find album/post data in the state
+                    if (state.post || state.album) {
+                      return state.post || state.album
+                    }
+                  }
+                  
+                  // Method 4: Try to find data in window.__REACT_QUERY_STATE__ or similar
+                  if (window.__REACT_QUERY_STATE__) {
+                    const queryState = window.__REACT_QUERY_STATE__
+                    // Look for album/post data in React Query cache
+                    for (const key in queryState.queries) {
+                      const query = queryState.queries[key]
+                      if (query && query.state && query.state.data) {
+                        const data = query.state.data
+                        if (data.media || data.image_count || data.is_album) {
+                          return data
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Method 5: Try to find data in the React root element's props/state
+                  const root = document.getElementById('root')
+                  if (root) {
+                    // Try React DevTools approach - look for _reactInternalFiber or _reactInternalInstance
+                    const reactKey = Object.keys(root).find(key => 
+                      key.startsWith('__reactInternalInstance') || 
+                      key.startsWith('__reactFiber') ||
+                      key.startsWith('_reactInternalFiber')
+                    )
+                    if (reactKey) {
+                      let fiber = (root as any)[reactKey]
+                      // Traverse React fiber tree
+                      const traverseFiber = (node: any, depth = 0): any => {
+                        if (depth > 10) return null // Prevent infinite loops
+                        if (!node) return null
+                        
+                        // Check memoizedState
+                        if (node.memoizedState) {
+                          let state = node.memoizedState
+                          while (state) {
+                            if (state.memoizedState && (state.memoizedState.media || state.memoizedState.image_count)) {
+                              return state.memoizedState
+                            }
+                            state = state.next
+                          }
+                        }
+                        
+                        // Check memoizedProps
+                        if (node.memoizedProps && (node.memoizedProps.post || node.memoizedProps.album)) {
+                          return node.memoizedProps.post || node.memoizedProps.album
+                        }
+                        
+                        // Check stateNode
+                        if (node.stateNode && node.stateNode.state) {
+                          const state = node.stateNode.state
+                          if (state.post || state.album || state.media) {
+                            return state.post || state.album || state
+                          }
+                        }
+                        
+                        // Recurse
+                        return traverseFiber(node.child, depth + 1) || 
+                               traverseFiber(node.sibling, depth + 1)
+                      }
+                      
+                      const found = traverseFiber(fiber)
+                      if (found) return found
+                    }
+                  }
+                  
+                  // Method 6: Try to find JSON data in script tags with type="application/json"
+                  const jsonScripts = document.querySelectorAll('script[type="application/json"]')
+                  for (const script of jsonScripts) {
+                    try {
+                      const data = JSON.parse(script.textContent)
+                      if (data.media || data.image_count) {
+                        return data
+                      }
+                    } catch (e) {
+                      // Not valid JSON, continue
+                    }
+                  }
+                  
+                  // Method 7: Try to extract from meta tags (at least get the cover image)
+                  const ogImage = document.querySelector('meta[property="og:image"]')
+                  const twitterImage = document.querySelector('meta[name="twitter:image"]')
+                  const imageUrl = ogImage?.getAttribute('content') || twitterImage?.getAttribute('content')
+                  
+                  if (imageUrl) {
+                    // Extract image ID from URL (e.g., https://i.imgur.com/XrcZ1ga.png -> XrcZ1ga)
+                    const imageIdMatch = imageUrl.match(/i\\.imgur\\.com\\/([^.?]+)/)
+                    if (imageIdMatch) {
+                      return {
+                        id: albumId,
+                        title: document.title.replace(' - Album on Imgur', '').replace('Imgur: ', ''),
+                        description: '',
+                        media: [{
+                          id: imageIdMatch[1],
+                          url: imageUrl.split('?')[0], // Remove query params
+                          description: '',
+                          title: '',
+                          width: 0,
+                          height: 0,
+                          type: 'image',
+                          mime_type: 'image/png'
+                        }],
+                        image_count: 1,
+                        is_album: false
+                      }
+                    }
+                  }
+                  
+                  return null
+                } catch (error) {
+                  console.error('Error extracting Imgur data:', error)
+                  return null
+                }
+              })()
+            `)
+            
+            if (albumData) {
+              console.log(`Found album data after ${attempts} attempt(s)`)
+              break
+            }
+          }
+          
+          // If we still don't have data, try the oEmbed API as a fallback
+          if (!albumData) {
+            console.log('Trying Imgur oEmbed API as fallback...')
+            try {
+              const oembedUrl = `https://api.imgur.com/oembed.json?url=${encodeURIComponent(imgurUrl)}`
+              const response = await fetchWithCookies(oembedUrl)
+              if (response.ok) {
+                const oembedData = await response.json()
+                console.log('Got oEmbed data:', oembedData)
+                // oEmbed doesn't give us the full album data, but we can extract some info
+                // For now, we'll still need to get the full data from the page
+                // This is just a fallback that might help
+              }
+            } catch (oembedError) {
+              console.log('oEmbed API also failed:', oembedError)
+            }
+          }
+          
+          if (!albumData) {
+            reject(new Error('Could not extract album data from Imgur page after multiple attempts'))
+            return
+          }
+          
+          console.log('Extracted Imgur album data:', {
+            id: albumData.id,
+            title: albumData.title,
+            image_count: albumData.image_count,
+            media_count: albumData.media?.length || 0
+          })
+          
+          // Extract media URLs and descriptions
+          const media = (albumData.media || []).map((item: any) => ({
+            id: item.id,
+            url: item.url,
+            description: item.metadata?.description || '',
+            title: item.metadata?.title || '',
+            width: item.width,
+            height: item.height,
+            type: item.type,
+            mime_type: item.mime_type
+          }))
+          
+          resolve({
+            success: true,
+            data: {
+              id: albumData.id,
+              title: albumData.title || '',
+              description: albumData.description || '',
+              media: media,
+              image_count: albumData.image_count || media.length,
+              is_album: albumData.is_album || false
+            }
+          })
+        } catch (error) {
+          console.error('Error in did-finish-load handler:', error)
+          reject(error)
+        }
+      })
+      
+      browserView!.webContents.once('did-fail-load', (event, errorCode, errorDescription) => {
+        clearTimeout(timeout)
+        reject(new Error(`Failed to load: ${errorDescription}`))
+      })
+      
+      // Load the Imgur URL
+      browserView!.webContents.loadURL(imgurUrl)
+    })
+    
+    return result
+  } catch (error) {
+    console.error('Error fetching Imgur album:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  } finally {
+    // Clean up the BrowserView
+    if (browserView) {
+      if (win) {
+        win.setBrowserView(null)
+      }
+      browserView.webContents.destroy()
+    }
+  }
+})
+
 ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'light' | 'dark' = 'dark') => {
   try {
     console.log('Fetching Reddit embed for URL:', redditUrl)

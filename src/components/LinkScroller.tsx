@@ -23,6 +23,26 @@ interface MentionData {
   flairs: string
 }
 
+interface ImgurAlbumMedia {
+  id: string
+  url: string
+  description: string
+  title: string
+  width: number
+  height: number
+  type: string
+  mime_type: string
+}
+
+interface ImgurAlbumData {
+  id: string
+  title: string
+  description: string
+  media: ImgurAlbumMedia[]
+  image_count: number
+  is_album: boolean
+}
+
 interface LinkCard {
   id: string
   url: string
@@ -40,6 +60,8 @@ interface LinkCard {
   tiktokEmbedHtml?: string
   isReddit?: boolean
   redditEmbedHtml?: string
+  isImgur?: boolean
+  imgurAlbumData?: ImgurAlbumData
   isTrusted?: boolean
 }
 
@@ -314,6 +336,20 @@ function isRedditMediaLink(url: string): boolean {
   }
 }
 
+// Check if URL is an Imgur album/gallery link
+function isImgurAlbumLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    if (!hostname.includes('imgur.com')) return false
+    const pathname = urlObj.pathname.toLowerCase()
+    // Check for /gallery/ or /a/ paths (albums)
+    return pathname.startsWith('/gallery/') || pathname.startsWith('/a/')
+  } catch {
+    return false
+  }
+}
+
 // Extract YouTube embed URL from various YouTube URL formats
 function getYouTubeEmbedUrl(url: string): string | null {
   try {
@@ -456,6 +492,9 @@ function LinkScroller() {
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
   const [autoplayEnabled, setAutoplayEnabled] = useState(true) // Default to true for highlight mode
   const [muteEnabled, setMuteEnabled] = useState(false) // Default to false (sound on)
+  const [imgurAlbumData, setImgurAlbumData] = useState<ImgurAlbumData | null>(null)
+  const [loadingImgurAlbum, setLoadingImgurAlbum] = useState(false)
+  const [imgurAlbumError, setImgurAlbumError] = useState<string | null>(null)
 
   // Update temp settings when settings modal opens
   useEffect(() => {
@@ -673,6 +712,7 @@ function LinkScroller() {
         const isTwitter = isTwitterStatusLink(actualUrl)
         const isTikTok = isTikTokVideoLink(actualUrl)
         const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
+        const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
         
         const linkType = getLinkType(url)
         
@@ -703,6 +743,7 @@ function LinkScroller() {
           isTwitter,
           isTikTok,
           isReddit,
+          isImgur,
           isTrusted, // Add trusted flag
         })
       })
@@ -713,6 +754,57 @@ function LinkScroller() {
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
+
+  // Fetch Imgur album data when an Imgur card is highlighted
+  useEffect(() => {
+    if (highlightedCard?.isImgur && highlightedCard.url) {
+      console.log(`[Renderer] Fetching Imgur album for URL: ${highlightedCard.url}`)
+      setLoadingImgurAlbum(true)
+      setImgurAlbumError(null)
+      setImgurAlbumData(null)
+      
+      const startTime = Date.now()
+      window.ipcRenderer.invoke('fetch-imgur-album', highlightedCard.url)
+        .then((result) => {
+          const fetchTime = Date.now() - startTime
+          console.log(`[Renderer] Imgur album IPC call completed in ${fetchTime}ms:`, {
+            success: result.success,
+            hasData: result.success && !!result.data,
+            error: result.success ? null : result.error
+          })
+          
+          if (result.success && result.data) {
+            console.log(`[Renderer] Imgur album data received:`, {
+              id: result.data.id,
+              title: result.data.title,
+              image_count: result.data.image_count,
+              media_count: result.data.media?.length || 0
+            })
+            setImgurAlbumData(result.data)
+            setImgurAlbumError(null)
+          } else {
+            const errorMsg = result.error || 'Failed to fetch Imgur album'
+            console.error(`[Renderer] Imgur album fetch failed:`, errorMsg)
+            setImgurAlbumError(errorMsg)
+            setImgurAlbumData(null)
+          }
+        })
+        .catch((err) => {
+          const fetchTime = Date.now() - startTime
+          console.error(`[Renderer] Error fetching Imgur album (took ${fetchTime}ms):`, err)
+          setImgurAlbumError(err?.message || 'Unknown error occurred')
+          setImgurAlbumData(null)
+        })
+        .finally(() => {
+          setLoadingImgurAlbum(false)
+        })
+    } else {
+      // Clear Imgur data when not viewing an Imgur card
+      setImgurAlbumData(null)
+      setImgurAlbumError(null)
+      setLoadingImgurAlbum(false)
+    }
+  }, [highlightedCard?.id, highlightedCard?.isImgur, highlightedCard?.url])
 
   const navigateHighlight = (direction: 'prev' | 'next') => {
     if (highlightedIndex === -1) return
@@ -810,6 +902,64 @@ function LinkScroller() {
                 <div>
                   <RedditEmbed url={highlightedCard.url} theme="dark" />
                 </div>
+              ) : highlightedCard.isImgur ? (
+                <div>
+                  {loadingImgurAlbum ? (
+                    <div className="flex justify-center items-center py-12">
+                      <span className="loading loading-spinner loading-lg"></span>
+                      <span className="ml-4">Loading Imgur album...</span>
+                    </div>
+                  ) : imgurAlbumError ? (
+                    <div className="bg-base-200 rounded-lg p-6 mb-4">
+                      <p className="text-base-content/70 mb-2">Failed to load Imgur album</p>
+                      <p className="text-sm text-error mb-3">{imgurAlbumError}</p>
+                      <a
+                        href={highlightedCard.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="link link-primary break-all text-sm"
+                      >
+                        {highlightedCard.url}
+                      </a>
+                    </div>
+                  ) : imgurAlbumData ? (
+                    <div className="space-y-4">
+                      {imgurAlbumData.title && (
+                        <h3 className="text-xl font-bold">{imgurAlbumData.title}</h3>
+                      )}
+                      {imgurAlbumData.description && (
+                        <p className="text-base-content/70">{imgurAlbumData.description}</p>
+                      )}
+                      <div className="grid grid-cols-1 gap-4">
+                        {imgurAlbumData.media.map((item, index) => (
+                          <div key={item.id || index} className="bg-base-200 rounded-lg p-4">
+                            {item.type === 'image' ? (
+                              <ImageEmbed url={item.url} alt={item.title || item.description} />
+                            ) : item.type === 'video' ? (
+                              <VideoEmbed 
+                                url={item.url} 
+                                autoplay={autoplayEnabled}
+                                muted={autoplayEnabled ? muteEnabled : false}
+                              />
+                            ) : (
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="link link-primary break-all"
+                              >
+                                {item.url}
+                              </a>
+                            )}
+                            {item.description && (
+                              <p className="mt-2 text-sm text-base-content/70">{item.description}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               ) : (
                 <div className="bg-base-200 rounded-lg p-6 mb-4 min-h-[200px]">
                   <a
@@ -833,6 +983,8 @@ function LinkScroller() {
                       ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link')
                       : highlightedCard.isTwitter
                       ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
+                      : highlightedCard.isImgur
+                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link')
                       : renderTextWithLinks(highlightedCard.text)
                     }
                   </p>
