@@ -559,7 +559,7 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
           {columnCards.map((card) => (
             <div 
               key={card.id} 
-              className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-300 border-primary/30' : 'bg-base-200 border-base-300'}`}
+              className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
             >
               {/* Embed content above - constrained to prevent overflow */}
               <div className="flex-shrink-0 overflow-hidden">
@@ -771,6 +771,7 @@ function LinkScroller() {
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
   const [autoplayEnabled, setAutoplayEnabled] = useState(true) // Default to true for highlight mode
   const [muteEnabled, setMuteEnabled] = useState(false) // Default to false (sound on)
+  const [loopEnabled, setLoopEnabled] = useState(false) // Default to false (no loop)
   const [imgurAlbumData, setImgurAlbumData] = useState<ImgurAlbumData | null>(null)
   const [loadingImgurAlbum, setLoadingImgurAlbum] = useState(false)
   const [imgurAlbumError, setImgurAlbumError] = useState<string | null>(null)
@@ -1255,6 +1256,7 @@ function LinkScroller() {
                   url={highlightedCard.url} 
                   autoplay={autoplayEnabled}
                   mute={autoplayEnabled ? muteEnabled : false}
+                  loop={loopEnabled}
                 />
               </div>
             ) : highlightedCard.isImgur ? (
@@ -1355,8 +1357,8 @@ function LinkScroller() {
               </button>
             </div>
             
-            {/* Autoplay and Mute toggles */}
-            <div className="flex items-center gap-3">
+            {/* Autoplay, Mute, and Loop toggles */}
+            <div className="flex flex-col items-center gap-2">
               {/* Autoplay toggle */}
               <div className="flex items-center gap-2">
                 <label className="label cursor-pointer gap-2">
@@ -1370,26 +1372,42 @@ function LinkScroller() {
                 </label>
               </div>
               
-              {/* Mute toggle (only shown when autoplay is enabled) */}
-              {autoplayEnabled && (
+              {/* Mute and Loop toggles (side by side) */}
+              <div className="flex items-center gap-3">
+                {/* Mute toggle (only shown when autoplay is enabled) */}
+                {autoplayEnabled && (
+                  <div className="flex items-center gap-2">
+                    <label className="label cursor-pointer gap-2">
+                      <span className="label-text text-xs">Mute</span>
+                      <input
+                        type="checkbox"
+                        checked={muteEnabled}
+                        onChange={(e) => setMuteEnabled(e.target.checked)}
+                        className="toggle toggle-secondary toggle-sm"
+                      />
+                    </label>
+                  </div>
+                )}
+                
+                {/* Loop toggle */}
                 <div className="flex items-center gap-2">
                   <label className="label cursor-pointer gap-2">
-                    <span className="label-text text-xs">Mute</span>
+                    <span className="label-text text-xs">Loop</span>
                     <input
                       type="checkbox"
-                      checked={muteEnabled}
-                      onChange={(e) => setMuteEnabled(e.target.checked)}
-                      className="toggle toggle-secondary toggle-sm"
+                      checked={loopEnabled}
+                      onChange={(e) => setLoopEnabled(e.target.checked)}
+                      className="toggle toggle-accent toggle-sm"
                     />
                   </label>
                 </div>
-              )}
+              </div>
             </div>
           </div>
 
           {/* Middle section - Text content */}
           <div className="flex-shrink-0 p-4 border-b border-base-300">
-            <div className="bg-base-300 rounded-lg p-4">
+            <div className={`bg-base-300 rounded-lg p-4 ${highlightedCard.isTrusted ? 'border-2 border-yellow-500' : ''}`}>
               <div className="mb-3 break-words overflow-wrap-anywhere">
                 <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {highlightedCard.isYouTube 
@@ -1432,10 +1450,13 @@ function LinkScroller() {
                   id={`sidebar-card-${card.id}`}
                   onClick={() => setHighlightedCardId(card.id)}
                   className={`card shadow-md cursor-pointer transition-all ${
-                    card.isTrusted ? 'bg-base-300' : 'bg-base-200'
-                  } ${
                     card.id === highlightedCardId ? 'ring-2 ring-primary' : 'hover:shadow-lg'
                   }`}
+                  style={card.isTrusted ? {
+                    backgroundColor: 'rgba(234, 179, 8, 0.15)' // Slight golden background
+                  } : {
+                    backgroundColor: 'hsl(var(--b2))' // Regular background
+                  }}
                 >
                   <div className="card-body p-3 flex flex-row gap-3">
                     <div className="flex-shrink-0 flex items-center">
@@ -1605,13 +1626,13 @@ function LinkScroller() {
                   items={tempSettings.trustedUsers}
                   onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
                   placeholder="Enter username"
-                  helpText="Cards from these users will have a brighter background"
+                  helpText="Cards from these users will have a golden outline"
                 />
 
-                {/* Disabled platforms */}
+                {/* Show platforms */}
                 <div>
                   <label className="label">
-                    <span className="label-text">Disabled Platforms</span>
+                    <span className="label-text">Show Platforms</span>
                   </label>
                   <div className="space-y-2">
                     {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
@@ -1640,7 +1661,7 @@ function LinkScroller() {
                     ))}
                   </div>
                   <label className="label">
-                    <span className="label-text-alt">Unchecked platforms will be filtered out</span>
+                    <span className="label-text-alt">Uncheck platforms to hide them</span>
                   </label>
                 </div>
               </div>
@@ -1800,10 +1821,10 @@ function LinkScroller() {
                 helpText="Cards from these users will have a brighter background"
               />
 
-              {/* Disabled platforms */}
+              {/* Show platforms */}
               <div>
                 <label className="label">
-                  <span className="label-text">Disabled Platforms</span>
+                  <span className="label-text">Show Platforms</span>
                 </label>
                 <div className="space-y-2">
                   {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
@@ -1832,7 +1853,7 @@ function LinkScroller() {
                   ))}
                 </div>
                 <label className="label">
-                  <span className="label-text-alt">Unchecked platforms will be filtered out</span>
+                  <span className="label-text-alt">Uncheck platforms to hide them</span>
                 </label>
               </div>
             </div>

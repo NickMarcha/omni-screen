@@ -4,10 +4,11 @@ interface StreamableEmbedProps {
   url: string
   autoplay?: boolean
   mute?: boolean
+  loop?: boolean
   onError?: (error: string) => void
 }
 
-export default function StreamableEmbed({ url, autoplay = false, mute = false, onError }: StreamableEmbedProps) {
+export default function StreamableEmbed({ url, autoplay = false, mute = false, loop = false, onError }: StreamableEmbedProps) {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -31,8 +32,20 @@ export default function StreamableEmbed({ url, autoplay = false, mute = false, o
         throw new Error('Could not extract video ID from URL')
       }
 
-      // Generate embed URL
-      const embedUrl = `https://streamable.com/e/${videoId}`
+      // Build embed URL with parameters
+      const params = new URLSearchParams()
+      if (autoplay) {
+        params.set('autoplay', '1')
+      }
+      if (mute) {
+        params.set('muted', '1')
+      }
+      if (loop) {
+        params.set('loop', '1')
+      }
+      
+      const queryString = params.toString()
+      const embedUrl = `https://streamable.com/e/${videoId}${queryString ? `?${queryString}` : ''}`
       setEmbedUrl(embedUrl)
       setError(null)
     } catch (err) {
@@ -40,7 +53,7 @@ export default function StreamableEmbed({ url, autoplay = false, mute = false, o
       setError(errorMsg)
       if (onError) onError(errorMsg)
     }
-  }, [url, onError])
+  }, [url, autoplay, mute, loop, onError])
 
   if (error) {
     return (
@@ -71,15 +84,23 @@ export default function StreamableEmbed({ url, autoplay = false, mute = false, o
       <div
         ref={containerRef}
         className="streamable-embed-container relative w-full"
-        style={{ aspectRatio: '16/9', maxWidth: '100%' }}
+        style={{ 
+          position: 'relative',
+          width: '100%',
+          height: '0px',
+          paddingBottom: '56.250%',
+          maxWidth: '100%'
+        }}
       >
         <iframe
           src={embedUrl}
           width="100%"
           height="100%"
           frameBorder="0"
+          allow="fullscreen;autoplay"
           allowFullScreen
           style={{
+            border: 'none',
             width: '100%',
             height: '100%',
             position: 'absolute',
