@@ -23,6 +23,10 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
       urlObj.searchParams.delete('mute')
     }
     
+    // Add widget_referrer parameter for Electron apps (required by YouTube)
+    // App ID: com.nickmarcha.omni-screen
+    urlObj.searchParams.set('widget_referrer', 'https://com.nickmarcha.omni-screen')
+    
     return urlObj.toString()
   }
 
@@ -36,6 +40,7 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
           frameBorder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
           className="w-full h-full"
         />
       </div>

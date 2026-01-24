@@ -182,6 +182,60 @@ function createWindow() {
     },
   })
 
+  // Configure webRequest handlers for YouTube and Reddit embeds
+  const session = win.webContents.session
+  
+  // Set Referer header for YouTube embeds (required by YouTube API)
+  // App ID from electron-builder.json: com.nickmarcha.omni-screen
+  const appId = 'com.nickmarcha.omni-screen'
+  const refererUrl = `https://${appId}`
+  
+  // Set Referer header for YouTube requests (required by YouTube API)
+  session.webRequest.onBeforeSendHeaders(
+    {
+      urls: ['https://www.youtube.com/*', 'https://youtube.com/*', 'https://*.youtube.com/*', 'https://youtu.be/*', 'https://*.ytimg.com/*', 'https://*.googlevideo.com/*']
+    },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders }
+      
+      // Always set Referer for YouTube requests
+      requestHeaders['Referer'] = refererUrl
+      console.log(`[Main Process] Setting Referer for YouTube: ${refererUrl} -> ${details.url.substring(0, 80)}`)
+      
+      callback({ requestHeaders })
+    }
+  )
+  
+  // Modify CSP headers to allow Reddit embeds
+  // Reddit's embed iframes need to be allowed even when loaded from file:// protocol
+  session.webRequest.onHeadersReceived(
+    {
+      urls: ['https://embed.reddit.com/*', 'https://*.reddit.com/*']
+    },
+    (details, callback) => {
+      const responseHeaders: Record<string, string | string[]> = { ...details.responseHeaders }
+      
+      // Remove existing CSP headers (case-insensitive)
+      const cspKeys = Object.keys(responseHeaders).filter(key => 
+        key.toLowerCase() === 'content-security-policy' || 
+        key.toLowerCase() === 'content-security-policy-report-only'
+      )
+      
+      cspKeys.forEach(key => {
+        delete responseHeaders[key]
+      })
+      
+      // Add new CSP that allows frames from any origin (including file://)
+      responseHeaders['Content-Security-Policy'] = [
+        "frame-ancestors * data: blob: file:; frame-src * data: blob: file:; script-src * 'unsafe-inline' 'unsafe-eval'; object-src *;"
+      ]
+      
+      console.log(`[Main Process] Modified CSP for Reddit: ${details.url.substring(0, 80)}`)
+      
+      callback({ responseHeaders })
+    }
+  )
+
   // Enable auto-update logic
   update(win)
 
@@ -690,31 +744,48 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
 
 ipcMain.handle('fetch-tiktok-embed', async (_event, tiktokUrl: string) => {
   try {
-    console.log('Fetching TikTok embed for URL:', tiktokUrl)
+    console.log('[Main Process] Fetching TikTok embed for URL:', tiktokUrl)
     
-    // Extract video ID from TikTok URL
-    // Format: https://www.tiktok.com/@username/video/VIDEO_ID
-    const urlMatch = tiktokUrl.match(/\/video\/(\d+)/)
-    if (!urlMatch || !urlMatch[1]) {
-      console.error('Failed to extract video ID from URL:', tiktokUrl)
-      throw new Error(`Invalid TikTok URL format: ${tiktokUrl}`)
+    // Use TikTok's oEmbed API for better reliability and extra info
+    const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(tiktokUrl)}`
+    console.log('[Main Process] Calling TikTok oEmbed API:', oembedUrl)
+    
+    const response = await fetch(oembedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      }
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      console.error(`[Main Process] TikTok oEmbed API returned status ${response.status}:`, errorText.substring(0, 200))
+      throw new Error(`TikTok oEmbed API error: ${response.status}`)
     }
-    const videoId = urlMatch[1]
-    console.log('Extracted video ID:', videoId)
     
-    // Extract username from URL
-    const usernameMatch = tiktokUrl.match(/@([^/]+)/)
-    const username = usernameMatch ? usernameMatch[1] : ''
-    console.log('Extracted username:', username)
+    const data = await response.json()
+    console.log('[Main Process] Got TikTok oEmbed data:', {
+      type: data.type,
+      title: data.title?.substring(0, 50),
+      author: data.author_name,
+      htmlLength: data.html?.length || 0
+    })
     
-    // Construct the blockquote HTML similar to Twitter
-    // TikTok's oEmbed might not work, so we construct the HTML manually
-    const blockquoteHtml = `<blockquote class="tiktok-embed" cite="${tiktokUrl}" data-video-id="${videoId}" style="max-width: 605px;min-width: 325px;"><section><a target="_blank" title="@${username}" href="https://www.tiktok.com/@${username}?refer=embed">@${username}</a></section></blockquote>`
-    
-    console.log('Generated TikTok embed HTML')
-    return { success: true, data: { html: blockquoteHtml } }
+    if (data.html) {
+      // Remove the script tag from the HTML - we'll load it separately via scriptLoader
+      let html = data.html
+      const scriptMatch = html.match(/<script[^>]*>.*?<\/script>/i)
+      if (scriptMatch) {
+        html = html.replace(/<script[^>]*>.*?<\/script>/gi, '')
+        console.log('[Main Process] Removed script tag from TikTok oEmbed HTML')
+      }
+      
+      return { success: true, data: { html } }
+    } else {
+      throw new Error('TikTok oEmbed API did not return HTML')
+    }
   } catch (error) {
-    console.error('Error fetching TikTok embed:', error)
+    console.error('[Main Process] Error fetching TikTok embed:', error)
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     return { success: false, error: errorMessage }
   }

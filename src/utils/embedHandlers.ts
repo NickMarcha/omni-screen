@@ -67,18 +67,32 @@ export class TikTokEmbedHandler implements EmbedHandler {
 
   async fetchEmbed(url: string): Promise<EmbedResult> {
     try {
-      const urlMatch = url.match(/\/video\/(\d+)/)
-      if (!urlMatch || !urlMatch[1]) {
-        throw new Error(`Invalid TikTok URL format: ${url}`)
+      // Use TikTok's oEmbed API for better reliability and extra info
+      const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`
+      const response = await fetch(oembedUrl, {
+        headers: {
+          'Accept': 'application/json',
+        }
+      })
+      
+      if (!response.ok) {
+        throw new Error(`TikTok oEmbed API error: ${response.status}`)
       }
       
-      const videoId = urlMatch[1]
-      const usernameMatch = url.match(/@([^/]+)/)
-      const username = usernameMatch ? usernameMatch[1] : ''
+      const data = await response.json()
       
-      const blockquoteHtml = `<blockquote class="tiktok-embed" cite="${url}" data-video-id="${videoId}" style="max-width: 605px;min-width: 325px;"><section><a target="_blank" title="@${username}" href="https://www.tiktok.com/@${username}?refer=embed">@${username}</a></section></blockquote>`
-      
-      return { success: true, data: { html: blockquoteHtml } }
+      if (data.html) {
+        // Remove the script tag from the HTML - we'll load it separately via scriptLoader
+        let html = data.html
+        const scriptMatch = html.match(/<script[^>]*>.*?<\/script>/i)
+        if (scriptMatch) {
+          html = html.replace(/<script[^>]*>.*?<\/script>/gi, '')
+        }
+        
+        return { success: true, data: { html } }
+      } else {
+        throw new Error('TikTok oEmbed API did not return HTML')
+      }
     } catch (error) {
       return {
         success: false,

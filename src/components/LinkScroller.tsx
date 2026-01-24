@@ -4,6 +4,7 @@ import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
 import RedditEmbed from './embeds/RedditEmbed'
 import StreamableEmbed from './embeds/StreamableEmbed'
+import WikipediaEmbed from './embeds/WikipediaEmbed'
 import VideoEmbed from './embeds/VideoEmbed'
 import ImageEmbed from './embeds/ImageEmbed'
 import ListManager from './ListManager'
@@ -15,6 +16,7 @@ import twitchIcon from '../assets/icons/third-party/twitch.png'
 import redditIcon from '../assets/icons/third-party/reddit.png'
 import streamableIcon from '../assets/icons/third-party/streamable.ico'
 import imgurIcon from '../assets/icons/third-party/imgur.png'
+import wikipediaIcon from '../assets/icons/third-party/wikipedia.png'
 
 interface MentionData {
   id: string // Unique ID generated from hash of date and username
@@ -64,6 +66,7 @@ interface LinkCard {
   isImgur?: boolean
   imgurAlbumData?: ImgurAlbumData
   isStreamable?: boolean
+  isWikipedia?: boolean
   isTrusted?: boolean
 }
 
@@ -224,6 +227,7 @@ function getLinkType(url: string): string {
     if (hostname.includes('reddit.com')) return 'Reddit'
     if (hostname.includes('streamable.com')) return 'Streamable'
     if (hostname.includes('imgur.com')) return 'Imgur'
+    if (hostname.includes('wikipedia.org')) return 'Wikipedia'
     return 'Link'
   } catch {
     return 'Link'
@@ -242,6 +246,7 @@ function getLinkTypeIcon(linkType?: string): string | null {
     'Reddit': redditIcon,
     'Streamable': streamableIcon,
     'Imgur': imgurIcon,
+    'Wikipedia': wikipediaIcon,
   }
   return iconMap[linkType] || null
 }
@@ -295,8 +300,8 @@ function isTikTokVideoLink(url: string): boolean {
     if (!isTikTokLink(url)) return false
     const urlObj = new URL(url)
     const pathname = urlObj.pathname.toLowerCase()
-    // Check for /@username/video/ID format
-    return /\/@[\w.-]+\/video\/\d+/.test(pathname)
+    // Check for /@username/video/ID format or /t/ID format (short links)
+    return /\/@[\w.-]+\/video\/\d+/.test(pathname) || /^\/t\/[\w-]+/.test(pathname)
   } catch {
     return false
   }
@@ -347,6 +352,17 @@ function isImgurAlbumLink(url: string): boolean {
     const pathname = urlObj.pathname.toLowerCase()
     // Check for /gallery/ or /a/ paths (albums)
     return pathname.startsWith('/gallery/') || pathname.startsWith('/a/')
+  } catch {
+    return false
+  }
+}
+
+// Check if URL is a Wikipedia link
+function isWikipediaLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    return hostname.includes('wikipedia.org')
   } catch {
     return false
   }
@@ -410,17 +426,18 @@ function getYouTubeEmbedUrl(url: string): string | null {
     const tParam = urlObj.searchParams.get('t')
     const startSeconds = parseYouTubeTimestamp(tParam)
     
-    // Build base embed URL with rel=0
+    // Build base embed URL with rel=0 and widget_referrer for Electron
     const buildEmbedUrl = (videoId: string, additionalParams?: string) => {
       const params = new URLSearchParams()
       params.set('rel', '0')
+      params.set('widget_referrer', 'https://com.nickmarcha.omni-screen')
       if (startSeconds !== null) {
         params.set('start', startSeconds.toString())
       }
       if (additionalParams) {
         const additional = new URLSearchParams(additionalParams)
         additional.forEach((value, key) => {
-          if (key !== 'rel' && key !== 'start') {
+          if (key !== 'rel' && key !== 'start' && key !== 'widget_referrer') {
             params.set(key, value)
           }
         })
@@ -474,6 +491,9 @@ function getYouTubeEmbedUrl(url: string): string | null {
           if (!params.has('rel')) {
             params.set('rel', '0')
           }
+          if (!params.has('widget_referrer')) {
+            params.set('widget_referrer', 'https://com.nickmarcha.omni-screen')
+          }
           // Add start parameter if timestamp exists
           if (startSeconds !== null && !params.has('start')) {
             params.set('start', startSeconds.toString())
@@ -497,10 +517,9 @@ function getYouTubeEmbedUrl(url: string): string | null {
   }
 }
 
-// Masonry Grid Component - distributes cards into columns based on height
+// Masonry Grid Component - distributes cards into columns based on estimated height
 function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (cardId: string) => void }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
-  const columnRefs = useRef<(HTMLDivElement | null)[]>([])
   
   // Responsive column count based on screen size
   const getColumnCount = () => {
@@ -522,6 +541,33 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
     return () => window.removeEventListener('resize', handleResize)
   }, [])
   
+  // Estimate card height based on type
+  const estimateCardHeight = (card: LinkCard): number => {
+    // Base height for text/metadata section
+    const baseHeight = 150
+    
+    // Add estimated height for embed/content
+    if (card.isDirectMedia) {
+      return baseHeight + (card.mediaType === 'image' ? 300 : 400)
+    } else if (card.isYouTube) {
+      return baseHeight + 315 // Standard YouTube embed height
+    } else if (card.isTwitter) {
+      // Twitter embeds have variable heights, use average
+      return baseHeight + 350
+    } else if (card.isTikTok) {
+      return baseHeight + 600 // TikTok embeds are taller
+    } else if (card.isReddit) {
+      return baseHeight + 400
+    } else if (card.isStreamable) {
+      return baseHeight + 400
+    } else if (card.isImgur) {
+      return baseHeight + 100
+    } else {
+      // Generic link - estimate based on text length
+      return baseHeight + Math.min(card.text.length / 10, 200)
+    }
+  }
+  
   useEffect(() => {
     // Distribute cards into columns - add each card to the column with the smallest total height
     const newColumns: LinkCard[][] = Array.from({ length: columnCount }, () => [])
@@ -541,8 +587,8 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
       
       // Add card to shortest column
       newColumns[shortestColumn].push(card)
-      // Estimate height (we'll use card count as a proxy, actual heights will be measured)
-      columnHeights[shortestColumn] += 1
+      // Use estimated height based on card type
+      columnHeights[shortestColumn] += estimateCardHeight(card)
     })
     
     setColumns(newColumns)
@@ -553,12 +599,11 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
       {columns.map((columnCards, columnIndex) => (
         <div 
           key={columnIndex} 
-          ref={(el) => { columnRefs.current[columnIndex] = el }}
           className="flex-1 flex flex-col gap-4"
         >
           {columnCards.map((card) => (
             <div 
-              key={card.id} 
+              key={card.id}
               className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
             >
               {/* Embed content above - constrained to prevent overflow */}
@@ -597,7 +642,7 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                   </div>
                 ) : card.isTikTok ? (
                   <div className="p-2">
-                    <TikTokEmbed url={card.url} />
+                    <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
                   </div>
                 ) : card.isReddit ? (
                   <div className="p-2">
@@ -606,6 +651,10 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                 ) : card.isStreamable ? (
                   <div className="p-2">
                     <StreamableEmbed url={card.url} autoplay={false} mute={false} />
+                  </div>
+                ) : card.isWikipedia ? (
+                  <div className="p-2">
+                    <WikipediaEmbed url={card.url} />
                   </div>
                 ) : card.isImgur ? (
                   <div className="p-2">
@@ -651,6 +700,8 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                         ? renderTextWithLinks(card.text, card.url, 'Streamable link')
                         : card.isImgur
                         ? renderTextWithLinks(card.text, card.url, 'Imgur link')
+                        : card.isWikipedia
+                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link')
                         : renderTextWithLinks(card.text)
                       }
                     </p>
@@ -996,6 +1047,7 @@ function LinkScroller() {
         const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
         const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
         const isStreamable = isStreamableLink(actualUrl)
+        const isWikipedia = isWikipediaLink(actualUrl)
         
         const linkType = getLinkType(url)
         
@@ -1028,6 +1080,7 @@ function LinkScroller() {
           isReddit,
           isImgur,
           isStreamable,
+          isWikipedia,
           isTrusted, // Add trusted flag
         })
       })
@@ -1244,7 +1297,12 @@ function LinkScroller() {
               </div>
             ) : highlightedCard.isTikTok ? (
               <div>
-                <TikTokEmbed url={highlightedCard.url} />
+                <TikTokEmbed 
+                  url={highlightedCard.url} 
+                  autoplay={autoplayEnabled}
+                  mute={autoplayEnabled ? muteEnabled : false}
+                  loop={loopEnabled}
+                />
               </div>
             ) : highlightedCard.isReddit ? (
               <div>
@@ -1258,6 +1316,10 @@ function LinkScroller() {
                   mute={autoplayEnabled ? muteEnabled : false}
                   loop={loopEnabled}
                 />
+              </div>
+            ) : highlightedCard.isWikipedia ? (
+              <div>
+                <WikipediaEmbed url={highlightedCard.url} />
               </div>
             ) : highlightedCard.isImgur ? (
               <div>
