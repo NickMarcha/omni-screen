@@ -10,7 +10,8 @@
     "build": "tsc && vite build && electron-builder",
     "build:ci": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:embeds": "tsx scripts/test-embeds.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",
