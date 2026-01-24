@@ -3,6 +3,7 @@ import TwitterEmbed from './embeds/TwitterEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
 import RedditEmbed from './embeds/RedditEmbed'
+import StreamableEmbed from './embeds/StreamableEmbed'
 import VideoEmbed from './embeds/VideoEmbed'
 import ImageEmbed from './embeds/ImageEmbed'
 import ListManager from './ListManager'
@@ -62,6 +63,7 @@ interface LinkCard {
   redditEmbedHtml?: string
   isImgur?: boolean
   imgurAlbumData?: ImgurAlbumData
+  isStreamable?: boolean
   isTrusted?: boolean
 }
 
@@ -350,6 +352,16 @@ function isImgurAlbumLink(url: string): boolean {
   }
 }
 
+// Check if URL is a Streamable link
+function isStreamableLink(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    return hostname.includes('streamable.com')
+  } catch {
+    return false
+  }
+}
+
 // Extract YouTube embed URL from various YouTube URL formats
 // Convert YouTube timestamp parameter to seconds
 // Supports formats: t=53, t=1h2m3s, t=1m30s, etc.
@@ -591,6 +603,10 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                   <div className="p-2">
                     <RedditEmbed url={card.url} theme="dark" />
                   </div>
+                ) : card.isStreamable ? (
+                  <div className="p-2">
+                    <StreamableEmbed url={card.url} autoplay={false} mute={false} />
+                  </div>
                 ) : card.isImgur ? (
                   <div className="p-2">
                     <div className="bg-base-200 rounded-lg p-4 text-center">
@@ -631,6 +647,8 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                         ? renderTextWithLinks(card.text, card.url, 'Reddit link')
                         : card.isTwitter
                         ? renderTextWithLinks(card.text, card.url, 'Twitter link')
+                        : card.isStreamable
+                        ? renderTextWithLinks(card.text, card.url, 'Streamable link')
                         : card.isImgur
                         ? renderTextWithLinks(card.text, card.url, 'Imgur link')
                         : renderTextWithLinks(card.text)
@@ -976,6 +994,7 @@ function LinkScroller() {
         const isTikTok = isTikTokVideoLink(actualUrl)
         const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
         const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
+        const isStreamable = isStreamableLink(actualUrl)
         
         const linkType = getLinkType(url)
         
@@ -1007,6 +1026,7 @@ function LinkScroller() {
           isTikTok,
           isReddit,
           isImgur,
+          isStreamable,
           isTrusted, // Add trusted flag
         })
       })
@@ -1228,6 +1248,14 @@ function LinkScroller() {
             ) : highlightedCard.isReddit ? (
               <div>
                 <RedditEmbed url={highlightedCard.url} theme="dark" />
+              </div>
+            ) : highlightedCard.isStreamable ? (
+              <div>
+                <StreamableEmbed 
+                  url={highlightedCard.url} 
+                  autoplay={autoplayEnabled}
+                  mute={autoplayEnabled ? muteEnabled : false}
+                />
               </div>
             ) : highlightedCard.isImgur ? (
               <div>
