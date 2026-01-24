@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
@@ -495,6 +495,8 @@ function LinkScroller() {
   const [imgurAlbumData, setImgurAlbumData] = useState<ImgurAlbumData | null>(null)
   const [loadingImgurAlbum, setLoadingImgurAlbum] = useState(false)
   const [imgurAlbumError, setImgurAlbumError] = useState<string | null>(null)
+  const waitingForMoreRef = useRef(false) // Track if we're waiting for more content to load
+  const refreshingRef = useRef(false) // Track if we're refreshing the feed
 
   // Update temp settings when settings modal opens
   useEffect(() => {
@@ -806,15 +808,92 @@ function LinkScroller() {
     }
   }, [highlightedCard?.id, highlightedCard?.isImgur, highlightedCard?.url])
 
-  const navigateHighlight = (direction: 'prev' | 'next') => {
+  const navigateHighlight = async (direction: 'prev' | 'next') => {
     if (highlightedIndex === -1) return
     
-    const newIndex = direction === 'next' 
-      ? (highlightedIndex + 1) % linkCards.length
-      : (highlightedIndex - 1 + linkCards.length) % linkCards.length
-    
-    setHighlightedCardId(linkCards[newIndex].id)
+    if (direction === 'next') {
+      // If we're at the end, try to load more
+      if (highlightedIndex === linkCards.length - 1) {
+        if (hasMore && !loadingMore && !loading) {
+          console.log('[Renderer] At end of list, loading more mentions...')
+          waitingForMoreRef.current = true
+          await fetchMentions(filter, offset, true)
+          // The useEffect below will handle advancing to the next card after loading
+        } else {
+          // No more to load or already loading, loop around to beginning
+          waitingForMoreRef.current = false
+          setHighlightedCardId(linkCards[0].id)
+        }
+      } else {
+        // Not at end, just move to next
+        waitingForMoreRef.current = false
+        setHighlightedCardId(linkCards[highlightedIndex + 1].id)
+      }
+    } else {
+      // Previous direction
+      waitingForMoreRef.current = false
+      if (highlightedIndex === 0) {
+        // At beginning, refresh to get latest content
+        console.log('[Renderer] At beginning of list, refreshing feed...')
+        refreshingRef.current = true
+        // Refresh the feed from the beginning
+        setMentions([])
+        setOffset(0)
+        setHasMore(true)
+        setLoading(true)
+        setError(null)
+        await fetchMentions(filter, 0, false)
+        // The useEffect below will handle highlighting the first card after refresh
+      } else {
+        // Not at beginning, just move to previous
+        setHighlightedCardId(linkCards[highlightedIndex - 1].id)
+      }
+    }
   }
+
+  // Auto-advance to next card after loading more content when at the end
+  useEffect(() => {
+    if (waitingForMoreRef.current && !loadingMore && highlightedCardId) {
+      const currentIndex = linkCards.findIndex(card => card.id === highlightedCardId)
+      if (currentIndex !== -1 && currentIndex < linkCards.length - 1) {
+        // There's a next card now, move to it
+        console.log('[Renderer] Auto-advancing to next card after loading more content')
+        setHighlightedCardId(linkCards[currentIndex + 1].id)
+        waitingForMoreRef.current = false
+      } else if (currentIndex === linkCards.length - 1 && !hasMore) {
+        // Still at end and no more to load, loop to beginning
+        console.log('[Renderer] No more content, looping to beginning')
+        setHighlightedCardId(linkCards[0].id)
+        waitingForMoreRef.current = false
+      }
+    }
+  }, [linkCards, loadingMore, hasMore, highlightedCardId])
+
+  // Auto-highlight first card after refreshing when at the beginning
+  useEffect(() => {
+    if (refreshingRef.current && !loading && linkCards.length > 0) {
+      console.log('[Renderer] Auto-highlighting first card after refresh')
+      setHighlightedCardId(linkCards[0].id)
+      refreshingRef.current = false
+    }
+  }, [linkCards, loading])
+
+  // Auto-scroll sidebar to highlighted card
+  useEffect(() => {
+    if (highlightedCardId) {
+      // Use a small delay to ensure the DOM has updated
+      setTimeout(() => {
+        const cardElement = document.getElementById(`sidebar-card-${highlightedCardId}`)
+        if (cardElement) {
+          cardElement.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'nearest'
+          })
+        }
+      }, 100)
+    }
+  }, [highlightedCardId])
 
   // Handle refresh - reset feed and fetch from beginning
   const handleRefresh = useCallback(() => {
@@ -1015,6 +1094,7 @@ function LinkScroller() {
               {linkCards.map((card) => (
                 <div
                   key={card.id}
+                  id={`sidebar-card-${card.id}`}
                   onClick={() => setHighlightedCardId(card.id)}
                   className={`card shadow-md cursor-pointer transition-all ${
                     card.isTrusted ? 'bg-base-200' : 'bg-base-100'
