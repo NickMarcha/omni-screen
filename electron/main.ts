@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -157,6 +157,8 @@ async function fetchWithCookies(url: string, options: RequestInit = {}): Promise
 }
 
 function createWindow() {
+  // Handle external links - open in default browser
+  // This will be set on the window after it's created
   win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -210,6 +212,35 @@ function createWindow() {
 
     const contextMenu = Menu.buildFromTemplate(menuItems)
     contextMenu.popup()
+  })
+
+  // Handle external links - open in default browser
+  // Intercept navigation to external URLs
+  win.webContents.on('will-navigate', (event, navigationUrl) => {
+    const parsedUrl = new URL(navigationUrl)
+    const currentUrl = win?.webContents.getURL()
+    
+    // Allow navigation within the app (localhost, file://, etc.)
+    if (currentUrl) {
+      const currentParsed = new URL(currentUrl)
+      // Same origin navigation is allowed
+      if (parsedUrl.origin === currentParsed.origin) {
+        return
+      }
+    }
+    
+    // Block navigation to external URLs and open in default browser instead
+    event.preventDefault()
+    shell.openExternal(navigationUrl)
+  })
+
+  // Handle new window requests (e.g., target="_blank" links)
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    // Check if this is a Twitter login window (opened via IPC)
+    // Twitter login windows are handled separately via 'open-login-window' IPC
+    // All other links should open in default browser
+    shell.openExternal(url)
+    return { action: 'deny' } // Deny creating a new window, we opened it externally instead
   })
 
   // Test active push message to Renderer-process.
@@ -1060,7 +1091,38 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
         const data = await response.json()
         if (data.html) {
           console.log('Got Reddit embed from oEmbed API')
-          return { success: true, data: { html: data.html } }
+          console.log('oEmbed HTML length:', data.html.length)
+          console.log('oEmbed HTML preview:', data.html.substring(0, 300))
+          
+          // Check if the HTML includes a script tag - if so, we need to extract just the blockquote
+          // Reddit's oEmbed sometimes includes the script tag in the HTML
+          let html = data.html
+          
+          // If HTML includes script tag, extract just the blockquote part
+          const scriptMatch = html.match(/<script[^>]*>.*?<\/script>/i)
+          if (scriptMatch) {
+            console.log('oEmbed HTML includes script tag, extracting blockquote')
+            // Remove script tag - we'll load it separately via the manager
+            html = html.replace(/<script[^>]*>.*?<\/script>/gi, '')
+          }
+          
+          // Ensure the blockquote has the correct class and theme if it doesn't
+          if (html.includes('<blockquote')) {
+            if (!html.includes('reddit-embed-bq')) {
+              console.log('Adding reddit-embed-bq class to blockquote')
+              html = html.replace('<blockquote', '<blockquote class="reddit-embed-bq"')
+            }
+            // Ensure dark theme is set
+            if (!html.includes('data-embed-theme')) {
+              console.log('Adding data-embed-theme="dark" to blockquote')
+              html = html.replace('<blockquote', `<blockquote data-embed-theme="${theme}"`)
+            } else if (theme === 'dark' && html.includes('data-embed-theme="light"')) {
+              console.log('Changing theme from light to dark')
+              html = html.replace('data-embed-theme="light"', 'data-embed-theme="dark"')
+            }
+          }
+          
+          return { success: true, data: { html } }
         }
       }
     } catch (oembedError) {
@@ -1089,9 +1151,9 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
     // Decode title from slug (basic decoding)
     const title = decodeURIComponent(titleSlug.replace(/_/g, ' '))
     
-    // Construct the blockquote HTML
-    const now = new Date().toISOString()
-    const blockquoteHtml = `<blockquote class="reddit-embed-bq" data-embed-theme="${theme}" style="height:500px" data-embed-created="${now}"><a href="${redditUrl}">${title}</a><br> by <a href="https://www.reddit.com/user/USER/">u/USER</a> in <a href="https://www.reddit.com/r/${subreddit}/">${subreddit}</a></blockquote>`
+    // Construct the blockquote HTML matching Reddit's official format
+    // Format should match: <blockquote class="reddit-embed-bq" style="height:316px" data-embed-theme="dark" data-embed-height="316">...</blockquote>
+    const blockquoteHtml = `<blockquote class="reddit-embed-bq" style="height:500px" data-embed-theme="${theme}" data-embed-height="500"><a href="${redditUrl}">${title}</a><br> by<a href="https://www.reddit.com/user/USER/">u/USER</a> in<a href="https://www.reddit.com/r/${subreddit}/">${subreddit}</a></blockquote>`
     
     console.log('Generated Reddit embed HTML')
     return { success: true, data: { html: blockquoteHtml } }
@@ -1125,6 +1187,10 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
       },
       title: `Login to ${service.charAt(0).toUpperCase() + service.slice(1)}`,
     })
+    
+    // For login windows, allow normal navigation within the window
+    // Don't intercept links - let the login flow work normally
+    // Only the main window should open external links in the default browser
     
     loginWindow.loadURL(url)
     

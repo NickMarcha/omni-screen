@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { loadScriptOnce } from '../../utils/scriptLoader'
 
 interface TwitterEmbedProps {
   url: string
@@ -71,43 +72,39 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
           }, 100)
         }
       } else {
-        // Load the script
+        // Load the script safely (only once)
         console.log('Loading Twitter widgets.js script...')
-        const script = document.createElement('script')
-        script.src = 'https://platform.twitter.com/widgets.js'
-        script.async = true
-        script.charset = 'utf-8'
-        script.onload = () => {
-          if (isCancelled) return
-          console.log('Twitter widgets.js script loaded')
-          // @ts-ignore
-          if ((window as any).twttr && (window as any).twttr.ready) {
+        loadScriptOnce('https://platform.twitter.com/widgets.js', 'twitter-widgets')
+          .then(() => {
+            if (isCancelled) return
+            console.log('Twitter widgets.js script loaded')
             // @ts-ignore
-            (window as any).twttr.ready(() => {
-              if (isCancelled) return
-              const currentContainer = containerRef.current || container
-              if (currentContainer) {
-                createTweetEmbed(currentContainer)
-              }
-            })
-          } else {
-            setTimeout(() => {
-              if (!isCancelled) {
+            if ((window as any).twttr && (window as any).twttr.ready) {
+              // @ts-ignore
+              (window as any).twttr.ready(() => {
+                if (isCancelled) return
                 const currentContainer = containerRef.current || container
                 if (currentContainer) {
                   createTweetEmbed(currentContainer)
                 }
-              }
-            }, 100)
-          }
-        }
-        script.onerror = () => {
-          if (isCancelled) return
-          setError('Failed to load Twitter widgets script')
-          setLoading(false)
-          if (onError) onError('Failed to load Twitter widgets script')
-        }
-        document.head.appendChild(script)
+              })
+            } else {
+              setTimeout(() => {
+                if (!isCancelled) {
+                  const currentContainer = containerRef.current || container
+                  if (currentContainer) {
+                    createTweetEmbed(currentContainer)
+                  }
+                }
+              }, 100)
+            }
+          })
+          .catch((err) => {
+            if (isCancelled) return
+            setError('Failed to load Twitter widgets script')
+            setLoading(false)
+            if (onError) onError('Failed to load Twitter widgets script')
+          })
       }
     }
 
@@ -134,9 +131,24 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
 
         const timeout = setTimeout(() => {
           if (!isCancelled) {
-            setError('Embed creation timed out. The tweet may be unavailable or require login.')
-            setLoading(false)
-            if (onError) onError('Embed creation timed out')
+            // Check if iframe was created but might be showing an error
+            const iframe = currentContainer.querySelector('iframe')
+            if (iframe) {
+              // Give it a bit more time - sometimes Twitter takes longer
+              setTimeout(() => {
+                if (!isCancelled && !currentContainer.querySelector('iframe[src*="embed"]')) {
+                  setError('Tweet not found or unavailable')
+                  setEmbedHtml(null) // Clear embed HTML so error shows
+                  setLoading(false)
+                  if (onError) onError('Tweet not found or unavailable')
+                }
+              }, 2000)
+            } else {
+              setError('Embed creation timed out. The tweet may be unavailable or require login.')
+              setEmbedHtml(null) // Clear embed HTML so error shows
+              setLoading(false)
+              if (onError) onError('Embed creation timed out')
+            }
           }
         }, 10000)
 
@@ -159,6 +171,17 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
             const iframe = currentContainer.querySelector('iframe')
             const embedDiv = currentContainer.querySelector('.twitter-tweet-rendered, .twitter-tweet')
             if (iframe || embedDiv) {
+              // Check if iframe has a very small height (likely error state)
+              if (iframe) {
+                const iframeHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
+                // Very small heights (like 76px) usually indicate an error state
+                if (iframeHeight > 0 && iframeHeight < 150) {
+                  console.log('⚠️ Tweet iframe has very small height, likely error:', iframeHeight, 'px')
+                  // Don't mark as successful - wait to see if it updates
+                  return false
+                }
+              }
+              
               clearTimeout(timeout)
               console.log('✅ Tweet embed detected in DOM')
 
@@ -166,16 +189,16 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
               let fixedHtml = currentContainer.innerHTML
               fixedHtml = fixedHtml.replace(
                 /(<iframe[^>]*\s+)style="[^"]*position:\s*absolute[^"]*visibility:\s*hidden[^"]*width:\s*0px[^"]*height:\s*0px[^"]*"/gi,
-                '$1style="width: 100%; min-height: 200px; display: block; visibility: visible; position: relative;"'
+                '$1style="width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));"'
               )
               fixedHtml = fixedHtml.replace(
                 /(<iframe[^>]*\s+)style="[^"]*visibility:\s*hidden[^"]*"/gi,
-                '$1style="width: 100%; min-height: 200px; display: block; visibility: visible; position: relative;"'
+                '$1style="width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));"'
               )
 
               // Make iframe visible in DOM - remove height constraint to let Twitter handle sizing
               if (iframe) {
-                iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative;'
+                iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));'
               }
 
               if (!isCancelled) {
@@ -212,7 +235,19 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
             console.log('✅ Tweet embed created (promise resolved)')
             const iframe = currentContainer.querySelector('iframe')
             if (iframe) {
-              iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative;'
+              // Check if height is suspiciously small (error state)
+              const iframeHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
+              if (iframeHeight > 0 && iframeHeight < 150) {
+                console.log('⚠️ Tweet iframe has very small height after promise, likely error:', iframeHeight, 'px')
+                if (!isCancelled) {
+                  setError('Tweet not found or unavailable')
+                  setEmbedHtml(null)
+                  setLoading(false)
+                  if (onError) onError('Tweet not found or unavailable')
+                }
+                return
+              }
+              iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));'
             }
             if (!isCancelled) {
               setEmbedHtml(currentContainer.innerHTML)
@@ -296,6 +331,14 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
   useEffect(() => {
     if (!embedHtml || !containerRef.current) return
 
+    // Track last processed message to avoid duplicates
+    const lastProcessedMessages = new Set<string>()
+    let lastHeightUpdate = 0
+    let smallHeightDetected = false
+    let smallHeightDetectedTime = 0
+    const HEIGHT_UPDATE_THROTTLE = 100 // Throttle height updates to once per 100ms
+    const SMALL_HEIGHT_ERROR_DELAY = 2000 // Wait 2 seconds before treating small height as error
+
     // Listen for Twitter embed height updates via postMessage
     const handleMessage = (event: MessageEvent) => {
       // Twitter embeds send height updates via postMessage
@@ -305,18 +348,24 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
         const iframe = containerRef.current?.querySelector('iframe')
         if (!iframe) return
         
-        // Log the full structure to see what Twitter is sending
-        console.log('Twitter postMessage received:', event.origin, JSON.stringify(event.data, null, 2))
+        // Create a unique key for this message to deduplicate
+        const messageKey = JSON.stringify(event.data)
+        if (lastProcessedMessages.has(messageKey)) {
+          return // Skip duplicate messages
+        }
+        lastProcessedMessages.add(messageKey)
+        
+        // Clean up old message keys (keep last 50)
+        if (lastProcessedMessages.size > 50) {
+          const keysArray = Array.from(lastProcessedMessages)
+          keysArray.slice(0, keysArray.length - 50).forEach(key => lastProcessedMessages.delete(key))
+        }
         
         // Twitter sends height updates in various formats - try to extract height
         let height: number | null = null
         
-        // Check for direct height property
-        if (typeof event.data.height === 'number') {
-          height = event.data.height
-        }
         // Check for twttr.embed object with height
-        else if (event.data['twttr.embed'] && typeof event.data['twttr.embed'] === 'object') {
+        if (event.data['twttr.embed'] && typeof event.data['twttr.embed'] === 'object') {
           const embedData = event.data['twttr.embed']
           
           // Twitter sends resize messages with height in params[0]
@@ -326,29 +375,39 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
               embedData.params[0] &&
               typeof embedData.params[0].height === 'number') {
             height = embedData.params[0].height
-            console.log('✅ Extracted height from twttr.private.resize:', height)
+            
+            // Throttle height updates
+            const now = Date.now()
+            if (now - lastHeightUpdate < HEIGHT_UPDATE_THROTTLE) {
+              return // Skip if too soon since last update
+            }
+            lastHeightUpdate = now
+            
+            // Very small heights (like 76px) usually indicate an error state
+            if (height < 150) {
+              console.log('⚠️ Twitter sent very small height, likely error state:', height, 'px')
+              if (!smallHeightDetected) {
+                smallHeightDetected = true
+                smallHeightDetectedTime = now
+              } else if (now - smallHeightDetectedTime > SMALL_HEIGHT_ERROR_DELAY) {
+                // Small height persisted for too long - treat as error
+                console.log('⚠️ Small height persisted, showing error')
+                setError('Tweet not found or unavailable')
+                setEmbedHtml(null)
+                setLoading(false)
+                return
+              }
+              // Don't apply very small heights - keep min-height instead
+              return
+            } else {
+              // Height is normal, reset error detection
+              smallHeightDetected = false
+              smallHeightDetectedTime = 0
+            }
+            
+            iframe.style.height = `${height}px`
+            console.log('✅ Twitter embed height updated via postMessage:', height, 'px')
           }
-          // Check for direct height property (fallback)
-          else if (typeof embedData.height === 'number') {
-            height = embedData.height
-          } else if (typeof embedData.h === 'number') {
-            height = embedData.h
-          }
-        }
-        // Check for resize type messages
-        else if (event.data.type === 'resize' && typeof event.data.height === 'number') {
-          height = event.data.height
-        }
-        // Check if the data itself is a number (some Twitter messages are just the height)
-        else if (typeof event.data === 'number' && event.data > 0) {
-          height = event.data
-        }
-        
-        if (height && height > 0 && height > 200) {
-          iframe.style.height = `${height}px`
-          console.log('✅ Twitter embed height updated via postMessage:', height, 'px')
-        } else if (height && height > 0) {
-          console.log('⚠️ Twitter sent height but it seems too small:', height, 'px')
         }
       }
     }
@@ -364,7 +423,20 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
         const computedHeight = window.getComputedStyle(iframe).height
         
         // If Twitter has set a height, preserve it; otherwise use min-height
-        if (existingHeight && existingHeight !== 'auto' && !existingHeight.includes('min') && parseInt(existingHeight) > 200) {
+        const existingHeightNum = existingHeight ? parseInt(existingHeight) : 0
+        const computedHeightNum = computedHeight ? parseInt(computedHeight) : 0
+        
+        // Check for very small heights (error state)
+        if (existingHeightNum > 0 && existingHeightNum < 150) {
+          console.log('⚠️ Twitter-set height is very small, likely error:', existingHeightNum, 'px')
+          // Don't apply very small heights
+          iframe.style.width = '100%'
+          iframe.style.minHeight = '200px'
+          iframe.style.display = 'block'
+          iframe.style.visibility = 'visible'
+          iframe.style.position = 'relative'
+          iframe.style.background = 'rgb(var(--b2))'
+        } else if (existingHeight && existingHeight !== 'auto' && !existingHeight.includes('min') && existingHeightNum >= 150) {
           // Twitter has set a height, keep it but ensure visibility
           // Don't use !important on height so Twitter can update it
           iframe.style.width = '100%'
@@ -373,8 +445,9 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
           iframe.style.visibility = 'visible'
           iframe.style.position = 'relative'
           iframe.style.minHeight = '200px' // Fallback
+          iframe.style.background = 'rgb(var(--b2))'
           console.log('Preserving Twitter-set height:', existingHeight)
-        } else if (computedHeight && computedHeight !== 'auto' && computedHeight !== '0px' && parseInt(computedHeight) > 200) {
+        } else if (computedHeight && computedHeight !== 'auto' && computedHeight !== '0px' && computedHeightNum >= 150) {
           // Use computed height if available
           iframe.style.width = '100%'
           iframe.style.height = computedHeight
@@ -382,6 +455,7 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
           iframe.style.visibility = 'visible'
           iframe.style.position = 'relative'
           iframe.style.minHeight = '200px' // Fallback
+          iframe.style.background = 'rgb(var(--b2))'
           console.log('Using computed height:', computedHeight)
         } else {
           // Fallback: just ensure visibility, Twitter should set height
@@ -391,6 +465,7 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
           iframe.style.display = 'block'
           iframe.style.visibility = 'visible'
           iframe.style.position = 'relative'
+          iframe.style.background = 'rgb(var(--b2))'
         }
         
         // Also check for the parent container
@@ -423,11 +498,25 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
         // Check if Twitter set a height attribute or style
         const heightAttr = iframe.getAttribute('height')
         const heightStyle = iframe.style.height
-        if (heightAttr && parseInt(heightAttr) > 200) {
+        const heightAttrNum = heightAttr ? parseInt(heightAttr) : 0
+        const heightStyleNum = heightStyle ? parseInt(heightStyle) : 0
+        
+        // Check for very small heights (error state)
+        if (heightAttrNum > 0 && heightAttrNum < 150) {
+          console.log('⚠️ Height from attribute is very small, likely error:', heightAttrNum, 'px')
+          iframe.style.background = 'rgb(var(--b2))'
+          return false // Don't mark as successful
+        } else if (heightAttrNum >= 150) {
           iframe.style.height = `${heightAttr}px`
+          iframe.style.background = 'rgb(var(--b2))'
           console.log('Set height from attribute:', heightAttr)
           return true
-        } else if (heightStyle && !heightStyle.includes('min') && parseInt(heightStyle) > 200) {
+        } else if (heightStyleNum > 0 && heightStyleNum < 150) {
+          console.log('⚠️ Height from style is very small, likely error:', heightStyleNum, 'px')
+          iframe.style.background = 'rgb(var(--b2))'
+          return false // Don't mark as successful
+        } else if (heightStyle && !heightStyle.includes('min') && heightStyleNum >= 150) {
+          iframe.style.background = 'rgb(var(--b2))'
           console.log('Height already set:', heightStyle)
           return true
         }
@@ -471,66 +560,33 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
   return (
     <>
       {/* Always render the container so the ref is available */}
-      <div className="mb-4 flex justify-center">
-        <div
-          ref={containerRef}
-          className="twitter-embed-container"
-          style={{ width: '100%', maxWidth: '550px' }}
-          dangerouslySetInnerHTML={embedHtml ? { __html: embedHtml } : undefined}
-        />
-      </div>
+      {!error && (
+        <div className="flex justify-center bg-base-200 rounded-lg">
+          <div
+            ref={containerRef}
+            className="twitter-embed-container"
+            style={{ width: '100%', maxWidth: '550px' }}
+            dangerouslySetInnerHTML={embedHtml ? { __html: embedHtml } : undefined}
+          />
+        </div>
+      )}
       
       {/* Show loading spinner if loading */}
-      {loading && !embedHtml && (
-        <div className="flex justify-center items-center py-12">
+      {loading && !embedHtml && !error && (
+        <div className="flex justify-center items-center py-12 bg-base-200 rounded-lg">
           <span className="loading loading-spinner loading-lg"></span>
         </div>
       )}
 
-      {/* Show error if there's an error */}
+      {/* Show error if there's an error - compact version */}
       {error && (
-        <div className="bg-base-200 rounded-lg p-6 mb-4">
-          <p className="text-base-content/70 mb-2">Failed to load Twitter embed</p>
-          <p className="text-sm text-error mb-3">{error}</p>
-          <div className="flex gap-2 mb-3">
-            <button
-              className="btn btn-sm btn-primary"
-              onClick={() => {
-                window.ipcRenderer.invoke('open-login-window', 'twitter')
-                const handleLoginSuccess = () => {
-                  console.log('Twitter login successful, retrying embed...')
-                  setTimeout(() => {
-                    setError(null)
-                    setLoading(true)
-                    if (containerRef.current) {
-                      containerRef.current.innerHTML = ''
-                    }
-                  }, 2000)
-                  window.ipcRenderer.off('twitter-login-success', handleLoginSuccess)
-                }
-                window.ipcRenderer.on('twitter-login-success', handleLoginSuccess)
-              }}
-            >
-              Login to Twitter
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              onClick={() => {
-                setError(null)
-                setLoading(true)
-                if (containerRef.current) {
-                  containerRef.current.innerHTML = ''
-                }
-              }}
-            >
-              Retry
-            </button>
-          </div>
+        <div className="bg-base-200 rounded-lg p-3">
+          <p className="text-sm text-base-content/70">Tweet not found</p>
           <a
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className="link link-primary break-all text-sm"
+            className="link link-primary text-xs break-all"
           >
             {url}
           </a>
@@ -538,20 +594,27 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
       )}
 
       {/* CSS to override Twitter's hidden iframe styles - note: don't use !important on height so Twitter can set it */}
-      {embedHtml && (
+      {embedHtml && !error && (
         <style dangerouslySetInnerHTML={{ __html: `
+          .twitter-embed-container {
+            background-color: rgb(var(--b2)) !important;
+            border-radius: 0.5rem;
+            overflow: hidden;
+          }
           .twitter-embed-container iframe {
             visibility: visible !important;
             width: 100% !important;
             min-height: 200px !important;
             display: block !important;
             position: relative !important;
+            background-color: rgb(var(--b2)) !important;
             /* Don't set height with !important - let Twitter control it */
           }
           .twitter-embed-container .twitter-tweet-rendered {
             display: block !important;
             visibility: visible !important;
             width: 100% !important;
+            background-color: rgb(var(--b2)) !important;
           }
         ` }} />
       )}

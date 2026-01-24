@@ -485,6 +485,197 @@ function getYouTubeEmbedUrl(url: string): string | null {
   }
 }
 
+// Masonry Grid Component - distributes cards into columns based on height
+function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (cardId: string) => void }) {
+  const [columns, setColumns] = useState<LinkCard[][]>([])
+  const columnRefs = useRef<(HTMLDivElement | null)[]>([])
+  
+  // Responsive column count based on screen size
+  const getColumnCount = () => {
+    if (typeof window === 'undefined') return 4
+    const width = window.innerWidth
+    if (width < 768) return 1 // Mobile
+    if (width < 1024) return 2 // Tablet
+    if (width < 1536) return 3 // Desktop
+    return 4 // Large desktop
+  }
+  
+  const [columnCount, setColumnCount] = useState(getColumnCount())
+  
+  useEffect(() => {
+    const handleResize = () => {
+      setColumnCount(getColumnCount())
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+  
+  useEffect(() => {
+    // Distribute cards into columns - add each card to the column with the smallest total height
+    const newColumns: LinkCard[][] = Array.from({ length: columnCount }, () => [])
+    const columnHeights: number[] = Array(columnCount).fill(0)
+    
+    cards.forEach((card) => {
+      // Find the column with the smallest height
+      let shortestColumn = 0
+      let minHeight = columnHeights[0]
+      
+      for (let i = 1; i < columnCount; i++) {
+        if (columnHeights[i] < minHeight) {
+          minHeight = columnHeights[i]
+          shortestColumn = i
+        }
+      }
+      
+      // Add card to shortest column
+      newColumns[shortestColumn].push(card)
+      // Estimate height (we'll use card count as a proxy, actual heights will be measured)
+      columnHeights[shortestColumn] += 1
+    })
+    
+    setColumns(newColumns)
+  }, [cards, columnCount])
+  
+  return (
+    <div className="flex gap-4">
+      {columns.map((columnCards, columnIndex) => (
+        <div 
+          key={columnIndex} 
+          ref={(el) => { columnRefs.current[columnIndex] = el }}
+          className="flex-1 flex flex-col gap-4"
+        >
+          {columnCards.map((card) => (
+            <div 
+              key={card.id} 
+              className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-300 border-primary/30' : 'bg-base-200 border-base-300'}`}
+            >
+              {/* Embed content above - constrained to prevent overflow */}
+              <div className="flex-shrink-0 overflow-hidden">
+                {card.isDirectMedia ? (
+                  <div>
+                    {card.mediaType === 'image' ? (
+                      <ImageEmbed 
+                        url={card.url} 
+                        alt={card.text}
+                        className="w-full object-contain rounded-t-lg"
+                      />
+                    ) : (
+                      <VideoEmbed 
+                        url={card.url}
+                        autoplay={false}
+                        muted={true}
+                        controls={true}
+                        className="w-full rounded-t-lg"
+                      />
+                    )}
+                  </div>
+                ) : card.isYouTube && card.embedUrl ? (
+                  <div className="p-2">
+                    <YouTubeEmbed 
+                      url={card.url} 
+                      embedUrl={card.embedUrl}
+                      autoplay={false}
+                      mute={false}
+                      showLink={false}
+                    />
+                  </div>
+                ) : card.isTwitter ? (
+                  <div className="p-2">
+                    <TwitterEmbed url={card.url} />
+                  </div>
+                ) : card.isTikTok ? (
+                  <div className="p-2">
+                    <TikTokEmbed url={card.url} />
+                  </div>
+                ) : card.isReddit ? (
+                  <div className="p-2">
+                    <RedditEmbed url={card.url} theme="dark" />
+                  </div>
+                ) : card.isImgur ? (
+                  <div className="p-2">
+                    <div className="bg-base-200 rounded-lg p-4 text-center">
+                      <img 
+                        src={imgurIcon} 
+                        alt="Imgur" 
+                        className="w-8 h-8 mx-auto mb-2"
+                      />
+                      <p className="text-sm text-base-content/70">Imgur Album</p>
+                      <a
+                        href={card.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="link link-primary text-xs break-all"
+                      >
+                        {card.url}
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card-body break-words overflow-wrap-anywhere">
+                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {renderTextWithLinks(card.text)}
+                    </p>
+                  </div>
+                )}
+              </div>
+              
+              {/* Text content and metadata at bottom - always visible */}
+              <div className="flex-shrink-0">
+                {/* Message text with rounded dark grey background */}
+                <div className="bg-base-300 rounded-lg p-4">
+                  <div className="break-words overflow-wrap-anywhere mb-3">
+                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                      {card.isYouTube 
+                        ? renderTextWithLinks(card.text, card.url, 'YouTube link')
+                        : card.isReddit
+                        ? renderTextWithLinks(card.text, card.url, 'Reddit link')
+                        : card.isTwitter
+                        ? renderTextWithLinks(card.text, card.url, 'Twitter link')
+                        : card.isImgur
+                        ? renderTextWithLinks(card.text, card.url, 'Imgur link')
+                        : renderTextWithLinks(card.text)
+                      }
+                    </p>
+                  </div>
+                  
+                  {/* User info and expand button */}
+                  <div className="flex items-center justify-between pt-2 border-t border-base-content/20">
+                    <div className="flex items-center gap-4">
+                      <div>
+                        <span className="text-xs text-base-content/70">Posted by</span>
+                        <a
+                          href={`https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=Destinygg`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-2 text-sm font-bold text-primary hover:underline"
+                        >
+                          {card.nick}
+                        </a>
+                      </div>
+                      <div className="text-xs text-base-content/50">
+                        {new Date(card.date).toLocaleString()}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onCardClick(card.id)}
+                      className="btn btn-sm btn-circle btn-primary flex-shrink-0"
+                      title="View in highlight mode"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // Render text with clickable links
 function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
@@ -997,7 +1188,7 @@ function LinkScroller() {
   // Highlight Layout Component
   if (highlightedCard) {
     return (
-      <div className={`h-screen flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-200' : 'bg-base-100'}`}>
+      <div className={`h-screen flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}>
         {/* Left side - Content only (70%) */}
         <div className="w-[70%] overflow-y-auto p-6 border-r border-base-300">
           <div className="max-w-4xl mx-auto">
@@ -1213,7 +1404,7 @@ function LinkScroller() {
                   id={`sidebar-card-${card.id}`}
                   onClick={() => setHighlightedCardId(card.id)}
                   className={`card shadow-md cursor-pointer transition-all ${
-                    card.isTrusted ? 'bg-base-200' : 'bg-base-100'
+                    card.isTrusted ? 'bg-base-300' : 'bg-base-200'
                   } ${
                     card.id === highlightedCardId ? 'ring-2 ring-primary' : 'hover:shadow-lg'
                   }`}
@@ -1449,7 +1640,7 @@ function LinkScroller() {
   }
 
   return (
-    <div className="min-h-screen bg-base-100 p-4">
+    <div className="min-h-screen bg-base-200 p-4">
       {loading && mentions.length === 0 && (
         <div className="flex justify-center items-center py-8">
           <span className="loading loading-spinner loading-lg"></span>
@@ -1468,65 +1659,11 @@ function LinkScroller() {
         </div>
       )}
 
-      {/* Link Cards Grid */}
+      {/* Link Cards Masonry Layout */}
       {!loading && linkCards.length > 0 && (
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {linkCards.map((card) => (
-              <div 
-                key={card.id} 
-                className={`card shadow-xl ${card.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}
-              >
-                {card.isDirectMedia ? (
-                  <figure className="relative">
-                    {card.mediaType === 'image' ? (
-                      <ImageEmbed 
-                        url={card.url} 
-                        alt={card.text}
-                        className="w-full h-48 object-cover"
-                      />
-                    ) : (
-                      <VideoEmbed 
-                        url={card.url}
-                        autoplay={false}
-                        muted={true}
-                        controls={true}
-                        className="w-full h-48 object-cover"
-                      />
-                    )}
-                  </figure>
-                ) : (
-                  <div className="card-body break-words overflow-wrap-anywhere">
-                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                      {renderTextWithLinks(card.text)}
-                    </p>
-                  </div>
-                )}
-                {card.isDirectMedia && (
-                  <div className="card-body pt-2 break-words overflow-wrap-anywhere">
-                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                      {renderTextWithLinks(card.text)}
-                    </p>
-                  </div>
-                )}
-                <div className="card-body pt-2">
-                  <div className="card-actions justify-between items-center mt-2">
-                    <div className="flex flex-col">
-                      <div className="text-sm font-bold text-primary">{card.nick}</div>
-                      <div className="text-xs text-base-content/50">
-                        {new Date(card.date).toLocaleString()}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setHighlightedCardId(card.id)}
-                      className="btn btn-sm btn-primary"
-                    >
-                      Highlight
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
+        <>
+          <div className="max-w-7xl mx-auto">
+            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setHighlightedCardId(cardId)} />
           </div>
           {/* Load More button */}
           {hasMore && (
@@ -1552,7 +1689,7 @@ function LinkScroller() {
               No more links to load
             </div>
           )}
-        </div>
+        </>
       )}
 
       {!loading && !error && linkCards.length === 0 && mentions.length === 0 && (

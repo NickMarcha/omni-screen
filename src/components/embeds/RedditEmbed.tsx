@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { registerRedditBlockquote, unregisterRedditBlockquote } from '../../utils/redditEmbedManager'
 
 interface RedditEmbedProps {
   url: string
@@ -10,19 +11,20 @@ export default function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbe
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [embedHtml, setEmbedHtml] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const blockquoteRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!url) return
 
     setLoading(true)
     setError(null)
-    console.log('Fetching Reddit embed for:', url)
 
     window.ipcRenderer.invoke('fetch-reddit-embed', url, theme)
       .then((result) => {
-        console.log('Reddit embed result:', result)
         if (result.success && result.data?.html) {
-          console.log('Setting Reddit embed HTML')
+          console.log('[RedditEmbed] Got HTML from API, length:', result.data.html.length)
+          console.log('[RedditEmbed] HTML preview:', result.data.html.substring(0, 200))
           setEmbedHtml(result.data.html)
           setError(null)
         } else {
@@ -42,29 +44,53 @@ export default function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbe
       })
   }, [url, theme, onError])
 
-  // Load Reddit embed script when embed HTML is set
+  // Register blockquote with global manager when HTML is set
   useEffect(() => {
-    if (embedHtml) {
-      // Wait for DOM to update
-      setTimeout(() => {
-        // Check if script is already loaded
-        const existingScript = document.querySelector('script[src="https://embed.reddit.com/widgets.js"]')
-        if (!existingScript) {
-          const script = document.createElement('script')
-          script.src = 'https://embed.reddit.com/widgets.js'
-          script.async = true
-          script.charset = 'UTF-8'
-          document.body.appendChild(script)
-        } else {
-          // Script already exists - reload it to trigger processing of new embeds
-          existingScript.remove()
-          const script = document.createElement('script')
-          script.src = 'https://embed.reddit.com/widgets.js'
-          script.async = true
-          script.charset = 'UTF-8'
-          document.body.appendChild(script)
-        }
-      }, 200)
+    if (!embedHtml || !containerRef.current) return
+    
+    // Wait for DOM to update with the blockquote
+    const timeout = setTimeout(() => {
+      // Try multiple selectors - Reddit oEmbed might use different class names
+      let blockquote = containerRef.current?.querySelector('blockquote.reddit-embed-bq') as HTMLElement
+      
+      if (!blockquote) {
+        // Try without class name
+        blockquote = containerRef.current?.querySelector('blockquote') as HTMLElement
+      }
+      
+      if (!blockquote) {
+        // Check what's actually in the container
+        console.log('[RedditEmbed] No blockquote found, container HTML:', containerRef.current?.innerHTML?.substring(0, 200))
+        // Retry after a longer delay
+        setTimeout(() => {
+          let retryBlockquote = containerRef.current?.querySelector('blockquote.reddit-embed-bq') as HTMLElement
+          if (!retryBlockquote) {
+            retryBlockquote = containerRef.current?.querySelector('blockquote') as HTMLElement
+          }
+          if (retryBlockquote) {
+            console.log('[RedditEmbed] Found blockquote on retry')
+            blockquoteRef.current = retryBlockquote
+            registerRedditBlockquote(retryBlockquote)
+          } else {
+            console.warn('[RedditEmbed] Blockquote still not found after retry')
+          }
+        }, 300)
+        return
+      }
+      
+      console.log('[RedditEmbed] Found blockquote, registering with manager')
+      blockquoteRef.current = blockquote
+      // Register with global manager - it will handle script loading and processing
+      registerRedditBlockquote(blockquote)
+    }, 100)
+    
+    return () => {
+      clearTimeout(timeout)
+      // Unregister on unmount
+      if (blockquoteRef.current) {
+        unregisterRedditBlockquote(blockquoteRef.current)
+        blockquoteRef.current = null
+      }
     }
   }, [embedHtml])
 
@@ -116,6 +142,7 @@ export default function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbe
   return (
     <div className="mb-4 flex justify-center">
       <div
+        ref={containerRef}
         className="reddit-embed-container"
         style={{ width: '100%', maxWidth: '600px' }}
         dangerouslySetInnerHTML={embedHtml ? { __html: embedHtml } : undefined}

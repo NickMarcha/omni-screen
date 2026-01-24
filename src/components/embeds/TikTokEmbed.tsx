@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { loadScriptOnce } from '../../utils/scriptLoader'
 
 interface TikTokEmbedProps {
   url: string
@@ -62,38 +63,20 @@ export default function TikTokEmbed({ url, onError }: TikTokEmbedProps) {
       // Temporarily replace console.error
       console.error = errorSuppressor
 
-      // Wait for DOM to update with the new HTML, then load/process script
+      // Wait for DOM to update with the new HTML, then load script safely
       setTimeout(() => {
-        // Check if script is already loaded
-        const existingScript = document.querySelector('script[src="https://www.tiktok.com/embed.js"]')
-        if (!existingScript) {
-          const script = document.createElement('script')
-          script.src = 'https://www.tiktok.com/embed.js'
-          script.async = true
-          script.charset = 'utf-8'
-          script.onerror = () => {
-            // Restore original console.error on script error
+        loadScriptOnce('https://www.tiktok.com/embed.js', 'tiktok-embed')
+          .then(() => {
+            // Script loaded, TikTok should auto-process blockquotes
+            // Restore original console.error after a delay
+            setTimeout(() => {
+              console.error = originalError
+            }, 2000)
+          })
+          .catch((err) => {
             console.error = originalError
-          }
-          document.body.appendChild(script)
-          // TikTok embed.js should automatically process blockquotes when it loads
-        } else {
-          // Script already exists - reload it to trigger processing of new embeds
-          existingScript.remove()
-          const script = document.createElement('script')
-          script.src = 'https://www.tiktok.com/embed.js'
-          script.async = true
-          script.charset = 'utf-8'
-          script.onerror = () => {
-            console.error = originalError
-          }
-          document.body.appendChild(script)
-        }
-
-        // Restore original console.error after a delay
-        setTimeout(() => {
-          console.error = originalError
-        }, 2000)
+            console.error('Failed to load TikTok embed script:', err)
+          })
       }, 200)
     }
   }, [embedHtml])

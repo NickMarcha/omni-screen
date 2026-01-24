@@ -3,9 +3,10 @@ interface YouTubeEmbedProps {
   embedUrl: string
   autoplay?: boolean
   mute?: boolean
+  showLink?: boolean
 }
 
-export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false }: YouTubeEmbedProps) {
+export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink = true }: YouTubeEmbedProps) {
   // Build the embed URL with autoplay and mute parameters
   const buildEmbedUrl = () => {
     const urlObj = new URL(embedUrl)
@@ -38,14 +39,16 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
           className="w-full h-full"
         />
       </div>
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="link link-primary break-all text-sm"
-      >
-        {url}
-      </a>
+      {showLink && (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="link link-primary break-all text-sm"
+        >
+          {url}
+        </a>
+      )}
     </div>
   )
 }

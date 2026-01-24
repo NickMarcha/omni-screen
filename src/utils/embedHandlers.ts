@@ -130,7 +130,7 @@ export class RedditEmbedHandler implements EmbedHandler {
       const title = decodeURIComponent(titleSlug.replace(/_/g, ' '))
       const now = new Date().toISOString()
       
-      const blockquoteHtml = `<blockquote class="reddit-embed-bq" data-embed-theme="${theme}" style="height:500px" data-embed-created="${now}"><a href="${url}">${title}</a><br> by <a href="https://www.reddit.com/user/USER/">u/USER</a> in <a href="https://www.reddit.com/r/${subreddit}/">${subreddit}</a></blockquote>`
+      const blockquoteHtml = `<blockquote class="reddit-embed-bq" style="height:500px" data-embed-theme="${theme}" data-embed-height="500"><a href="${url}">${title}</a><br> by<a href="https://www.reddit.com/user/USER/">u/USER</a> in<a href="https://www.reddit.com/r/${subreddit}/">${subreddit}</a></blockquote>`
       
       return { success: true, data: { html: blockquoteHtml } }
     } catch (error) {
