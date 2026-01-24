@@ -5,6 +5,7 @@ import TikTokEmbed from './embeds/TikTokEmbed'
 import RedditEmbed from './embeds/RedditEmbed'
 import VideoEmbed from './embeds/VideoEmbed'
 import ImageEmbed from './embeds/ImageEmbed'
+import ListManager from './ListManager'
 import twitterIcon from '../assets/icons/third-party/twitter.png'
 import youtubeIcon from '../assets/icons/third-party/youtube.png'
 import tiktokIcon from '../assets/icons/third-party/tiktok.png'
@@ -38,6 +39,7 @@ interface LinkCard {
   tiktokEmbedHtml?: string
   isReddit?: boolean
   redditEmbedHtml?: string
+  isTrusted?: boolean
 }
 
 // Extract URLs from text
@@ -91,10 +93,31 @@ function containsNSFL(text: string): boolean {
 }
 
 // Check if text contains banned terms
-function containsBannedTerms(text: string, bannedTerms: string[]): boolean {
-  if (bannedTerms.length === 0) return false
+function containsBannedTerms(text: string, bannedTerms: string[] | undefined): boolean {
+  if (!bannedTerms || bannedTerms.length === 0) return false
   const lowerText = text.toLowerCase()
   return bannedTerms.some(term => term.trim() && lowerText.includes(term.trim().toLowerCase()))
+}
+
+// Check if user is banned
+function isBannedUser(nick: string, bannedUsers: string[] | undefined): boolean {
+  if (!bannedUsers || bannedUsers.length === 0) return false
+  const lowerNick = nick.toLowerCase()
+  return bannedUsers.some(user => user.trim() && lowerNick === user.trim().toLowerCase())
+}
+
+// Check if user is trusted
+function isTrustedUser(nick: string, trustedUsers: string[] | undefined): boolean {
+  if (!trustedUsers || trustedUsers.length === 0) return false
+  const lowerNick = nick.toLowerCase()
+  return trustedUsers.some(user => user.trim() && lowerNick === user.trim().toLowerCase())
+}
+
+// Check if platform is disabled
+function isPlatformDisabled(linkType: string | undefined, disabledPlatforms: string[] | undefined): boolean {
+  if (!linkType || !disabledPlatforms || disabledPlatforms.length === 0) return false
+  const lowerLinkType = linkType.toLowerCase()
+  return disabledPlatforms.some(platform => platform.trim() && lowerLinkType === platform.trim().toLowerCase())
 }
 
 // Settings interface
@@ -102,7 +125,10 @@ interface Settings {
   filter: string
   showNSFW: boolean
   showNSFL: boolean
-  bannedTerms: string
+  bannedTerms: string[] // Changed from string to array
+  bannedUsers: string[] // New: list of banned usernames
+  disabledPlatforms: string[] // New: list of disabled platforms
+  trustedUsers: string[] // New: list of trusted usernames
 }
 
 // Load settings from localStorage
@@ -112,16 +138,35 @@ function loadSettings(): Settings {
     if (saved) {
       const parsed = JSON.parse(saved)
       console.log('Loaded settings from localStorage:', parsed)
-      return parsed
+      
+      // Migrate old format (bannedTerms as string) to new format (array)
+      if (typeof parsed.bannedTerms === 'string') {
+        parsed.bannedTerms = parsed.bannedTerms.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0)
+      }
+      
+      // Ensure all new fields exist with defaults
+      const migrated: Settings = {
+        filter: parsed.filter || 'mrMouton',
+        showNSFW: parsed.showNSFW ?? false,
+        showNSFL: parsed.showNSFL ?? false,
+        bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
+        bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
+        disabledPlatforms: Array.isArray(parsed.disabledPlatforms) ? parsed.disabledPlatforms : [],
+        trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
+      }
+      return migrated
     }
   } catch (e) {
     console.error('Failed to load settings:', e)
   }
-  const defaults = {
+  const defaults: Settings = {
     filter: 'mrMouton',
     showNSFW: false,
     showNSFL: false,
-    bannedTerms: '',
+    bannedTerms: [],
+    bannedUsers: [],
+    disabledPlatforms: [],
+    trustedUsers: [],
   }
   console.log('Using default settings:', defaults)
   return defaults
@@ -388,10 +433,18 @@ function LinkScroller() {
   // Load settings on mount
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [tempSettings, setTempSettings] = useState<Settings>(settings)
+  // Initialize tempSettings with safe defaults
+  const [tempSettings, setTempSettings] = useState<Settings>(() => ({
+    filter: settings.filter || 'mrMouton',
+    showNSFW: settings.showNSFW ?? false,
+    showNSFL: settings.showNSFL ?? false,
+    bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
+    bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
+    disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
+    trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
+  }))
   
-  const { filter, showNSFW, showNSFL, bannedTerms } = settings
-  const bannedTermsList = bannedTerms.split(',').map(t => t.trim()).filter(t => t.length > 0)
+  const { filter, showNSFW, showNSFL, bannedTerms, bannedUsers, disabledPlatforms, trustedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -406,7 +459,16 @@ function LinkScroller() {
   // Update temp settings when settings modal opens
   useEffect(() => {
     if (settingsOpen) {
-      setTempSettings(settings)
+      // Ensure all fields are present with defaults
+      setTempSettings({
+        filter: settings.filter || 'mrMouton',
+        showNSFW: settings.showNSFW ?? false,
+        showNSFL: settings.showNSFL ?? false,
+        bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
+        bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
+        disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
+        trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
+      })
     }
   }, [settingsOpen, settings])
 
@@ -535,7 +597,13 @@ function LinkScroller() {
     }
   }, [filter, fetchMentions])
 
-  // Handle scroll to load more
+  // Handle load more button click
+  const handleLoadMore = useCallback(() => {
+    if (loadingMore || !hasMore || loading) return
+    fetchMentions(filter, offset, true)
+  }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
+
+  // Handle scroll to load more (automatic)
   const handleScroll = useCallback(() => {
     if (loadingMore || !hasMore || loading) return
 
@@ -570,7 +638,12 @@ function LinkScroller() {
       }
 
       // Filter out banned terms
-      if (containsBannedTerms(mention.text, bannedTermsList)) {
+      if (containsBannedTerms(mention.text, bannedTerms)) {
+        return
+      }
+
+      // Filter out banned users
+      if (isBannedUser(mention.nick, bannedUsers)) {
         return
       }
 
@@ -600,10 +673,20 @@ function LinkScroller() {
         const isTikTok = isTikTokVideoLink(actualUrl)
         const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
         
+        const linkType = getLinkType(url)
+        
+        // Filter out disabled platforms
+        if (isPlatformDisabled(linkType, disabledPlatforms)) {
+          return
+        }
+        
         // Create unique ID using date, index, urlIndex, and a hash of the URL
         // This ensures uniqueness even if the same URL appears multiple times
         const urlHash = url.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
         const uniqueId = `${mention.date}-${index}-${urlIndex}-${urlHash}-${url.slice(-20)}`
+        
+        // Check if user is trusted
+        const isTrusted = isTrustedUser(mention.nick, trustedUsers)
         
         cards.push({
           id: uniqueId,
@@ -613,18 +696,19 @@ function LinkScroller() {
           date: mention.date,
           isDirectMedia: mediaInfo.isMedia,
           mediaType: mediaInfo.type,
-          linkType: getLinkType(url), // Keep original URL for link type detection
+          linkType: linkType, // Keep original URL for link type detection
           embedUrl: embedUrl || undefined,
           isYouTube,
           isTwitter,
           isTikTok,
           isReddit,
+          isTrusted, // Add trusted flag
         })
       })
     })
 
     return cards
-  }, [mentions, showNSFW, showNSFL, bannedTermsList])
+  }, [mentions, showNSFW, showNSFL, bannedTerms, bannedUsers, disabledPlatforms, trustedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -650,6 +734,15 @@ function LinkScroller() {
       filter
     })
     
+    // If in highlight view, just scroll to top instead of exiting
+    if (highlightedCardId) {
+      const leftContent = document.querySelector('.w-\\[70\\%\\]')
+      if (leftContent) {
+        leftContent.scrollTo({ top: 0, behavior: 'smooth' })
+      }
+      return
+    }
+    
     setMentions([])
     setOffset(0)
     setHasMore(true)
@@ -662,7 +755,7 @@ function LinkScroller() {
   // Highlight Layout Component
   if (highlightedCard) {
     return (
-      <div className="h-screen flex flex-col bg-base-100">
+      <div className={`h-screen flex flex-col ${highlightedCard.isTrusted ? 'bg-base-200' : 'bg-base-100'}`}>
         {/* Top bar with close button */}
         <div className="flex justify-between items-center p-4 border-b border-base-300">
           <h2 className="text-xl font-bold">Highlight View</h2>
@@ -718,17 +811,6 @@ function LinkScroller() {
                 </div>
               ) : (
                 <div className="bg-base-200 rounded-lg p-6 mb-4 min-h-[200px]">
-                  <div className="mb-4 flex items-center gap-2">
-                    {getLinkTypeIcon(highlightedCard.linkType) ? (
-                      <img 
-                        src={getLinkTypeIcon(highlightedCard.linkType)!} 
-                        alt={highlightedCard.linkType || 'Link'} 
-                        className="w-6 h-6 object-contain"
-                      />
-                    ) : (
-                      <div className="badge badge-primary badge-lg">{highlightedCard.linkType}</div>
-                    )}
-                  </div>
                   <a
                     href={highlightedCard.url}
                     target="_blank"
@@ -777,16 +859,18 @@ function LinkScroller() {
           {/* Right side - Card list (30%) */}
           <div className="w-[30%] overflow-y-auto p-4 bg-base-200">
             <div className="space-y-3">
-              {linkCards.map((card, index) => (
+              {linkCards.map((card) => (
                 <div
                   key={card.id}
                   onClick={() => setHighlightedCardId(card.id)}
-                  className={`card bg-base-100 shadow-md cursor-pointer transition-all ${
+                  className={`card shadow-md cursor-pointer transition-all ${
+                    card.isTrusted ? 'bg-base-200' : 'bg-base-100'
+                  } ${
                     card.id === highlightedCardId ? 'ring-2 ring-primary' : 'hover:shadow-lg'
                   }`}
                 >
                   <div className="card-body p-3 flex flex-row gap-3">
-                    <div className="flex-shrink-0 flex items-start">
+                    <div className="flex-shrink-0 flex items-center">
                       {card.isDirectMedia ? (
                         <div className="text-2xl">
                           {card.mediaType === 'image' ? '🖼️' : '🎥'}
@@ -799,7 +883,11 @@ function LinkScroller() {
                             className="w-5 h-5 object-contain"
                           />
                         ) : (
-                          <div className="badge badge-primary badge-sm">{card.linkType}</div>
+                          <div className="flex flex-col items-center justify-center bg-primary text-primary-content rounded px-1.5 py-0.5">
+                            {(card.linkType || 'Link').split('').map((letter, index) => (
+                              <span key={index} className="text-base leading-none block">{letter}</span>
+                            ))}
+                          </div>
                         )
                       )}
                     </div>
@@ -813,6 +901,31 @@ function LinkScroller() {
                 </div>
               ))}
             </div>
+            
+            {/* Load More button in sidebar */}
+            {hasMore && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  className="btn btn-primary btn-sm"
+                >
+                  {loadingMore ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs"></span>
+                      Loading...
+                    </>
+                  ) : (
+                    'Load More'
+                  )}
+                </button>
+              </div>
+            )}
+            {!hasMore && linkCards.length > 0 && (
+              <div className="mt-4 text-center text-xs text-base-content/50">
+                No more links to load
+              </div>
+            )}
           </div>
         </div>
 
@@ -891,6 +1004,136 @@ function LinkScroller() {
             </svg>
           </button>
         </div>
+
+        {/* Settings Modal */}
+        {settingsOpen && (
+          <div className="modal modal-open z-[100]">
+            <div className="modal-box">
+              <h3 className="font-bold text-lg mb-4">Settings</h3>
+              
+              <div className="space-y-4">
+                {/* Filter input */}
+                <div>
+                  <label className="label">
+                    <span className="label-text">Filter (username):</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={tempSettings.filter}
+                    onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
+                    placeholder="Enter username"
+                    className="input input-bordered w-full"
+                  />
+                </div>
+
+                {/* Show NSFW toggle */}
+                <div className="form-control">
+                  <label className="label cursor-pointer">
+                    <span className="label-text">Show NSFW</span>
+                    <input
+                      type="checkbox"
+                      checked={tempSettings.showNSFW}
+                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
+                      className="toggle toggle-primary"
+                    />
+                  </label>
+                </div>
+
+                {/* Show NSFL toggle */}
+                <div className="form-control">
+                  <label className="label cursor-pointer">
+                    <span className="label-text">Show NSFL</span>
+                    <input
+                      type="checkbox"
+                      checked={tempSettings.showNSFL}
+                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
+                      className="toggle toggle-primary"
+                    />
+                  </label>
+                </div>
+
+                {/* Banned terms */}
+                <ListManager
+                  title="Banned Terms"
+                  items={tempSettings.bannedTerms}
+                  onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
+                  placeholder="Enter term to ban"
+                  helpText="Messages containing these terms will be filtered out"
+                />
+
+                {/* Banned users */}
+                <ListManager
+                  title="Banned Users"
+                  items={tempSettings.bannedUsers}
+                  onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
+                  placeholder="Enter username"
+                  helpText="Messages from these users will be filtered out"
+                />
+
+                {/* Trusted users */}
+                <ListManager
+                  title="Trusted Users"
+                  items={tempSettings.trustedUsers}
+                  onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
+                  placeholder="Enter username"
+                  helpText="Cards from these users will have a brighter background"
+                />
+
+                {/* Disabled platforms */}
+                <div>
+                  <label className="label">
+                    <span className="label-text">Disabled Platforms</span>
+                  </label>
+                  <div className="space-y-2">
+                    {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
+                      <label key={platform} className="label cursor-pointer justify-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
+                          onChange={(e) => {
+                            const currentDisabled = tempSettings.disabledPlatforms || []
+                            if (e.target.checked) {
+                              setTempSettings({
+                                ...tempSettings,
+                                disabledPlatforms: currentDisabled.filter(p => p !== platform)
+                              })
+                            } else {
+                              setTempSettings({
+                                ...tempSettings,
+                                disabledPlatforms: [...currentDisabled, platform]
+                              })
+                            }
+                          }}
+                          className="checkbox checkbox-primary checkbox-sm"
+                        />
+                        <span className="label-text">{platform}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <label className="label">
+                    <span className="label-text-alt">Unchecked platforms will be filtered out</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="modal-action">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setSettingsOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveSettings}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+            <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}></div>
+          </div>
+        )}
       </div>
     )
   }
@@ -920,7 +1163,10 @@ function LinkScroller() {
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {linkCards.map((card) => (
-              <div key={card.id} className="card bg-base-200 shadow-xl">
+              <div 
+                key={card.id} 
+                className={`card shadow-xl ${card.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}
+              >
                 {card.isDirectMedia ? (
                   <figure className="relative">
                     {card.mediaType === 'image' ? (
@@ -972,10 +1218,23 @@ function LinkScroller() {
               </div>
             ))}
           </div>
-          {loadingMore && (
-            <div className="flex justify-center items-center py-8">
-              <span className="loading loading-spinner loading-md"></span>
-              <span className="ml-2 text-base-content/70">Loading more...</span>
+          {/* Load More button */}
+          {hasMore && (
+            <div className="flex justify-center py-8">
+              <button
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="btn btn-primary"
+              >
+                {loadingMore ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Loading...
+                  </>
+                ) : (
+                  'Load More'
+                )}
+              </button>
             </div>
           )}
           {!hasMore && linkCards.length > 0 && (
@@ -1040,19 +1299,65 @@ function LinkScroller() {
               </div>
 
               {/* Banned terms */}
+              <ListManager
+                title="Banned Terms"
+                items={tempSettings.bannedTerms}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
+                placeholder="Enter term to ban"
+                helpText="Messages containing these terms will be filtered out"
+              />
+
+              {/* Banned users */}
+              <ListManager
+                title="Banned Users"
+                items={tempSettings.bannedUsers}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
+                placeholder="Enter username"
+                helpText="Messages from these users will be filtered out"
+              />
+
+              {/* Trusted users */}
+              <ListManager
+                title="Trusted Users"
+                items={tempSettings.trustedUsers}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
+                placeholder="Enter username"
+                helpText="Cards from these users will have a brighter background"
+              />
+
+              {/* Disabled platforms */}
               <div>
                 <label className="label">
-                  <span className="label-text">Banned Terms (comma-separated):</span>
+                  <span className="label-text">Disabled Platforms</span>
                 </label>
-                <textarea
-                  value={tempSettings.bannedTerms}
-                  onChange={(e) => setTempSettings({ ...tempSettings, bannedTerms: e.target.value })}
-                  placeholder="term1, term2, term3"
-                  className="textarea textarea-bordered w-full"
-                  rows={3}
-                />
+                <div className="space-y-2">
+                  {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
+                    <label key={platform} className="label cursor-pointer justify-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
+                        onChange={(e) => {
+                          const currentDisabled = tempSettings.disabledPlatforms || []
+                          if (e.target.checked) {
+                            setTempSettings({
+                              ...tempSettings,
+                              disabledPlatforms: currentDisabled.filter(p => p !== platform)
+                            })
+                          } else {
+                            setTempSettings({
+                              ...tempSettings,
+                              disabledPlatforms: [...currentDisabled, platform]
+                            })
+                          }
+                        }}
+                        className="checkbox checkbox-primary checkbox-sm"
+                      />
+                      <span className="label-text">{platform}</span>
+                    </label>
+                  ))}
+                </div>
                 <label className="label">
-                  <span className="label-text-alt">Messages containing these terms will be filtered out</span>
+                  <span className="label-text-alt">Unchecked platforms will be filtered out</span>
                 </label>
               </div>
             </div>
