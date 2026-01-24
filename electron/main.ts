@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { update } from './update'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -275,23 +276,36 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
     const dataLength = Array.isArray(data) ? data.length : 0
     console.log(`  - Received ${dataLength} mentions`)
     
+    // Add unique ID to each mention based on hash of date and username
     if (dataLength > 0 && Array.isArray(data)) {
-      const firstDate = data[0]?.date ? new Date(data[0].date).toISOString() : 'N/A'
-      const lastDate = data[dataLength - 1]?.date ? new Date(data[dataLength - 1].date).toISOString() : 'N/A'
+      const dataWithIds = data.map((mention: any) => {
+        // Create hash from date and username (nick)
+        const hashInput = `${mention.date || ''}-${mention.nick || ''}`
+        const hash = crypto.createHash('sha256').update(hashInput).digest('hex').substring(0, 16)
+        return {
+          ...mention,
+          id: hash
+        }
+      })
+      
+      const firstDate = dataWithIds[0]?.date ? new Date(dataWithIds[0].date).toISOString() : 'N/A'
+      const lastDate = dataWithIds[dataLength - 1]?.date ? new Date(dataWithIds[dataLength - 1].date).toISOString() : 'N/A'
       console.log(`  - Date range: ${firstDate} (first) to ${lastDate} (last)`)
       
       // Check the order - is first item newest or oldest?
-      const dates = data.map((m: any) => m.date).filter((d: any) => d != null)
+      const dates = dataWithIds.map((m: any) => m.date).filter((d: any) => d != null)
       if (dates.length > 1) {
         const firstIsNewer = dates[0] > dates[dates.length - 1]
         console.log(`  - Order: ${firstIsNewer ? 'NEWEST FIRST (descending)' : 'OLDEST FIRST (ascending)'}`)
       }
       
       // Log a few sample dates to verify
-      const sampleDates = data.slice(0, 5).map((m: any, i: number) => 
-        `${i}: ${m.date ? new Date(m.date).toISOString() : 'N/A'}`
+      const sampleDates = dataWithIds.slice(0, 5).map((m: any, i: number) => 
+        `${i}: ${m.date ? new Date(m.date).toISOString() : 'N/A'} (id: ${m.id})`
       )
       console.log(`  - First 5 dates:`, sampleDates)
+      
+      return { success: true, data: dataWithIds }
     }
     
     return { success: true, data }

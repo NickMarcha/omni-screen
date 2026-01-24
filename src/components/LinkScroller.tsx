@@ -16,6 +16,7 @@ import streamableIcon from '../assets/icons/third-party/streamable.ico'
 import imgurIcon from '../assets/icons/third-party/imgur.png'
 
 interface MentionData {
+  id: string // Unique ID generated from hash of date and username
   date: number
   text: string
   nick: string
@@ -798,7 +799,7 @@ function LinkScroller() {
                   />
                 </div>
               ) : highlightedCard.isTwitter ? (
-                <div>
+                <div key={highlightedCard.id}>
                   <TwitterEmbed url={highlightedCard.url} />
                 </div>
               ) : highlightedCard.isTikTok ? (
