@@ -3,7 +3,6 @@
 // Prevents race conditions and script reloads that break embeds
 
 let scriptLoaded = false
-let scriptLoading = false
 let scriptLoadPromise: Promise<void> | null = null
 let pendingBlockquotes = new Set<HTMLElement>()
 let loadTimeout: NodeJS.Timeout | null = null
@@ -130,14 +129,11 @@ function loadRedditScript(): Promise<void> {
     return Promise.resolve()
   }
   
-  scriptLoading = true
-  
   scriptLoadPromise = new Promise((resolve, reject) => {
     // Check if script already exists (shouldn't happen, but just in case)
     const existingScript = document.querySelector('script[src="https://embed.reddit.com/widgets.js"]')
     if (existingScript) {
       scriptLoaded = true
-      scriptLoading = false
       resolve()
       return
     }
@@ -154,7 +150,6 @@ function loadRedditScript(): Promise<void> {
     
     script.onload = () => {
       scriptLoaded = true
-      scriptLoading = false
       lastLoadTime = Date.now()
       console.log('[Reddit Manager] Script loaded successfully')
       
@@ -171,7 +166,6 @@ function loadRedditScript(): Promise<void> {
     }
     
     script.onerror = () => {
-      scriptLoading = false
       scriptLoadPromise = null
       reject(new Error('Failed to load Reddit widgets script'))
     }

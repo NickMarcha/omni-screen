@@ -44,24 +44,30 @@ async function getCookiesForUrl(url: string): Promise<string> {
       // Get all cookies and filter for Twitter-related ones
       const allCookies = await getDefaultSession().cookies.get({})
       const twitterCookies = allCookies.filter(cookie => 
-        cookie.domain.includes('twitter.com') || 
-        cookie.domain.includes('x.com') ||
-        cookie.domain.includes('twimg.com')
+        cookie.domain && (
+          cookie.domain.includes('twitter.com') || 
+          cookie.domain.includes('x.com') ||
+          cookie.domain.includes('twimg.com')
+        )
       )
       
       // Sort by domain specificity (more specific first)
       twitterCookies.sort((a, b) => {
-        const aSpecificity = a.domain.split('.').length
-        const bSpecificity = b.domain.split('.').length
+        const aDomain = a.domain || ''
+        const bDomain = b.domain || ''
+        const aSpecificity = aDomain.split('.').length
+        const bSpecificity = bDomain.split('.').length
         return bSpecificity - aSpecificity
       })
       
       // Remove duplicates (prefer more specific domain cookies)
       const uniqueCookies = new Map<string, Electron.Cookie>()
       for (const cookie of twitterCookies) {
+        if (!cookie.domain) continue
         const key = cookie.name
-        if (!uniqueCookies.has(key) || 
-            cookie.domain.split('.').length > uniqueCookies.get(key)!.domain.split('.').length) {
+        const existingCookie = uniqueCookies.get(key)
+        if (!existingCookie || 
+            cookie.domain.split('.').length > (existingCookie.domain?.split('.').length || 0)) {
           uniqueCookies.set(key, cookie)
         }
       }
@@ -96,13 +102,14 @@ async function getCookiesForUrl(url: string): Promise<string> {
       try {
         const cookies = await getDefaultSession().cookies.get({ domain })
         allCookies.push(...cookies)
-      } catch (err) {
+      } catch {
         // Ignore errors for specific domains
       }
     }
     
     const uniqueCookies = new Map<string, Electron.Cookie>()
     for (const cookie of allCookies) {
+      if (!cookie.domain) continue
       const key = `${cookie.domain}:${cookie.name}`
       if (!uniqueCookies.has(key)) {
         uniqueCookies.set(key, cookie)
@@ -179,7 +186,7 @@ function createWindow() {
   update(win)
 
   // Show context menu on right-click
-  win.webContents.on('context-menu', (e, params) => {
+  win.webContents.on('context-menu', (_e, params) => {
     const menuItems: Electron.MenuItemConstructorOptions[] = []
 
     // If right-clicking on a link, show link-specific options
@@ -361,9 +368,11 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
     // Check for authentication cookies first
     const allCookies = await session.cookies.get({})
     const twitterCookies = allCookies.filter(cookie => 
-      cookie.domain.includes('twitter.com') || 
-      cookie.domain.includes('x.com') ||
-      cookie.domain.includes('twimg.com')
+      cookie.domain && (
+        cookie.domain.includes('twitter.com') || 
+        cookie.domain.includes('x.com') ||
+        cookie.domain.includes('twimg.com')
+      )
     )
     
     const authToken = twitterCookies.find(c => c.name === 'auth_token')
@@ -654,7 +663,7 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
         }
       })
       
-      browserView!.webContents.once('did-fail-load', (event, errorCode, errorDescription) => {
+      browserView!.webContents.once('did-fail-load', (_event, _errorCode, errorDescription) => {
         clearTimeout(timeout)
         reject(new Error(`Failed to load: ${errorDescription}`))
       })
@@ -673,7 +682,8 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
       if (win) {
         win.setBrowserView(null)
       }
-      browserView.webContents.destroy()
+      // BrowserView cleanup - remove from window and let it be garbage collected
+      browserView = null
     }
   }
 })
@@ -1054,7 +1064,7 @@ ipcMain.handle('fetch-imgur-album', async (_event, imgurUrl: string) => {
         }
       })
       
-      browserView!.webContents.once('did-fail-load', (event, errorCode, errorDescription) => {
+      browserView!.webContents.once('did-fail-load', (_event, _errorCode, errorDescription) => {
         clearTimeout(timeout)
         reject(new Error(`Failed to load: ${errorDescription}`))
       })
@@ -1073,7 +1083,8 @@ ipcMain.handle('fetch-imgur-album', async (_event, imgurUrl: string) => {
       if (win) {
         win.setBrowserView(null)
       }
-      browserView.webContents.destroy()
+      // BrowserView cleanup - remove from window and let it be garbage collected
+      browserView = null
     }
   }
 })
@@ -1145,7 +1156,6 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
     }
     
     const subreddit = urlMatch[1]
-    const postId = urlMatch[2]
     const titleSlug = urlMatch[3]
     
     // Decode title from slug (basic decoding)
@@ -1195,7 +1205,7 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
     loginWindow.loadURL(url)
     
     // When login window navigates, check for successful login
-    loginWindow.webContents.on('did-navigate', async (event, navigationUrl) => {
+    loginWindow.webContents.on('did-navigate', async (_event, navigationUrl) => {
       // Check if we're on a logged-in page (e.g., twitter.com/home, reddit.com, etc.)
       const loggedInPatterns: Record<string, RegExp> = {
         twitter: /twitter\.com\/(home|notifications|messages|i\/bookmarks|i\/flow\/login)/,
@@ -1226,8 +1236,8 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
     })
     
     // Also listen for cookie changes
-    loginWindow.webContents.session.cookies.on('changed', (event, cookie, cause, removed) => {
-      if (!removed && (cookie.domain.includes('twitter.com') || cookie.domain.includes('x.com'))) {
+    loginWindow.webContents.session.cookies.on('changed', (_event, cookie, _cause, removed) => {
+      if (!removed && cookie.domain && (cookie.domain.includes('twitter.com') || cookie.domain.includes('x.com'))) {
         console.log(`Twitter cookie ${removed ? 'removed' : 'set'}: ${cookie.name} for ${cookie.domain}`)
         
         // Check if this is an authentication cookie

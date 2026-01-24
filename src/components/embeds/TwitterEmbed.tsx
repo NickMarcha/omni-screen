@@ -99,7 +99,7 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
               }, 100)
             }
           })
-          .catch((err) => {
+          .catch(() => {
             if (isCancelled) return
             setError('Failed to load Twitter widgets script')
             setLoading(false)
@@ -384,7 +384,7 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
             lastHeightUpdate = now
             
             // Very small heights (like 76px) usually indicate an error state
-            if (height < 150) {
+            if (height && height < 150) {
               console.log('⚠️ Twitter sent very small height, likely error state:', height, 'px')
               if (!smallHeightDetected) {
                 smallHeightDetected = true

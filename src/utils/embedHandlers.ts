@@ -125,10 +125,8 @@ export class RedditEmbedHandler implements EmbedHandler {
       }
       
       const subreddit = urlMatch[1]
-      const postId = urlMatch[2]
       const titleSlug = urlMatch[3]
       const title = decodeURIComponent(titleSlug.replace(/_/g, ' '))
-      const now = new Date().toISOString()
       
       const blockquoteHtml = `<blockquote class="reddit-embed-bq" style="height:500px" data-embed-theme="${theme}" data-embed-height="500"><a href="${url}">${title}</a><br> by<a href="https://www.reddit.com/user/USER/">u/USER</a> in<a href="https://www.reddit.com/r/${subreddit}/">${subreddit}</a></blockquote>`
       

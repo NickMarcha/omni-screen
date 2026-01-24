@@ -123,7 +123,7 @@ export function loadScriptOnce(src: string, id?: string): Promise<void> {
       error: false
     }
     
-    const promise = new Promise<void>((resolve, reject) => {
+    const promise = new Promise<void>((resolve) => {
       // Check if script is already loaded (check for global objects)
       if (src.includes('twitter.com/widgets.js') && (window as any).twttr) {
         state.loaded = true
