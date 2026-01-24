@@ -105,7 +105,18 @@ Accessible via floating cog button (bottom-right):
   - Listens for `twttr.private.resize` postMessage events
   - Extracts height from `params[0].height`
   - Automatically adjusts iframe height
+  - **Critical Fix**: Uses `event.source === iframe.contentWindow` to ensure each embed only processes messages from its own iframe
+  - Prevents all embeds from getting the same height when multiple embeds are present
 - **Component**: `src/components/embeds/TwitterEmbed.tsx`
+
+**Height Adjustment Troubleshooting (What Worked vs. What Didn't)**:
+- ❌ **Didn't Work**: Trying to match messages using `embedId` or `tweetId` from message params - Twitter's resize messages don't include these identifiers
+- ❌ **Didn't Work**: Height-based heuristics comparing message height to current heights - all embeds would accept the first message since none had heights yet
+- ❌ **Didn't Work**: Complex proximity matching algorithms - too unreliable and caused all embeds to get the same height
+- ✅ **What Worked**: Using `event.source` property to directly match messages to the correct iframe's `contentWindow`
+  - Each embed component checks `if (event.source !== iframe.contentWindow) return` before processing
+  - This ensures each embed only processes messages sent from its own iframe
+  - Simple, reliable, and prevents cross-contamination between embeds
 
 #### TikTok Embeds
 - **Detection**: Video links (`/@username/video/ID`)
@@ -356,7 +367,7 @@ omni-screen/
 ## Known Limitations
 
 1. **Twitter Embeds**: 
-   - Height adjustment relies on postMessage events
+   - Height adjustment now works correctly using `event.source` matching (fixed in v1.1.1)
    - May require login for age-restricted content
    - Some edge cases with React re-rendering
 

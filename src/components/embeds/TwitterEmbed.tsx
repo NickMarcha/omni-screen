@@ -153,6 +153,11 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
         }, 10000)
 
         try {
+          // Store tweet ID on the container for later reference
+          if (currentContainer) {
+            currentContainer.setAttribute('data-tweet-id', tweetId)
+          }
+          
           // @ts-ignore
           const promise = twttr.widgets.createTweet(
             tweetId,
@@ -344,6 +349,32 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
       return containerRef.current?.querySelector('iframe')
     }
 
+    // Extract tweet ID from URL for this embed instance
+    const extractTweetId = (): string | null => {
+      try {
+        const tweetIdMatch = url.match(/\/status\/(\d+)/)
+        return tweetIdMatch ? tweetIdMatch[1] : null
+      } catch {
+        return null
+      }
+    }
+    
+    const thisTweetId = extractTweetId()
+    
+    // Also try to get tweet ID from container data attribute (set during embed creation)
+    const getTweetIdFromContainer = (): string | null => {
+      if (containerRef.current) {
+        const tweetId = containerRef.current.getAttribute('data-tweet-id')
+        return tweetId
+      }
+      return null
+    }
+    
+    // Use container tweet ID if available, otherwise use URL extraction
+    const effectiveTweetId = getTweetIdFromContainer() || thisTweetId
+    
+    console.log(`[TwitterEmbed] Component initialized for tweet ID: ${effectiveTweetId || 'unknown'}, URL: ${url.substring(0, 80)}`)
+
     // Listen for Twitter embed height updates via postMessage
     const handleMessage = (event: MessageEvent) => {
       // Twitter embeds send height updates via postMessage
@@ -351,29 +382,61 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
       if ((event.origin.includes('twitter.com') || event.origin.includes('x.com') || event.origin.includes('platform.twitter.com')) && 
           event.data && typeof event.data === 'object') {
         const iframe = getThisIframe()
-        if (!iframe) return
+        if (!iframe) {
+          console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] No iframe found, ignoring message`)
+          return
+        }
         
-        // Verify this message is for THIS iframe by checking if the iframe's src matches
-        // Twitter messages might include an embed ID, but we can also check iframe visibility/position
-        // Only process if this iframe is actually in the DOM and visible
+        // CRITICAL: Only process messages that came from THIS iframe's contentWindow
+        // This is the key to preventing all embeds from processing all messages
+        if (event.source !== iframe.contentWindow) {
+          // Message is from a different iframe - ignore it
+          // Don't log this to avoid spam, but it's working correctly
+          return
+        }
+        
+        console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] ✅ Message source matches this iframe, processing...`)
+        
+        // Verify this iframe is actually in the DOM and visible
         if (!document.contains(iframe) || iframe.offsetParent === null) {
+          console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Iframe not visible, ignoring message`)
           return // This iframe is not visible/active, ignore message
         }
         
         // Get the iframe's src to identify this specific embed
         const iframeSrc = iframe.getAttribute('src') || iframe.src || ''
+        const iframeId = iframe.getAttribute('id') || ''
+        
+        // Extract embedId from iframe src (e.g., embedId=twitter-widget-3)
+        const embedIdMatch = iframeSrc.match(/embedId=([^&]+)/)
+        const thisEmbedId = embedIdMatch ? embedIdMatch[1] : iframeId
+        
+        console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Received message from ${event.origin}`, {
+          iframeId,
+          thisEmbedId,
+          iframeSrc: iframeSrc.substring(0, 150),
+          messageData: event.data
+        })
         
         // Twitter sends height updates in various formats - try to extract height
         let height: number | null = null
-        let messageForThisEmbed = false
         
         // Check for twttr.embed object with height
         if (event.data['twttr.embed'] && typeof event.data['twttr.embed'] === 'object') {
           const embedData = event.data['twttr.embed']
           
-          // Twitter may include an embedId or iframe reference in the message
-          // Check if the message includes information that matches this iframe
-          // If not, we'll still process it but be more careful
+          console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Processing twttr.embed message:`, {
+            method: embedData.method,
+            params: embedData.params,
+            thisEmbedId
+          })
+          
+          // Twitter sends 'rendered' messages first, then 'resize' messages with height
+          if (embedData.method === 'twttr.private.rendered') {
+            console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Rendered message received (waiting for resize message)`)
+            // Rendered messages don't have height, just log them for debugging
+            return // Don't process rendered messages, wait for resize
+          }
           
           // Twitter sends resize messages with height in params[0]
           if (embedData.method === 'twttr.private.resize' && 
@@ -383,47 +446,27 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
               typeof embedData.params[0].height === 'number') {
             height = embedData.params[0].height
             
-            // Try to verify this message is for this iframe
-            // Twitter might include an embedId or iframe reference
-            if (embedData.params[0].embedId || embedData.params[0].id) {
-              // Check if the embedId matches this iframe's ID or data attribute
-              const embedId = embedData.params[0].embedId || embedData.params[0].id
-              const iframeId = iframe.getAttribute('id') || iframe.getAttribute('data-embed-id') || ''
-              if (iframeId && embedId && iframeId !== embedId) {
-                return // This message is for a different embed
-              }
-            }
+            // Log the full params to see what Twitter actually sends
+            console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Resize message received - FULL PARAMS:`, {
+              height,
+              fullParams: embedData.params[0],
+              messageTweetId: embedData.params[0]?.tweetId,
+              messageEmbedId: embedData.params[0]?.embedId || embedData.params[0]?.id,
+              thisTweetId: effectiveTweetId,
+              thisIframeId: iframeId,
+              thisEmbedId: thisEmbedId,
+              allKeys: embedData.params[0] ? Object.keys(embedData.params[0]) : []
+            })
             
-            // Also check if the iframe src contains the tweet ID from the message
-            // Twitter messages might include tweet context
-            if (embedData.params[0].tweetId) {
-              const tweetId = embedData.params[0].tweetId
-              if (!iframeSrc.includes(tweetId)) {
-                // Message is for a different tweet - but Twitter might not include this
-                // So we'll be lenient and process it anyway
-              }
-            }
+            // Since we've already verified event.source matches this iframe, we can process the message
+            // The event.source check above ensures only messages from THIS iframe are processed
+            const currentHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
             
-            messageForThisEmbed = true
-            
-            // Only process if this message appears to be for this embed
-            if (!messageForThisEmbed) {
-              // If we can't verify it's for this embed, check if other embeds exist
-              // If multiple embeds exist, we need to be more careful
-              const allIframes = document.querySelectorAll('iframe[src*="platform.twitter.com"]')
-              if (allIframes.length > 1) {
-                // Multiple embeds - only process if this iframe's current height is close to the message height
-                // This is a heuristic: if the message height is very different from current height,
-                // it might be for a different embed
-                const currentHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
-                const heightDiff = Math.abs(height - currentHeight)
-                if (currentHeight > 0 && heightDiff > 200) {
-                  // Large difference - might be for a different embed, skip
-                  console.log(`⚠️ Skipping height update - large difference (${heightDiff}px) suggests different embed`)
-                  return
-                }
-              }
-            }
+            console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Processing resize message:`, {
+              currentHeight,
+              newHeight: height,
+              heightDiff: Math.abs(height - currentHeight)
+            })
             
             // Create a unique key for this message to deduplicate (include iframe src to make it per-embed)
             const messageKey = `${iframeSrc}-${JSON.stringify(event.data)}`
@@ -468,10 +511,20 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
             }
             
             // Only update if the height is significantly different (avoid unnecessary updates)
-            const currentHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
-            if (Math.abs(height - currentHeight) > 10) {
+            // currentHeight is already declared above
+            const heightDiff = Math.abs(height - currentHeight)
+            console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Final check before update:`, {
+              currentHeight,
+              newHeight: height,
+              heightDiff,
+              willUpdate: heightDiff > 10
+            })
+            
+            if (heightDiff > 10) {
               iframe.style.height = `${height}px`
-              console.log(`✅ Twitter embed height updated via postMessage: ${currentHeight}px -> ${height}px`)
+              console.log(`✅ [TwitterEmbed ${effectiveTweetId || 'unknown'}] HEIGHT UPDATED: ${currentHeight}px -> ${height}px`)
+            } else {
+              console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Skipping update - height difference too small (${heightDiff}px)`)
             }
           }
         }
