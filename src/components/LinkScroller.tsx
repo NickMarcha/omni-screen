@@ -887,7 +887,7 @@ function LinkScroller() {
         if (cardElement) {
           cardElement.scrollIntoView({
             behavior: 'smooth',
-            block: 'nearest',
+            block: 'center',
             inline: 'nearest'
           })
         }
@@ -927,169 +927,215 @@ function LinkScroller() {
   // Highlight Layout Component
   if (highlightedCard) {
     return (
-      <div className={`h-screen flex flex-col ${highlightedCard.isTrusted ? 'bg-base-200' : 'bg-base-100'}`}>
-        {/* Top bar with close button */}
-        <div className="flex justify-between items-center p-4 border-b border-base-300">
-          <h2 className="text-xl font-bold">Highlight View</h2>
-          <button
-            onClick={() => setHighlightedCardId(null)}
-            className="btn btn-sm btn-ghost"
-          >
-            Close
-          </button>
-        </div>
-
-        {/* Main content area */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left side - Highlighted content (70%) */}
-          <div className="w-[70%] overflow-y-auto p-6 border-r border-base-300">
-            <div className="max-w-4xl mx-auto">
-              {highlightedCard.isDirectMedia ? (
-                <div>
-                  {highlightedCard.mediaType === 'image' ? (
-                    <ImageEmbed 
-                      url={highlightedCard.url} 
-                      alt={highlightedCard.text}
-                    />
-                  ) : (
-                    <VideoEmbed 
-                      url={highlightedCard.url}
-                      autoplay={autoplayEnabled}
-                      muted={autoplayEnabled ? muteEnabled : false}
-                      controls={true}
-                    />
-                  )}
-                </div>
-              ) : highlightedCard.isYouTube && highlightedCard.embedUrl ? (
-                <div>
-                  <YouTubeEmbed 
+      <div className={`h-screen flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-200' : 'bg-base-100'}`}>
+        {/* Left side - Content only (70%) */}
+        <div className="w-[70%] overflow-y-auto p-6 border-r border-base-300">
+          <div className="max-w-4xl mx-auto">
+            {highlightedCard.isDirectMedia ? (
+              <div>
+                {highlightedCard.mediaType === 'image' ? (
+                  <ImageEmbed 
                     url={highlightedCard.url} 
-                    embedUrl={highlightedCard.embedUrl}
-                    autoplay={autoplayEnabled}
-                    mute={autoplayEnabled ? muteEnabled : false}
+                    alt={highlightedCard.text}
                   />
-                </div>
-              ) : highlightedCard.isTwitter ? (
-                <div key={highlightedCard.id}>
-                  <TwitterEmbed url={highlightedCard.url} />
-                </div>
-              ) : highlightedCard.isTikTok ? (
-                <div>
-                  <TikTokEmbed url={highlightedCard.url} />
-                </div>
-              ) : highlightedCard.isReddit ? (
-                <div>
-                  <RedditEmbed url={highlightedCard.url} theme="dark" />
-                </div>
-              ) : highlightedCard.isImgur ? (
-                <div>
-                  {loadingImgurAlbum ? (
-                    <div className="flex justify-center items-center py-12">
-                      <span className="loading loading-spinner loading-lg"></span>
-                      <span className="ml-4">Loading Imgur album...</span>
-                    </div>
-                  ) : imgurAlbumError ? (
-                    <div className="bg-base-200 rounded-lg p-6 mb-4">
-                      <p className="text-base-content/70 mb-2">Failed to load Imgur album</p>
-                      <p className="text-sm text-error mb-3">{imgurAlbumError}</p>
-                      <a
-                        href={highlightedCard.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-primary break-all text-sm"
-                      >
-                        {highlightedCard.url}
-                      </a>
-                    </div>
-                  ) : imgurAlbumData ? (
-                    <div className="space-y-4">
-                      {imgurAlbumData.title && (
-                        <h3 className="text-xl font-bold">{imgurAlbumData.title}</h3>
-                      )}
-                      {imgurAlbumData.description && (
-                        <p className="text-base-content/70">{imgurAlbumData.description}</p>
-                      )}
-                      <div className="grid grid-cols-1 gap-4">
-                        {imgurAlbumData.media.map((item, index) => (
-                          <div key={item.id || index} className="bg-base-200 rounded-lg p-4">
-                            {item.type === 'image' ? (
-                              <ImageEmbed url={item.url} alt={item.title || item.description} />
-                            ) : item.type === 'video' ? (
-                              <VideoEmbed 
-                                url={item.url} 
-                                autoplay={autoplayEnabled}
-                                muted={autoplayEnabled ? muteEnabled : false}
-                              />
-                            ) : (
-                              <a
-                                href={item.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="link link-primary break-all"
-                              >
-                                {item.url}
-                              </a>
-                            )}
-                            {item.description && (
-                              <p className="mt-2 text-sm text-base-content/70">{item.description}</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="bg-base-200 rounded-lg p-6 mb-4 min-h-[200px]">
-                  <a
-                    href={highlightedCard.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="link link-primary break-all"
-                  >
-                    {highlightedCard.url}
-                  </a>
-                </div>
-              )}
-              
-              {/* Text content and metadata in rounded dark grey background */}
-              <div className="mt-4 bg-base-300 rounded-lg p-4">
-                <div className="mb-3 break-words overflow-wrap-anywhere">
-                  <p className="text-base break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                    {highlightedCard.isYouTube 
-                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link')
-                      : highlightedCard.isReddit
-                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link')
-                      : highlightedCard.isTwitter
-                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
-                      : highlightedCard.isImgur
-                      ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link')
-                      : renderTextWithLinks(highlightedCard.text)
-                    }
-                  </p>
-                </div>
-                <div className="flex items-center gap-4 pt-2 border-t border-base-content/20">
-                  <div>
-                    <span className="text-sm text-base-content/70">Posted by</span>
+                ) : (
+                  <VideoEmbed 
+                    url={highlightedCard.url}
+                    autoplay={autoplayEnabled}
+                    muted={autoplayEnabled ? muteEnabled : false}
+                    controls={true}
+                  />
+                )}
+              </div>
+            ) : highlightedCard.isYouTube && highlightedCard.embedUrl ? (
+              <div>
+                <YouTubeEmbed 
+                  url={highlightedCard.url} 
+                  embedUrl={highlightedCard.embedUrl}
+                  autoplay={autoplayEnabled}
+                  mute={autoplayEnabled ? muteEnabled : false}
+                />
+              </div>
+            ) : highlightedCard.isTwitter ? (
+              <div key={highlightedCard.id}>
+                <TwitterEmbed url={highlightedCard.url} />
+              </div>
+            ) : highlightedCard.isTikTok ? (
+              <div>
+                <TikTokEmbed url={highlightedCard.url} />
+              </div>
+            ) : highlightedCard.isReddit ? (
+              <div>
+                <RedditEmbed url={highlightedCard.url} theme="dark" />
+              </div>
+            ) : highlightedCard.isImgur ? (
+              <div>
+                {loadingImgurAlbum ? (
+                  <div className="flex justify-center items-center py-12">
+                    <span className="loading loading-spinner loading-lg"></span>
+                    <span className="ml-4">Loading Imgur album...</span>
+                  </div>
+                ) : imgurAlbumError ? (
+                  <div className="bg-base-200 rounded-lg p-6 mb-4">
+                    <p className="text-base-content/70 mb-2">Failed to load Imgur album</p>
+                    <p className="text-sm text-error mb-3">{imgurAlbumError}</p>
                     <a
-                      href={`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`}
+                      href={highlightedCard.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="ml-2 text-lg font-bold text-primary hover:underline"
+                      className="link link-primary break-all text-sm"
                     >
-                      {highlightedCard.nick}
+                      {highlightedCard.url}
                     </a>
                   </div>
-                  <div className="text-sm text-base-content/50">
-                    {new Date(highlightedCard.date).toLocaleString()}
+                ) : imgurAlbumData ? (
+                  <div className="space-y-4">
+                    {imgurAlbumData.title && (
+                      <h3 className="text-xl font-bold">{imgurAlbumData.title}</h3>
+                    )}
+                    {imgurAlbumData.description && (
+                      <p className="text-base-content/70">{imgurAlbumData.description}</p>
+                    )}
+                    <div className="grid grid-cols-1 gap-4">
+                      {imgurAlbumData.media.map((item, index) => (
+                        <div key={item.id || index} className="bg-base-200 rounded-lg p-4">
+                          {item.type === 'image' ? (
+                            <ImageEmbed url={item.url} alt={item.title || item.description} />
+                          ) : item.type === 'video' ? (
+                            <VideoEmbed 
+                              url={item.url} 
+                              autoplay={autoplayEnabled}
+                              muted={autoplayEnabled ? muteEnabled : false}
+                            />
+                          ) : (
+                            <a
+                              href={item.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="link link-primary break-all"
+                            >
+                              {item.url}
+                            </a>
+                          )}
+                          {item.description && (
+                            <p className="mt-2 text-sm text-base-content/70">{item.description}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="bg-base-200 rounded-lg p-6 mb-4 min-h-[200px]">
+                <a
+                  href={highlightedCard.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="link link-primary break-all"
+                >
+                  {highlightedCard.url}
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right side - Controls, text, and cards (30%) */}
+        <div className="w-[30%] flex flex-col bg-base-200 border-l border-base-300">
+          {/* Top section - Controls */}
+          <div className="flex flex-col items-center gap-3 p-4 border-b border-base-300 flex-shrink-0">
+            {/* Navigation arrows and counter */}
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={() => navigateHighlight('prev')}
+                className="btn btn-circle btn-primary btn-sm"
+                disabled={linkCards.length === 0}
+              >
+                ←
+              </button>
+              <div className="text-sm text-base-content/70 font-medium">
+                {highlightedIndex + 1} / {linkCards.length}
+              </div>
+              <button
+                onClick={() => navigateHighlight('next')}
+                className="btn btn-circle btn-primary btn-sm"
+                disabled={linkCards.length === 0}
+              >
+                →
+              </button>
+            </div>
+            
+            {/* Autoplay and Mute toggles */}
+            <div className="flex items-center gap-3">
+              {/* Autoplay toggle */}
+              <div className="flex items-center gap-2">
+                <label className="label cursor-pointer gap-2">
+                  <span className="label-text text-xs">Autoplay</span>
+                  <input
+                    type="checkbox"
+                    checked={autoplayEnabled}
+                    onChange={(e) => setAutoplayEnabled(e.target.checked)}
+                    className="toggle toggle-primary toggle-sm"
+                  />
+                </label>
+              </div>
+              
+              {/* Mute toggle (only shown when autoplay is enabled) */}
+              {autoplayEnabled && (
+                <div className="flex items-center gap-2">
+                  <label className="label cursor-pointer gap-2">
+                    <span className="label-text text-xs">Mute</span>
+                    <input
+                      type="checkbox"
+                      checked={muteEnabled}
+                      onChange={(e) => setMuteEnabled(e.target.checked)}
+                      className="toggle toggle-secondary toggle-sm"
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Middle section - Text content */}
+          <div className="flex-shrink-0 p-4 border-b border-base-300">
+            <div className="bg-base-300 rounded-lg p-4">
+              <div className="mb-3 break-words overflow-wrap-anywhere">
+                <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  {highlightedCard.isYouTube 
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link')
+                    : highlightedCard.isReddit
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link')
+                    : highlightedCard.isTwitter
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
+                    : highlightedCard.isImgur
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link')
+                    : renderTextWithLinks(highlightedCard.text)
+                  }
+                </p>
+              </div>
+              <div className="flex items-center gap-4 pt-2 border-t border-base-content/20">
+                <div>
+                  <span className="text-xs text-base-content/70">Posted by</span>
+                  <a
+                    href={`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-2 text-sm font-bold text-primary hover:underline"
+                  >
+                    {highlightedCard.nick}
+                  </a>
+                </div>
+                <div className="text-xs text-base-content/50">
+                  {new Date(highlightedCard.date).toLocaleString()}
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Right side - Card list (30%) */}
-          <div className="w-[30%] overflow-y-auto p-4 bg-base-200">
+          {/* Bottom section - Card list */}
+          <div className="flex-1 overflow-y-auto p-4 min-h-0">
             <div className="space-y-3">
               {linkCards.map((card) => (
                 <div
@@ -1162,58 +1208,19 @@ function LinkScroller() {
           </div>
         </div>
 
-        {/* Navigation arrows and controls */}
-        <div className="flex justify-center items-center gap-4 p-4 border-t border-base-300">
-          <button
-            onClick={() => navigateHighlight('prev')}
-            className="btn btn-circle btn-primary"
-            disabled={linkCards.length === 0}
-          >
-            ←
-          </button>
-          <div className="text-sm text-base-content/70">
-            {highlightedIndex + 1} / {linkCards.length}
-          </div>
-          <button
-            onClick={() => navigateHighlight('next')}
-            className="btn btn-circle btn-primary"
-            disabled={linkCards.length === 0}
-          >
-            →
-          </button>
-          
-          {/* Autoplay toggle */}
-          <div className="divider divider-horizontal mx-2"></div>
-          <div className="flex items-center gap-2">
-            <label className="label cursor-pointer gap-2">
-              <span className="label-text text-sm">Autoplay</span>
-              <input
-                type="checkbox"
-                checked={autoplayEnabled}
-                onChange={(e) => setAutoplayEnabled(e.target.checked)}
-                className="toggle toggle-primary toggle-sm"
-              />
-            </label>
-          </div>
-          
-          {/* Mute toggle (only shown when autoplay is enabled) */}
-          {autoplayEnabled && (
-            <div className="flex items-center gap-2">
-              <label className="label cursor-pointer gap-2">
-                <span className="label-text text-sm">Mute</span>
-                <input
-                  type="checkbox"
-                  checked={muteEnabled}
-                  onChange={(e) => setMuteEnabled(e.target.checked)}
-                  className="toggle toggle-secondary toggle-sm"
-                />
-              </label>
-            </div>
-          )}
-        </div>
-
         {/* Floating action buttons - bottom right */}
         <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+          {/* Close button */}
+          <button
+            onClick={() => setHighlightedCardId(null)}
+            className="btn btn-circle btn-error shadow-lg"
+            title="Close highlight view"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          
           {/* Refresh button */}
           <button
             onClick={handleRefresh}
