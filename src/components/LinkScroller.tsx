@@ -351,16 +351,76 @@ function isImgurAlbumLink(url: string): boolean {
 }
 
 // Extract YouTube embed URL from various YouTube URL formats
+// Convert YouTube timestamp parameter to seconds
+// Supports formats: t=53, t=1h2m3s, t=1m30s, etc.
+function parseYouTubeTimestamp(tParam: string | null): number | null {
+  if (!tParam) return null
+  
+  try {
+    // If it's just a number, it's seconds
+    const numericMatch = tParam.match(/^(\d+)$/)
+    if (numericMatch) {
+      return parseInt(numericMatch[1], 10)
+    }
+    
+    // Parse format like 1h2m3s or 1m30s
+    let totalSeconds = 0
+    const hourMatch = tParam.match(/(\d+)h/)
+    if (hourMatch) {
+      totalSeconds += parseInt(hourMatch[1], 10) * 3600
+    }
+    const minuteMatch = tParam.match(/(\d+)m/)
+    if (minuteMatch) {
+      totalSeconds += parseInt(minuteMatch[1], 10) * 60
+    }
+    const secondMatch = tParam.match(/(\d+)s/)
+    if (secondMatch) {
+      totalSeconds += parseInt(secondMatch[1], 10)
+    }
+    
+    // If we found any matches, return the total
+    if (hourMatch || minuteMatch || secondMatch) {
+      return totalSeconds
+    }
+    
+    return null
+  } catch {
+    return null
+  }
+}
+
 function getYouTubeEmbedUrl(url: string): string | null {
   try {
     const urlObj = new URL(url)
     const hostname = urlObj.hostname.toLowerCase()
     
+    // Extract timestamp parameter (t=)
+    const tParam = urlObj.searchParams.get('t')
+    const startSeconds = parseYouTubeTimestamp(tParam)
+    
+    // Build base embed URL with rel=0
+    const buildEmbedUrl = (videoId: string, additionalParams?: string) => {
+      const params = new URLSearchParams()
+      params.set('rel', '0')
+      if (startSeconds !== null) {
+        params.set('start', startSeconds.toString())
+      }
+      if (additionalParams) {
+        const additional = new URLSearchParams(additionalParams)
+        additional.forEach((value, key) => {
+          if (key !== 'rel' && key !== 'start') {
+            params.set(key, value)
+          }
+        })
+      }
+      return `https://www.youtube.com/embed/${videoId}?${params.toString()}`
+    }
+    
     // Handle youtu.be short links: https://youtu.be/VIDEO_ID
     if (hostname === 'youtu.be') {
       const videoId = urlObj.pathname.slice(1).split('?')[0]
       if (videoId) {
-        return `https://www.youtube.com/embed/${videoId}?rel=0`
+        return buildEmbedUrl(videoId)
       }
     }
     
@@ -369,14 +429,20 @@ function getYouTubeEmbedUrl(url: string): string | null {
       // Check for playlist: youtube.com/playlist?list=PLAYLIST_ID
       const playlistId = urlObj.searchParams.get('list')
       if (playlistId) {
-        return `https://www.youtube.com/embed/videoseries?list=${playlistId}&rel=0`
+        const params = new URLSearchParams()
+        params.set('list', playlistId)
+        params.set('rel', '0')
+        if (startSeconds !== null) {
+          params.set('start', startSeconds.toString())
+        }
+        return `https://www.youtube.com/embed/videoseries?${params.toString()}`
       }
       
       // Check for YouTube Shorts: youtube.com/shorts/VIDEO_ID
       if (urlObj.pathname.startsWith('/shorts/')) {
         const videoId = urlObj.pathname.split('/shorts/')[1]?.split('?')[0]
         if (videoId) {
-          return `https://www.youtube.com/embed/${videoId}?rel=0`
+          return buildEmbedUrl(videoId)
         }
       }
       
@@ -384,7 +450,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
       // youtube.com/watch?v=VIDEO_ID
       const videoId = urlObj.searchParams.get('v')
       if (videoId) {
-        return `https://www.youtube.com/embed/${videoId}?rel=0`
+        return buildEmbedUrl(videoId)
       }
       
       // youtube.com/embed/VIDEO_ID (already an embed URL)
@@ -396,6 +462,10 @@ function getYouTubeEmbedUrl(url: string): string | null {
           if (!params.has('rel')) {
             params.set('rel', '0')
           }
+          // Add start parameter if timestamp exists
+          if (startSeconds !== null && !params.has('start')) {
+            params.set('start', startSeconds.toString())
+          }
           return `https://www.youtube.com/embed/${embedId}?${params.toString()}`
         }
       }
@@ -404,7 +474,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
       if (urlObj.pathname.startsWith('/v/')) {
         const videoId = urlObj.pathname.split('/v/')[1]?.split('?')[0]
         if (videoId) {
-          return `https://www.youtube.com/embed/${videoId}?rel=0`
+          return buildEmbedUrl(videoId)
         }
       }
     }
