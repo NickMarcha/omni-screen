@@ -1,7 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { update } from './update'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -368,15 +367,14 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
     const dataLength = Array.isArray(data) ? data.length : 0
     console.log(`  - Received ${dataLength} mentions`)
     
-    // Add unique ID to each mention based on hash of date and username
+    // Add unique ID to each mention using date and username directly (no hash needed)
     if (dataLength > 0 && Array.isArray(data)) {
       const dataWithIds = data.map((mention: any) => {
-        // Create hash from date and username (nick)
-        const hashInput = `${mention.date || ''}-${mention.nick || ''}`
-        const hash = crypto.createHash('sha256').update(hashInput).digest('hex').substring(0, 16)
+        // Use date-nick directly as unique ID (unique enough)
+        const uniqueId = `${mention.date || ''}-${mention.nick || ''}`
         return {
           ...mention,
-          id: hash
+          id: uniqueId
         }
       })
       

@@ -24,11 +24,12 @@ import wikipediaIcon from '../assets/icons/third-party/wikipedia.png'
 import blueskyIcon from '../assets/icons/third-party/bluesky.svg'
 
 interface MentionData {
-  id: string // Unique ID generated from hash of date and username
+  id: string // Unique ID: date-nick (no hash needed)
   date: number
   text: string
   nick: string
   flairs: string
+  matchedTerms: string[] // Terms from filter that matched this mention
 }
 
 interface ImgurAlbumMedia {
@@ -190,9 +191,10 @@ interface ThemeSettings {
 
 // Settings interface
 interface Settings {
-  filter: string
+  filter: string[] // Changed from string to array - list of usernames/terms to filter by
   showNSFW: boolean
   showNSFL: boolean
+  showNonLinks: boolean // New: show messages without links
   bannedTerms: string[] // Changed from string to array
   bannedUsers: string[] // New: list of banned usernames
   platformSettings: Record<string, PlatformDisplayMode> // New: platform display settings (filter/text/embed)
@@ -245,10 +247,25 @@ function loadSettings(): Settings {
         })
       }
       
+      // Migrate filter from string to array if needed
+      let filter: string[] = []
+      if (parsed.filter) {
+        if (Array.isArray(parsed.filter)) {
+          filter = parsed.filter
+        } else if (typeof parsed.filter === 'string') {
+          // Migrate old string filter to array
+          filter = [parsed.filter]
+        }
+      } else {
+        // Default to mrMouton if no filter exists
+        filter = ['mrMouton']
+      }
+      
       const migrated: Settings = {
-        filter: parsed.filter || 'mrMouton',
+        filter: filter,
         showNSFW: parsed.showNSFW ?? false,
         showNSFL: parsed.showNSFL ?? false,
+        showNonLinks: parsed.showNonLinks ?? false,
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
         platformSettings: platformSettings,
@@ -292,9 +309,10 @@ function loadSettings(): Settings {
   }
   
   const defaults: Settings = {
-    filter: 'mrMouton',
+    filter: ['mrMouton'],
     showNSFW: false,
     showNSFL: false,
+    showNonLinks: false,
     bannedTerms: [],
     bannedUsers: [],
     platformSettings: defaultPlatformSettings,
@@ -1592,9 +1610,10 @@ function LinkScroller() {
   const [viewMode, setViewMode] = useState<'overview' | 'highlight'>('overview')
   // Initialize tempSettings with safe defaults
   const [tempSettings, setTempSettings] = useState<Settings>(() => ({
-    filter: settings.filter || 'mrMouton',
+    filter: Array.isArray(settings.filter) ? settings.filter : (settings.filter ? [settings.filter] : ['mrMouton']),
     showNSFW: settings.showNSFW ?? false,
     showNSFL: settings.showNSFL ?? false,
+    showNonLinks: settings.showNonLinks ?? false,
     bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
     bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
     platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : {
@@ -1618,7 +1637,7 @@ function LinkScroller() {
   // Settings tab state
   const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
   
-  const { filter, showNSFW, showNSFL, bannedTerms, bannedUsers, platformSettings, trustedUsers } = settings
+  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1659,9 +1678,10 @@ function LinkScroller() {
         'LSF': 'embed',
       }
       setTempSettings({
-        filter: settings.filter || 'mrMouton',
+        filter: Array.isArray(settings.filter) ? settings.filter : (settings.filter ? [settings.filter] : ['mrMouton']),
         showNSFW: settings.showNSFW ?? false,
         showNSFL: settings.showNSFL ?? false,
+        showNonLinks: settings.showNonLinks ?? false,
         bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
         platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : defaultPlatformSettings,
@@ -1799,14 +1819,23 @@ function LinkScroller() {
 
   const SIZE = 150
 
-  const fetchMentions = useCallback(async (username: string, currentOffset: number, append: boolean = false) => {
+  const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false) => {
     logger.api('fetchMentions called', {
-      username,
+      filterTerms,
       currentOffset,
       append,
       size: SIZE,
       timestamp: new Date().toISOString()
     })
+    
+    if (filterTerms.length === 0) {
+      logger.api('No filter terms provided, skipping fetch')
+      if (!append) {
+        setMentions([])
+        setLoading(false)
+      }
+      return
+    }
     
     if (append) {
       setLoadingMore(true)
@@ -1819,67 +1848,98 @@ function LinkScroller() {
     
     try {
       const startTime = Date.now()
-      logger.api(`Invoking IPC: fetch-mentions`, { username, size: SIZE, offset: currentOffset })
       
-      const result = await window.ipcRenderer.invoke('fetch-mentions', username, SIZE, currentOffset)
+      // Fetch mentions for each filter term in parallel
+      logger.api(`Fetching mentions for ${filterTerms.length} terms`)
+      const fetchPromises = filterTerms.map(term => 
+        window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset)
+      )
       
+      const results = await Promise.all(fetchPromises)
       const fetchTime = Date.now() - startTime
-      logger.api(`IPC call completed in ${fetchTime}ms`, {
-        success: result.success,
-        dataLength: result.success ? (Array.isArray(result.data) ? result.data.length : 'not an array') : 'N/A',
-        error: result.success ? null : result.error
-      })
+      logger.api(`All IPC calls completed in ${fetchTime}ms`)
       
-      if (result.success) {
-        const newData = result.data as MentionData[]
-        logger.api(`Processing ${newData.length} mentions`)
-        
-        // Log the order of mentions (first 3 and last 3)
-        if (newData.length > 0) {
-          const firstFew = newData.slice(0, 3).map(m => ({
-            date: new Date(m.date).toISOString(),
-            text: m.text.substring(0, 50) + '...'
-          }))
-          const lastFew = newData.slice(-3).map(m => ({
-            date: new Date(m.date).toISOString(),
-            text: m.text.substring(0, 50) + '...'
-          }))
-          logger.debug('First 3 mentions:', firstFew)
-          logger.debug('Last 3 mentions:', lastFew)
+      // Merge results by unique ID (date-nick)
+      const mentionsMap = new Map<string, MentionData>()
+      
+      results.forEach((result, index) => {
+        const term = filterTerms[index]
+        if (result.success && Array.isArray(result.data)) {
+          const termData = result.data as MentionData[]
+          logger.api(`Processing ${termData.length} mentions for term "${term}"`)
           
-          // Check if they're sorted (newest first or oldest first)
-          const dates = newData.map(m => m.date)
-          const isDescending = dates.every((date, i) => i === 0 || dates[i - 1] >= date)
-          const isAscending = dates.every((date, i) => i === 0 || dates[i - 1] <= date)
-          logger.debug(`Order check: ${isDescending ? 'DESCENDING (newest first)' : isAscending ? 'ASCENDING (oldest first)' : 'UNSORTED'}`)
-        }
-        
-        // Sort by date descending (newest first) to ensure consistent ordering
-        const sortedData = [...newData].sort((a, b) => b.date - a.date)
-        logger.debug('Sorted mentions by date (newest first)')
-        
-        if (append) {
-          setMentions(prev => {
-            const combined = [...prev, ...sortedData]
-            logger.api(`Appended mentions. Total now: ${combined.length}`)
-            return combined
+          termData.forEach(mention => {
+            // Use date-nick as unique ID (no hash needed)
+            const uniqueId = `${mention.date}-${mention.nick}`
+            
+            if (mentionsMap.has(uniqueId)) {
+              // Merge: add this term to matchedTerms if not already present
+              const existing = mentionsMap.get(uniqueId)!
+              if (!existing.matchedTerms.includes(term)) {
+                existing.matchedTerms.push(term)
+              }
+            } else {
+              // New mention: set matchedTerms and ID
+              mentionsMap.set(uniqueId, {
+                ...mention,
+                id: uniqueId,
+                matchedTerms: [term]
+              })
+            }
           })
         } else {
-          logger.api('Setting new mentions (replacing existing)')
-          setMentions(sortedData)
+          logger.error(`Fetch failed for term "${term}":`, result.error || 'Unknown error')
         }
-        
-        // If we got fewer results than requested, we've reached the end
-        const hasMore = newData.length === SIZE
-        setHasMore(hasMore)
-        setOffset(currentOffset + newData.length)
-        logger.api(`Updated state: offset=${currentOffset + newData.length}, hasMore=${hasMore}`)
-      } else {
-        const errorMsg = result.error || 'Failed to fetch mentions'
-        logger.error(`Fetch failed: ${errorMsg}`)
-        setError(errorMsg)
-        setHasMore(false)
+      })
+      
+      // Convert map to array and sort by date (newest first)
+      const mergedData = Array.from(mentionsMap.values()).sort((a, b) => b.date - a.date)
+      logger.api(`Merged ${mergedData.length} unique mentions from ${filterTerms.length} terms`)
+      
+      if (mergedData.length > 0) {
+        const firstFew = mergedData.slice(0, 3).map(m => ({
+          date: new Date(m.date).toISOString(),
+          text: m.text.substring(0, 50) + '...',
+          matchedTerms: m.matchedTerms
+        }))
+        logger.debug('First 3 merged mentions:', firstFew)
       }
+      
+      if (append) {
+        setMentions(prev => {
+          // Merge with existing, avoiding duplicates
+          const existingMap = new Map<string, MentionData>()
+          prev.forEach(m => existingMap.set(m.id, m))
+          
+          mergedData.forEach(m => {
+            if (existingMap.has(m.id)) {
+              // Merge matchedTerms
+              const existing = existingMap.get(m.id)!
+              m.matchedTerms.forEach(term => {
+                if (!existing.matchedTerms.includes(term)) {
+                  existing.matchedTerms.push(term)
+                }
+              })
+            } else {
+              existingMap.set(m.id, m)
+            }
+          })
+          
+          const combined = Array.from(existingMap.values()).sort((a, b) => b.date - a.date)
+          logger.api(`Appended mentions. Total now: ${combined.length}`)
+          return combined
+        })
+      } else {
+        logger.api('Setting new mentions (replacing existing)')
+        setMentions(mergedData)
+      }
+      
+      // If any fetch returned fewer results than requested, we might have reached the end
+      // But since we're merging multiple fetches, we check if total merged is less than expected
+      const hasMore = mergedData.length >= SIZE
+      setHasMore(hasMore)
+      setOffset(currentOffset + mergedData.length)
+      logger.api(`Updated state: offset=${currentOffset + mergedData.length}, hasMore=${hasMore}`)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
       logger.error('Exception in fetchMentions:', err)
@@ -1902,7 +1962,7 @@ function LinkScroller() {
 
   // Reset and fetch when filter changes
   useEffect(() => {
-    if (filter) {
+    if (filter && filter.length > 0) {
       setOffset(0)
       setHasMore(true)
       setMentions([])
@@ -1962,80 +2022,98 @@ function LinkScroller() {
 
       const urls = extractUrls(mention.text)
       
-      urls.forEach((url, urlIndex) => {
-        // Check if this is a Reddit media link and extract the actual media URL
-        let actualUrl = url
-        let isRedditMedia = false
-        if (isRedditMediaLink(url)) {
-          try {
-            const urlObj = new URL(url)
-            const mediaUrl = urlObj.searchParams.get('url')
-            if (mediaUrl) {
-              actualUrl = decodeURIComponent(mediaUrl)
-              isRedditMedia = true
+      // If there are URLs, create cards for each URL
+      if (urls.length > 0) {
+        urls.forEach((url, urlIndex) => {
+          // Check if this is a Reddit media link and extract the actual media URL
+          let actualUrl = url
+          let isRedditMedia = false
+          if (isRedditMediaLink(url)) {
+            try {
+              const urlObj = new URL(url)
+              const mediaUrl = urlObj.searchParams.get('url')
+              if (mediaUrl) {
+                actualUrl = decodeURIComponent(mediaUrl)
+                isRedditMedia = true
+              }
+            } catch {
+              // If parsing fails, use original URL
             }
-          } catch {
-            // If parsing fails, use original URL
           }
-        }
-        
-        const mediaInfo = isDirectMedia(actualUrl)
-        const isYouTubeClip = isYouTubeClipLink(actualUrl)
-        // Only treat as embeddable YouTube if it's not a clip
-        const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
-        const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
-        const isTwitter = isTwitterStatusLink(actualUrl)
-        const isTikTok = isTikTokVideoLink(actualUrl)
-        const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
-        const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
-        const isStreamable = isStreamableLink(actualUrl)
-        const isWikipedia = isWikipediaLink(actualUrl)
-        const isBluesky = isBlueskyLink(actualUrl)
-        const isKick = isKickLink(actualUrl)
-        const isLSF = isLSFLink(actualUrl)
-        
-        const linkType = getLinkType(url)
-        
-        // Filter out platforms set to 'filter'
-        if (isPlatformFiltered(linkType, platformSettings)) {
-          return
-        }
-        
-        // Create unique ID using date, index, urlIndex, and a hash of the URL
-        // This ensures uniqueness even if the same URL appears multiple times
-        const urlHash = url.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
-        const uniqueId = `${mention.date}-${index}-${urlIndex}-${urlHash}-${url.slice(-20)}`
-        
-        // Check if user is trusted
+          
+          const mediaInfo = isDirectMedia(actualUrl)
+          const isYouTubeClip = isYouTubeClipLink(actualUrl)
+          // Only treat as embeddable YouTube if it's not a clip
+          const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
+          const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
+          const isTwitter = isTwitterStatusLink(actualUrl)
+          const isTikTok = isTikTokVideoLink(actualUrl)
+          const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
+          const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
+          const isStreamable = isStreamableLink(actualUrl)
+          const isWikipedia = isWikipediaLink(actualUrl)
+          const isBluesky = isBlueskyLink(actualUrl)
+          const isKick = isKickLink(actualUrl)
+          const isLSF = isLSFLink(actualUrl)
+          
+          const linkType = getLinkType(url)
+          
+          // Filter out platforms set to 'filter'
+          if (isPlatformFiltered(linkType, platformSettings)) {
+            return
+          }
+          
+          // Create unique ID using date, index, urlIndex, and a hash of the URL
+          // This ensures uniqueness even if the same URL appears multiple times
+          const urlHash = url.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          const uniqueId = `${mention.date}-${index}-${urlIndex}-${urlHash}-${url.slice(-20)}`
+          
+          // Check if user is trusted
+          const isTrusted = isTrustedUser(mention.nick, trustedUsers)
+          
+          cards.push({
+            id: uniqueId,
+            url: actualUrl, // Use the actual media URL if it's a Reddit media link
+            text: mention.text,
+            nick: mention.nick,
+            date: mention.date,
+            isDirectMedia: mediaInfo.isMedia,
+            mediaType: mediaInfo.type,
+            linkType: linkType, // Keep original URL for link type detection
+            embedUrl: embedUrl || undefined,
+            isYouTube,
+            isTwitter,
+            isTikTok,
+            isReddit,
+            isImgur,
+            isStreamable,
+            isWikipedia,
+            isBluesky,
+            isKick,
+            isLSF,
+            isTrusted, // Add trusted flag
+          })
+        })
+      } else if (showNonLinks) {
+        // If no URLs and showNonLinks is enabled, create a card for the message
+        const uniqueId = `${mention.date}-${index}-no-link`
         const isTrusted = isTrustedUser(mention.nick, trustedUsers)
         
         cards.push({
           id: uniqueId,
-          url: actualUrl, // Use the actual media URL if it's a Reddit media link
+          url: '', // Empty URL for non-link messages
           text: mention.text,
           nick: mention.nick,
           date: mention.date,
-          isDirectMedia: mediaInfo.isMedia,
-          mediaType: mediaInfo.type,
-          linkType: linkType, // Keep original URL for link type detection
-          embedUrl: embedUrl || undefined,
-          isYouTube,
-          isTwitter,
-          isTikTok,
-          isReddit,
-          isImgur,
-          isStreamable,
-          isWikipedia,
-          isBluesky,
-          isKick,
-          isLSF,
-          isTrusted, // Add trusted flag
+          isDirectMedia: false,
+          linkType: undefined,
+          isTrusted,
         })
-      })
+      }
     })
 
     return cards
-  }, [mentions, showNSFW, showNSFL, bannedTerms, bannedUsers, platformSettings, trustedUsers])
+  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -2331,44 +2409,52 @@ function LinkScroller() {
           {/* Filtering Tab */}
           {settingsTab === 'filtering' && (
             <div className="space-y-4">
-              {/* Filter input */}
-              <div>
-                <label className="label">
-                  <span className="label-text">Filter (username):</span>
-                </label>
-                <input
-                  type="text"
-                  value={tempSettings.filter}
-                  onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
-                  placeholder="Enter username"
-                  className="input input-bordered w-full"
-                />
-              </div>
+              {/* Filter terms - list of usernames/terms */}
+              <ListManager
+                title="Filter Terms"
+                items={tempSettings.filter}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, filter: items })}
+                placeholder="Enter username or term"
+                helpText="Messages mentioning these usernames/terms will be shown"
+              />
 
-              {/* Show NSFW toggle */}
-              <div className="form-control">
-                <label className="label cursor-pointer">
-                  <span className="label-text">Show NSFW</span>
-                  <input
-                    type="checkbox"
-                    checked={tempSettings.showNSFW}
-                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
-                    className="toggle toggle-primary"
-                  />
-                </label>
-              </div>
+              {/* Show NSFW, NSFL, and non-links toggles - side by side */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="form-control">
+                  <label className="label cursor-pointer">
+                    <span className="label-text">Show NSFW</span>
+                    <input
+                      type="checkbox"
+                      checked={tempSettings.showNSFW}
+                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
+                      className="toggle toggle-primary"
+                    />
+                  </label>
+                </div>
 
-              {/* Show NSFL toggle */}
-              <div className="form-control">
-                <label className="label cursor-pointer">
-                  <span className="label-text">Show NSFL</span>
-                  <input
-                    type="checkbox"
-                    checked={tempSettings.showNSFL}
-                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
-                    className="toggle toggle-primary"
-                  />
-                </label>
+                <div className="form-control">
+                  <label className="label cursor-pointer">
+                    <span className="label-text">Show NSFL</span>
+                    <input
+                      type="checkbox"
+                      checked={tempSettings.showNSFL}
+                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
+                      className="toggle toggle-primary"
+                    />
+                  </label>
+                </div>
+
+                <div className="form-control">
+                  <label className="label cursor-pointer" title="Include messages that don't contain any links in the feed">
+                    <span className="label-text">Show non-links</span>
+                    <input
+                      type="checkbox"
+                      checked={tempSettings.showNonLinks}
+                      onChange={(e) => setTempSettings({ ...tempSettings, showNonLinks: e.target.checked })}
+                      className="toggle toggle-primary"
+                    />
+                  </label>
+                </div>
               </div>
 
               {/* Banned terms */}
@@ -2813,7 +2899,7 @@ function LinkScroller() {
                           />
                         ) : (
                           <div className="flex flex-col items-center justify-center bg-primary text-primary-content rounded px-1.5 py-0.5">
-                            {(card.linkType || 'Link').split('').map((letter, index) => (
+                            {(!card.url || card.url === '' ? 'Text' : (card.linkType || 'Link')).split('').map((letter, index) => (
                               <span key={index} className="text-base leading-none block">{letter}</span>
                             ))}
                           </div>
