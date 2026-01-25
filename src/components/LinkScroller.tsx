@@ -703,7 +703,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode> }) {
+function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emotesMap }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string> }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -794,45 +794,62 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
               id={`card-${card.id}`}
               className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
             >
-              {/* Embed content above - constrained to prevent overflow */}
-              <div className="flex-shrink-0 overflow-hidden">
-                {card.isDirectMedia ? (
-                  <div>
-                    {card.mediaType === 'image' ? (
-                      <ImageEmbed 
-                        url={card.url} 
-                        alt={card.text}
-                        className="w-full object-contain rounded-t-lg"
-                      />
-                    ) : (
-                      <VideoEmbed 
-                        url={card.url}
-                        autoplay={false}
-                        muted={true}
-                        controls={true}
-                        className="w-full rounded-t-lg"
-                      />
-                    )}
-                  </div>
-                ) : (() => {
-                  // Check platform display mode
-                  const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
-                  const twitterMode = getPlatformDisplayMode('Twitter', platformSettings)
-                  const tiktokMode = getPlatformDisplayMode('TikTok', platformSettings)
-                  const redditMode = getPlatformDisplayMode('Reddit', platformSettings)
-                  const streamableMode = getPlatformDisplayMode('Streamable', platformSettings)
-                  const wikipediaMode = getPlatformDisplayMode('Wikipedia', platformSettings)
-                  const blueskyMode = getPlatformDisplayMode('Bluesky', platformSettings)
-                  const kickMode = getPlatformDisplayMode('Kick', platformSettings)
-                  const lsfMode = getPlatformDisplayMode('LSF', platformSettings)
-                  const imgurMode = getPlatformDisplayMode('Imgur', platformSettings)
+              {(() => {
+                // Check platform display mode (calculate outside IIFE so we can use it for hasEmbed check)
+                const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
+                const twitterMode = getPlatformDisplayMode('Twitter', platformSettings)
+                const tiktokMode = getPlatformDisplayMode('TikTok', platformSettings)
+                const redditMode = getPlatformDisplayMode('Reddit', platformSettings)
+                const streamableMode = getPlatformDisplayMode('Streamable', platformSettings)
+                const wikipediaMode = getPlatformDisplayMode('Wikipedia', platformSettings)
+                const blueskyMode = getPlatformDisplayMode('Bluesky', platformSettings)
+                const kickMode = getPlatformDisplayMode('Kick', platformSettings)
+                const lsfMode = getPlatformDisplayMode('LSF', platformSettings)
+                const imgurMode = getPlatformDisplayMode('Imgur', platformSettings)
+                
+                // Check if card has an embed to show
+                const hasEmbed = card.isDirectMedia || 
+                  (card.isYouTube && youtubeMode === 'embed' && card.embedUrl) ||
+                  (card.isTwitter && twitterMode === 'embed') ||
+                  (card.isTikTok && tiktokMode === 'embed') ||
+                  (card.isReddit && redditMode === 'embed') ||
+                  (card.isStreamable && streamableMode === 'embed') ||
+                  (card.isWikipedia && wikipediaMode === 'embed') ||
+                  (card.isBluesky && blueskyMode === 'embed') ||
+                  (card.isKick && kickMode === 'embed') ||
+                  (card.isLSF && lsfMode === 'embed') ||
+                  (card.isImgur && imgurMode === 'embed')
+                
+                return (
+                  <>
+                    {/* Embed content above - constrained to prevent overflow */}
+                    <div className="flex-shrink-0 overflow-hidden">
+                      {card.isDirectMedia ? (
+                        <div>
+                          {card.mediaType === 'image' ? (
+                            <ImageEmbed 
+                              url={card.url} 
+                              alt={card.text}
+                              className="w-full object-contain rounded-t-lg"
+                            />
+                          ) : (
+                            <VideoEmbed 
+                              url={card.url}
+                              autoplay={false}
+                              muted={true}
+                              controls={true}
+                              className="w-full rounded-t-lg"
+                            />
+                          )}
+                        </div>
+                      ) : (() => {
                   
                   // Show text version if platform setting is 'text'
                   if (card.isYouTube && youtubeMode === 'text') {
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'YouTube link')}
+                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -844,7 +861,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Twitter link')}
+                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -856,7 +873,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'TikTok link')}
+                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -868,7 +885,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Reddit link')}
+                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -880,7 +897,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Streamable link')}
+                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -892,7 +909,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link')}
+                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -904,7 +921,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Bluesky link')}
+                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -916,7 +933,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Kick link')}
+                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -928,7 +945,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'LSF link')}
+                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -940,7 +957,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4">
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Imgur link')}
+                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
                           {card.url}
@@ -1042,14 +1059,8 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                     )
                   }
                   
-                  // Fallback for other cases
-                  return (
-                    <div className="card-body break-words overflow-wrap-anywhere">
-                      <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                        {renderTextWithLinks(card.text)}
-                      </p>
-                    </div>
-                  )
+                  // Fallback for other cases - no embed to show
+                  return null
                 })()}
               </div>
               
@@ -1060,24 +1071,24 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                   <div className="break-words overflow-wrap-anywhere mb-3">
                     <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {card.isYouTube 
-                        ? renderTextWithLinks(card.text, card.url, 'YouTube link')
+                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap)
                         : card.isReddit
-                        ? renderTextWithLinks(card.text, card.url, 'Reddit link')
+                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap)
                         : card.isTwitter
-                        ? renderTextWithLinks(card.text, card.url, 'Twitter link')
+                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap)
                         : card.isStreamable
-                        ? renderTextWithLinks(card.text, card.url, 'Streamable link')
+                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap)
                         : card.isImgur
-                        ? renderTextWithLinks(card.text, card.url, 'Imgur link')
+                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap)
                         : card.isWikipedia
-                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link')
+                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap)
                         : card.isBluesky
-                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link')
+                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap)
                         : card.isKick
-                        ? renderTextWithLinks(card.text, card.url, 'Kick link')
+                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap)
                         : card.isLSF
-                        ? renderTextWithLinks(card.text, card.url, 'LSF link')
-                        : renderTextWithLinks(card.text)
+                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap)
+                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap)
                       }
                     </p>
                   </div>
@@ -1100,18 +1111,24 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
                         {new Date(card.date).toLocaleString()}
                       </div>
                     </div>
-                    <button
-                      onClick={() => onCardClick(card.id)}
-                      className="btn btn-sm btn-circle btn-primary flex-shrink-0"
-                      title="Expand"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                      </svg>
-                    </button>
+                    {/* Only show expand button if there's an embed to expand */}
+                    {hasEmbed ? (
+                      <button
+                        onClick={() => onCardClick(card.id)}
+                        className="btn btn-sm btn-circle btn-primary flex-shrink-0"
+                        title="Expand"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                        </svg>
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
+                  </>
+                )
+              })()}
             </div>
           ))}
         </div>
@@ -1120,7 +1137,23 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { 
   )
 }
 
-// Render text with clickable links
+// Emote data type
+interface EmoteData {
+  prefix: string
+  creator: string
+  twitch: boolean
+  theme: number
+  minimumSubTier: number
+  image: Array<{
+    url: string
+    name: string
+    mime: string
+    height: number
+    width: number
+  }>
+}
+
+// Render text with clickable links and emotes
 // Keybinds Tab Component
 function KeybindsTab({ keybinds, onKeybindsChange }: { keybinds: Keybind[]; onKeybindsChange: (keybinds: Keybind[]) => void }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -1337,18 +1370,176 @@ function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThemeChang
   )
 }
 
-function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string): JSX.Element {
+// Load CSS file dynamically
+function loadCSSOnce(href: string, id: string): Promise<void> {
+  // Check if already loaded
+  const existingLink = document.querySelector(`link[href="${href}"]`)
+  if (existingLink) {
+    return Promise.resolve()
+  }
+  
+  return new Promise<void>((resolve, reject) => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = href
+    link.id = id
+    
+    link.onload = () => resolve()
+    link.onerror = () => reject(new Error(`Failed to load CSS: ${href}`))
+    
+    document.head.appendChild(link)
+  })
+}
+
+// Process text segment to replace emotes with CSS-styled spans
+function processTextWithEmotes(text: string, emotesMap: Map<string, string>, baseKey: number = 0): (string | JSX.Element)[] {
+  if (emotesMap.size === 0) {
+    return [text]
+  }
+
+  const parts: (string | JSX.Element)[] = []
+  let lastIndex = 0
+  let keyCounter = baseKey
+
+  // Sort emotes by prefix length (longest first) to match longer prefixes first
+  const sortedPrefixes = Array.from(emotesMap.keys()).sort((a, b) => b.length - a.length)
+
+  // Create a regex pattern that matches any emote prefix as a whole word
+  // Use word boundaries to ensure we match whole words only
+  const emotePattern = new RegExp(
+    `\\b(${sortedPrefixes.map(prefix => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+    'gi'
+  )
+
+  let match
+  while ((match = emotePattern.exec(text)) !== null) {
+    const matchedPrefix = match[1]
+    // Check if emote exists (we don't need the URL for CSS-based rendering)
+    if (emotesMap.has(matchedPrefix)) {
+      // Add text before the emote
+      if (match.index > lastIndex) {
+        const beforeText = text.substring(lastIndex, match.index)
+        if (beforeText) {
+          parts.push(beforeText)
+        }
+      }
+      
+      // Add the emote as a span with CSS classes
+      // The CSS file defines .emote.PREFIX classes
+      parts.push(
+        <span
+          key={`emote-${keyCounter++}`}
+          className={`emote ${matchedPrefix}`}
+          style={{ display: 'inline-block' }}
+        />
+      )
+      
+      lastIndex = match.index + match[0].length
+    }
+  }
+  
+  // Add remaining text
+  if (lastIndex < text.length) {
+    const remainingText = text.substring(lastIndex)
+    if (remainingText) {
+      parts.push(remainingText)
+    }
+  }
+  
+  return parts.length > 0 ? parts : [text]
+}
+
+// Process a text segment for greentext (lines starting with ">")
+function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey: number = 0): (string | JSX.Element)[] {
+  const lines = text.split('\n')
+  const parts: (string | JSX.Element)[] = []
+  let keyCounter = baseKey
+
+  lines.forEach((line, lineIndex) => {
+    const isGreentext = line.trim().startsWith('>')
+    
+    if (isGreentext) {
+      // Process the greentext line for emotes
+      const processedLine = emotesMap ? processTextWithEmotes(line, emotesMap, keyCounter) : [line]
+      
+      processedLine.forEach((part) => {
+        if (typeof part === 'string') {
+          parts.push(
+            <span
+              key={`greentext-${keyCounter++}`}
+              style={{
+                color: 'rgb(108, 165, 40)',
+                fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
+                fontSize: '16px',
+                lineHeight: '26.4px',
+                boxSizing: 'border-box',
+                textRendering: 'optimizeLegibility',
+                overflowWrap: 'break-word'
+              }}
+            >
+              {part}
+            </span>
+          )
+        } else {
+          // For emote images, wrap in greentext span
+          parts.push(
+            <span
+              key={`greentext-${keyCounter++}`}
+              style={{
+                color: 'rgb(108, 165, 40)',
+                fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
+                fontSize: '16px',
+                lineHeight: '26.4px',
+                boxSizing: 'border-box',
+                textRendering: 'optimizeLegibility',
+                overflowWrap: 'break-word'
+              }}
+            >
+              {part}
+            </span>
+          )
+        }
+      })
+    } else {
+      // Regular text - process for emotes but don't apply greentext styling
+      const processedLine = emotesMap ? processTextWithEmotes(line, emotesMap, keyCounter) : [line]
+      processedLine.forEach((part) => {
+        if (typeof part === 'string') {
+          parts.push(part)
+        } else {
+          parts.push(part)
+        }
+        keyCounter++
+      })
+    }
+    
+    // Add newline after each line except the last
+    if (lineIndex < lines.length - 1) {
+      parts.push('\n')
+    }
+  })
+
+  return parts.length > 0 ? parts : [text]
+}
+
+function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string, emotesMap?: Map<string, string>): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
   let match
   let hasLinks = false
+  let keyCounter = 0
 
   while ((match = urlRegex.exec(text)) !== null) {
     hasLinks = true
-    // Add text before the link
+    // Add text before the link (process for greentext and emotes)
     if (match.index > lastIndex) {
-      parts.push(text.substring(lastIndex, match.index))
+      const textSegment = text.substring(lastIndex, match.index)
+      const processedSegment = processGreentext(textSegment, emotesMap, keyCounter)
+      processedSegment.forEach((part) => {
+        parts.push(part)
+        keyCounter++
+      })
     }
     
     // Add the link
@@ -1359,7 +1550,7 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
     
     parts.push(
       <a
-        key={match.index}
+        key={`link-${keyCounter++}`}
         href={url}
         target="_blank"
         rel="noopener noreferrer"
@@ -1374,16 +1565,22 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
     lastIndex = match.index + match[0].length
   }
   
-  // Add remaining text
+  // Add remaining text (process for greentext and emotes)
   if (lastIndex < text.length) {
-    parts.push(text.substring(lastIndex))
+    const textSegment = text.substring(lastIndex)
+    const processedSegment = processGreentext(textSegment, emotesMap, keyCounter)
+    processedSegment.forEach((part) => {
+      parts.push(part)
+      keyCounter++
+    })
   }
   
-  // If no links found, return plain text
+  // If no links found, still process for greentext and emotes
   if (!hasLinks) {
-    return <>{text}</>
+    const processedSegment = processGreentext(text, emotesMap, keyCounter)
+    return <>{processedSegment}</>
   }
-  
+
   return <>{parts}</>
 }
 
@@ -1440,6 +1637,9 @@ function LinkScroller() {
   const [imgurAlbumError, setImgurAlbumError] = useState<string | null>(null)
   const waitingForMoreRef = useRef(false) // Track if we're waiting for more content to load
   const refreshingRef = useRef(false) // Track if we're refreshing the feed
+  
+  // Emotes data
+  const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
 
   // Update temp settings when settings modal opens
   useEffect(() => {
@@ -1562,6 +1762,40 @@ function LinkScroller() {
     }
   }, [settings.theme, applyTheme])
   
+  // Fetch emotes and load CSS on mount
+  useEffect(() => {
+    const fetchEmotes = async () => {
+      try {
+        // Load CSS file first (with cache-busting parameter)
+        const cssUrl = `https://cdn.destiny.gg/emotes/emotes.css?_=${Date.now()}`
+        await loadCSSOnce(cssUrl, 'destiny-emotes-css')
+        
+        // Then fetch emote data
+        const response = await fetch('https://cdn.destiny.gg/emotes/emotes.json')
+        if (!response.ok) {
+          throw new Error(`Failed to fetch emotes: ${response.status}`)
+        }
+        const emotesData: EmoteData[] = await response.json()
+        
+        // Create a map of prefix -> exists (we just need to know which emotes exist for CSS classes)
+        const map = new Map<string, string>()
+        emotesData.forEach((emote) => {
+          if (emote.image && emote.image.length > 0) {
+            // Store a placeholder value (we don't need the URL for CSS-based rendering)
+            map.set(emote.prefix, '')
+          }
+        })
+        
+        setEmotesMap(map)
+        logger.api(`Loaded ${map.size} emotes with CSS`)
+      } catch (error) {
+        logger.error('Failed to fetch emotes or load CSS:', error)
+        // Continue without emotes if fetch fails
+      }
+    }
+    
+    fetchEmotes()
+  }, [])
 
   const SIZE = 150
 
@@ -2513,18 +2747,18 @@ function LinkScroller() {
               <div className="mb-3 break-words overflow-wrap-anywhere">
                 <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {highlightedCard.isYouTube 
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link')
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap)
                     : highlightedCard.isReddit
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link')
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap)
                     : highlightedCard.isTwitter
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap)
                     : highlightedCard.isImgur
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link')
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap)
                     : highlightedCard.isKick
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link')
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link', emotesMap)
                     : highlightedCard.isLSF
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link')
-                    : renderTextWithLinks(highlightedCard.text)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link', emotesMap)
+                    : renderTextWithLinks(highlightedCard.text, undefined, undefined, emotesMap)
                   }
                 </p>
               </div>
@@ -2693,7 +2927,7 @@ function LinkScroller() {
       {!loading && linkCards.length > 0 && (
         <>
           <div className="max-w-7xl mx-auto">
-            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setExpandedCardId(cardId)} getEmbedTheme={getEmbedTheme} platformSettings={platformSettings} />
+            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setExpandedCardId(cardId)} getEmbedTheme={getEmbedTheme} platformSettings={platformSettings} emotesMap={emotesMap} />
           </div>
           {/* Load More button */}
           {hasMore && (
@@ -2757,7 +2991,9 @@ function LinkScroller() {
                   </div>
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">Message</div>
-                    <div className="text-sm whitespace-pre-wrap break-words">{expandedCard.text}</div>
+                    <div className="text-sm whitespace-pre-wrap break-words">
+                      {renderTextWithLinks(expandedCard.text, undefined, undefined, emotesMap)}
+                    </div>
                   </div>
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">Link</div>
@@ -2791,7 +3027,7 @@ function LinkScroller() {
                       )}
                     </div>
                   ) : expandedCard.isYouTube && expandedCard.embedUrl ? (
-                    <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl || null} autoplay={false} mute={false} />
+                    <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl as string} autoplay={false} mute={false} />
                   ) : expandedCard.isTwitter ? (
                     <TwitterEmbed url={expandedCard.url} theme={getEmbedTheme()} />
                   ) : expandedCard.isTikTok ? (
