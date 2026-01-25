@@ -153,6 +153,30 @@ function isTrustedUser(nick: string, trustedUsers: string[] | undefined): boolea
   return trustedUsers.some(user => user.trim() && lowerNick === user.trim().toLowerCase())
 }
 
+// Muted user interface
+interface MutedUser {
+  nick: string
+  muteUntil: number // Timestamp when mute expires
+}
+
+// Check if user is muted (and mute hasn't expired)
+function isMutedUser(nick: string, mutedUsers: MutedUser[] | undefined): boolean {
+  if (!mutedUsers || mutedUsers.length === 0) return false
+  const lowerNick = nick.toLowerCase()
+  const now = Date.now()
+  return mutedUsers.some(muted => {
+    const lowerMuted = muted.nick.toLowerCase()
+    return lowerMuted === lowerNick && muted.muteUntil > now
+  })
+}
+
+// Clean up expired mutes
+function cleanupExpiredMutes(mutedUsers: MutedUser[] | undefined): MutedUser[] {
+  if (!mutedUsers || mutedUsers.length === 0) return []
+  const now = Date.now()
+  return mutedUsers.filter(muted => muted.muteUntil > now)
+}
+
 // Check if platform is disabled
 type PlatformDisplayMode = 'filter' | 'text' | 'embed'
 
@@ -202,6 +226,7 @@ interface Settings {
   bannedUsers: string[] // New: list of banned usernames
   platformSettings: Record<string, PlatformDisplayMode> // New: platform display settings (filter/text/embed)
   trustedUsers: string[] // New: list of trusted usernames
+  mutedUsers?: MutedUser[] // New: list of muted users with expiration timestamps
   keybinds: Keybind[] // New: customizable keyboard shortcuts
   theme: ThemeSettings // New: theme settings
 }
@@ -264,6 +289,15 @@ function loadSettings(): Settings {
         filter = ['mrMouton']
       }
       
+      // Clean up expired mutes
+      let mutedUsers: MutedUser[] = []
+      if (Array.isArray(parsed.mutedUsers)) {
+        mutedUsers = cleanupExpiredMutes(parsed.mutedUsers)
+        if (mutedUsers.length !== parsed.mutedUsers.length) {
+          logger.settings(`Cleaned up ${parsed.mutedUsers.length - mutedUsers.length} expired mutes`)
+        }
+      }
+      
       const migrated: Settings = {
         filter: filter,
         showNSFW: parsed.showNSFW ?? false,
@@ -273,6 +307,7 @@ function loadSettings(): Settings {
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
         platformSettings: platformSettings,
         trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
+        mutedUsers: mutedUsers,
         keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
         theme: parsed.theme && typeof parsed.theme === 'object' ? {
           mode: parsed.theme.mode || 'system',
@@ -320,6 +355,7 @@ function loadSettings(): Settings {
     bannedUsers: [],
     platformSettings: defaultPlatformSettings,
     trustedUsers: [],
+    mutedUsers: [],
     keybinds: defaultKeybinds,
     theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
   }
@@ -1639,6 +1675,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       'LSF': 'embed',
     },
     trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
+    mutedUsers: Array.isArray(settings.mutedUsers) ? cleanupExpiredMutes(settings.mutedUsers) : [],
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
     theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
   }))
@@ -1646,7 +1683,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Settings tab state
   const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
   
-  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers } = settings
+  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers, mutedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1693,7 +1730,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     card: null
   })
 
-  // Update temp settings when settings modal opens
+  // Update temp settings when settings modal opens or when settings change while modal is open
   useEffect(() => {
     if (settingsOpen) {
       // Ensure all fields are present with defaults
@@ -1719,7 +1756,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
         platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : defaultPlatformSettings,
         trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
-        keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : [],
+        mutedUsers: Array.isArray(settings.mutedUsers) ? settings.mutedUsers : [], // Include all mutes (cleanup happens on save)
+        keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
         theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
       })
     }
@@ -1788,6 +1826,27 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     closeContextMenu()
   }, [settings, updateSettings, closeContextMenu])
 
+  const handleMuteUser = useCallback((nick: string) => {
+    const now = Date.now()
+    const muteUntil = now + (24 * 60 * 60 * 1000) // 24 hours from now
+    const currentMutedUsers = cleanupExpiredMutes(settings.mutedUsers || [])
+    
+    // Remove existing mute for this user if any
+    const filteredMuted = currentMutedUsers.filter(m => m.nick.toLowerCase() !== nick.toLowerCase())
+    
+    // Add new mute
+    const newMutedUsers = [...filteredMuted, { nick, muteUntil }]
+    logger.api(`Muting user: ${nick} until ${new Date(muteUntil).toLocaleString()}`)
+    updateSettings({ ...settings, mutedUsers: newMutedUsers })
+    closeContextMenu()
+  }, [settings, updateSettings, closeContextMenu])
+
+  const handleUnmuteUser = useCallback((nick: string) => {
+    const newMutedUsers = (settings.mutedUsers || []).filter(m => m.nick.toLowerCase() !== nick.toLowerCase())
+    updateSettings({ ...settings, mutedUsers: newMutedUsers })
+    closeContextMenu()
+  }, [settings, updateSettings, closeContextMenu])
+
 
   const handleCopyLink = useCallback((url: string) => {
     navigator.clipboard.writeText(url).catch(err => {
@@ -1851,7 +1910,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
   // Handle settings modal save
   const handleSaveSettings = () => {
-    updateSettings(tempSettings)
+    // Clean up expired mutes before saving
+    const cleanedMutedUsers = cleanupExpiredMutes(tempSettings.mutedUsers || [])
+    const cleanedSettings = { ...tempSettings, mutedUsers: cleanedMutedUsers }
+    updateSettings(cleanedSettings)
     setSettingsOpen(false)
     // Apply theme immediately
     applyTheme(tempSettings.theme)
@@ -2544,6 +2606,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         return
       }
 
+      // Filter out muted users (mutes expire after 24 hours)
+      if (isMutedUser(mention.nick, mutedUsers)) {
+        return
+      }
+
       const urls = extractUrls(mention.text)
       
       // If there are URLs, create cards for each URL
@@ -2639,7 +2706,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     })
 
     return cards
-  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers])
+  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers, mutedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -3009,6 +3076,64 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 placeholder="Enter username"
                 helpText="Cards from these users will have a golden outline"
               />
+
+              {/* Muted users */}
+              <div>
+                <label className="label">
+                  <span className="label-text font-semibold">Muted Users</span>
+                </label>
+                <div className="text-xs text-base-content/70 mb-2">
+                  Muted users are temporarily filtered out for 24 hours. Expired mutes are automatically removed.
+                </div>
+                <div className="space-y-2 max-h-48 overflow-y-auto border border-base-300 rounded-lg p-2">
+                  {(() => {
+                    // Show all mutes from tempSettings (cleanup happens on save)
+                    const allMutes = tempSettings.mutedUsers || []
+                    const activeMutes = cleanupExpiredMutes(allMutes)
+                    
+                    // Log for debugging
+                    if (allMutes.length > 0) {
+                      logger.api(`Muted users in tempSettings: ${allMutes.length}, active: ${activeMutes.length}`)
+                    }
+                    
+                    if (allMutes.length === 0) {
+                      return (
+                        <div className="text-sm text-base-content/50 text-center py-4">
+                          No active mutes
+                        </div>
+                      )
+                    }
+                    // Show all mutes, not just active ones (so user can see expired ones too)
+                    return allMutes.map((muted, index) => {
+                      const now = Date.now()
+                      const timeRemaining = muted.muteUntil - now
+                      const hoursRemaining = Math.ceil(timeRemaining / (60 * 60 * 1000))
+                      const isExpired = timeRemaining <= 0
+                      
+                      return (
+                        <div key={index} className="flex items-center justify-between p-2 bg-base-200 rounded">
+                          <div className="flex-1">
+                            <div className="font-semibold text-sm">{muted.nick}</div>
+                            <div className="text-xs text-base-content/50">
+                              {isExpired ? 'Expired' : `Muted for ${hoursRemaining} more hour${hoursRemaining !== 1 ? 's' : ''}`}
+                            </div>
+                          </div>
+                          <button
+                            className="btn btn-xs btn-ghost"
+                            onClick={() => {
+                              const newMutedUsers = (tempSettings.mutedUsers || []).filter(m => m.nick !== muted.nick)
+                              setTempSettings({ ...tempSettings, mutedUsers: newMutedUsers })
+                            }}
+                            title="Unmute"
+                          >
+                            Unmute
+                          </button>
+                        </div>
+                      )
+                    })
+                  })()}
+                </div>
+              </div>
 
               {/* Platform display settings */}
               <div>
@@ -4037,6 +4162,21 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 onClick={() => handleUntrustUser(contextMenu.card!.nick)}
               >
                 Untrust User
+              </button>
+            )}
+            {!isMutedUser(contextMenu.card.nick, mutedUsers) ? (
+              <button
+                className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
+                onClick={() => handleMuteUser(contextMenu.card!.nick)}
+              >
+                Mute 1d
+              </button>
+            ) : (
+              <button
+                className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
+                onClick={() => handleUnmuteUser(contextMenu.card!.nick)}
+              >
+                Unmute
               </button>
             )}
           </div>
