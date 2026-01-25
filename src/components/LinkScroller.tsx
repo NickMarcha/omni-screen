@@ -1602,7 +1602,7 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
   return <>{parts}</>
 }
 
-function LinkScroller() {
+function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Load settings on mount
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -2946,6 +2946,19 @@ function LinkScroller() {
 
         {/* Floating action buttons - bottom right */}
         <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+          {/* Back to Menu button */}
+          {onBackToMenu && (
+            <button
+              onClick={onBackToMenu}
+              className="btn btn-circle btn-primary shadow-lg"
+              title="Back to Menu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+              </svg>
+            </button>
+          )}
+          
           {/* Mode toggle button */}
           <button
             onClick={() => {
@@ -3166,6 +3179,19 @@ function LinkScroller() {
 
       {/* Floating action buttons - bottom right */}
       <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+        {/* Back to Menu button */}
+        {onBackToMenu && (
+          <button
+            onClick={onBackToMenu}
+            className="btn btn-circle btn-primary shadow-lg"
+            title="Back to Menu"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+          </button>
+        )}
+        
         {/* Mode toggle button */}
         <button
           onClick={() => {
