@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 
 interface ImageEmbedProps {
   url: string
@@ -6,7 +6,7 @@ interface ImageEmbedProps {
   className?: string
 }
 
-export default function ImageEmbed({ 
+function ImageEmbed({ 
   url, 
   alt = 'Image',
   className = 'w-full max-h-[70vh] object-contain rounded-lg mb-4'
@@ -73,3 +73,11 @@ export default function ImageEmbed({
     />
   )
 }
+
+export default memo(ImageEmbed, (prevProps, nextProps) => {
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.alt === nextProps.alt &&
+    prevProps.className === nextProps.className
+  )
+})

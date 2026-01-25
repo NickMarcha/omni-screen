@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import { loadScriptOnce } from '../../utils/scriptLoader'
 
 interface TwitterEmbedProps {
@@ -7,7 +7,7 @@ interface TwitterEmbedProps {
   onError?: (error: string) => void
 }
 
-export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
+function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [embedHtml, setEmbedHtml] = useState<string | null>(null)
@@ -751,3 +751,11 @@ export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEm
     </>
   )
 }
+
+export default memo(TwitterEmbed, (prevProps, nextProps) => {
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.theme === nextProps.theme
+    // Note: onError callback is not compared as it may change reference
+  )
+})

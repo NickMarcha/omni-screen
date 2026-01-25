@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 interface YouTubeEmbedProps {
   url: string
   embedUrl: string | null | undefined
@@ -6,7 +8,7 @@ interface YouTubeEmbedProps {
   showLink?: boolean
 }
 
-export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink = true }: YouTubeEmbedProps) {
+function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink = true }: YouTubeEmbedProps) {
   // Validate embedUrl before using it
   if (!embedUrl || typeof embedUrl !== 'string' || embedUrl.trim() === '') {
     return (
@@ -29,6 +31,11 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
     try {
       const urlObj = new URL(embedUrl)
       
+      // Convert youtube.com to youtube-nocookie.com to avoid Error 153
+      if (urlObj.hostname.includes('youtube.com') && !urlObj.hostname.includes('youtube-nocookie.com')) {
+        urlObj.hostname = urlObj.hostname.replace('youtube.com', 'youtube-nocookie.com')
+      }
+      
       if (autoplay) {
         urlObj.searchParams.set('autoplay', '1')
         if (mute) {
@@ -42,8 +49,12 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
       }
       
       // Add widget_referrer parameter for Electron apps (required by YouTube)
+      // This must match the Referer header set in the main process
       // App ID: com.nickmarcha.omni-screen
       urlObj.searchParams.set('widget_referrer', 'https://com.nickmarcha.omni-screen')
+      
+      // Add origin parameter to help YouTube verify the embedder
+      urlObj.searchParams.set('origin', 'https://com.nickmarcha.omni-screen')
       
       return urlObj.toString()
     } catch (error) {
@@ -79,9 +90,10 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
           height="100%"
           src={finalEmbedUrl}
           frameBorder="0"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
           allowFullScreen
           referrerPolicy="strict-origin-when-cross-origin"
+          title="YouTube video player"
           className="w-full h-full"
         />
       </div>
@@ -98,3 +110,14 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
     </div>
   )
 }
+
+export default memo(YouTubeEmbed, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.embedUrl === nextProps.embedUrl &&
+    prevProps.autoplay === nextProps.autoplay &&
+    prevProps.mute === nextProps.mute &&
+    prevProps.showLink === nextProps.showLink
+  )
+})

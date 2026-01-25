@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, memo } from 'react'
 import { registerRedditBlockquote, unregisterRedditBlockquote } from '../../utils/redditEmbedManager'
 
 interface RedditEmbedProps {
@@ -7,7 +7,7 @@ interface RedditEmbedProps {
   onError?: (error: string) => void
 }
 
-export default function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbedProps) {
+function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbedProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [embedHtml, setEmbedHtml] = useState<string | null>(null)
@@ -150,3 +150,10 @@ export default function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbe
     </div>
   )
 }
+
+export default memo(RedditEmbed, (prevProps, nextProps) => {
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.theme === nextProps.theme
+  )
+})

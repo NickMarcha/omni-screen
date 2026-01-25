@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 interface VideoEmbedProps {
   url: string
   autoplay?: boolean
@@ -6,7 +8,7 @@ interface VideoEmbedProps {
   className?: string
 }
 
-export default function VideoEmbed({ 
+function VideoEmbed({ 
   url, 
   autoplay = false, 
   muted = false, 
@@ -29,3 +31,13 @@ export default function VideoEmbed({
     />
   )
 }
+
+export default memo(VideoEmbed, (prevProps, nextProps) => {
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.autoplay === nextProps.autoplay &&
+    prevProps.muted === nextProps.muted &&
+    prevProps.controls === nextProps.controls &&
+    prevProps.className === nextProps.className
+  )
+})

@@ -1,9 +1,12 @@
 import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { createServer } from 'http'
+import { readFileSync, statSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
 import { ChatWebSocket } from './chatWebSocket'
+import { mentionCache } from './mentionCache'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -185,11 +188,23 @@ async function fetchWithCookies(url: string, options: RequestInit = {}): Promise
     headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
   }
   
-  // Add other headers that Twitter might expect
+  // Add other headers - set appropriate Referer/Origin based on URL
   headers.set('Accept', 'application/json, text/javascript, */*; q=0.01')
   headers.set('Accept-Language', 'en-US,en;q=0.9')
-  headers.set('Referer', 'https://twitter.com/')
-  headers.set('Origin', 'https://twitter.com')
+  
+  // Set Referer and Origin based on the URL domain
+  if (url.includes('reddit.com')) {
+    headers.set('Referer', 'https://www.reddit.com/')
+    headers.set('Origin', 'https://www.reddit.com')
+  } else if (url.includes('twitter.com') || url.includes('x.com')) {
+    headers.set('Referer', 'https://twitter.com/')
+    headers.set('Origin', 'https://twitter.com')
+  } else {
+    // Default to no specific origin
+    if (!headers.has('Referer')) {
+      headers.set('Referer', url)
+    }
+  }
   
   return fetch(url, {
     ...options,
@@ -413,22 +428,69 @@ function createWindow() {
   // Configure webRequest handlers for YouTube and Reddit embeds
   const session = win.webContents.session
   
+  // Log environment info for debugging - helps identify dev vs production differences
+  const isProduction = app.isPackaged
+  const pageOrigin = VITE_DEV_SERVER_URL || 'file://'
+  console.log(`[Main Process] Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}, Page origin: ${pageOrigin}`)
+  
   // Set Referer header for YouTube embeds (required by YouTube API)
   // App ID from electron-builder.json: com.nickmarcha.omni-screen
   const appId = 'com.nickmarcha.omni-screen'
   const refererUrl = `https://${appId}`
   
   // Set Referer header for YouTube requests (required by YouTube API)
+  // According to YouTube's Required Minimum Functionality documentation:
+  // - Referer header must be set to identify the API client
+  // - Format: HTTPS protocol with app ID as domain (reversed domain name format)
+  // - Must match the widget_referrer parameter in the embed URL
   session.webRequest.onBeforeSendHeaders(
     {
-      urls: ['https://www.youtube.com/*', 'https://youtube.com/*', 'https://*.youtube.com/*', 'https://youtu.be/*', 'https://*.ytimg.com/*', 'https://*.googlevideo.com/*']
+      urls: [
+        'https://www.youtube.com/*',
+        'https://youtube.com/*',
+        'https://*.youtube.com/*',
+        'https://www.youtube-nocookie.com/*',
+        'https://youtube-nocookie.com/*',
+        'https://*.youtube-nocookie.com/*',
+        'https://youtu.be/*',
+        'https://*.ytimg.com/*',
+        'https://*.googlevideo.com/*'
+      ]
     },
     (details, callback) => {
       const requestHeaders = { ...details.requestHeaders }
       
-      // Always set Referer for YouTube requests
+      // Set Referer header according to YouTube's Required Minimum Functionality documentation
+      // YouTube requires HTTP Referer header to identify the API client
+      // Format: HTTPS protocol with app ID as domain (reversed domain name format)
+      // App ID from electron-builder.json: com.nickmarcha.omni-screen
+      const appId = 'com.nickmarcha.omni-screen'
+      const refererUrl = `https://${appId}`
+      
+      // CRITICAL FIX FOR PRODUCTION BUILDS:
+      // In production, the page loads from file:// which doesn't send Referer by default
+      // We MUST explicitly set Referer header for ALL YouTube requests
+      // This includes the initial iframe load and all subsequent requests
       requestHeaders['Referer'] = refererUrl
-      console.log(`[Main Process] Setting Referer for YouTube: ${refererUrl} -> ${details.url.substring(0, 80)}`)
+      
+      // Also set Origin header - YouTube may check both Referer and Origin
+      // Setting both ensures compatibility in both dev (http://localhost) and prod (file://)
+      requestHeaders['Origin'] = refererUrl
+      
+      // Remove any Referer-Policy headers that might suppress the Referer
+      // This is especially important in production builds
+      delete requestHeaders['Referer-Policy']
+      delete requestHeaders['referrer-policy'] // lowercase variant
+      
+      // Ensure the header is actually set (defensive check)
+      if (!requestHeaders['Referer']) {
+        requestHeaders['Referer'] = refererUrl
+      }
+      
+      // Log for debugging - this will show in production console
+      const isProduction = app.isPackaged
+      const method = details.method || 'GET'
+      console.log(`[Main Process] ${isProduction ? '[PROD]' : '[DEV]'} YouTube ${method}: Referer=${requestHeaders['Referer']}, Origin=${requestHeaders['Origin']}, URL=${details.url.substring(0, 80)}`)
       
       callback({ requestHeaders })
     }
@@ -453,6 +515,10 @@ function createWindow() {
       if (details.url.includes('4cdn.org')) {
         requestHeaders['Referer'] = 'https://www.4chan.org/'
         requestHeaders['Origin'] = 'https://www.4chan.org'
+      } else if (details.url.includes('video.twimg.com')) {
+        // For Twitter videos, set Referer to platform.twitter.com (where embeds load from)
+        requestHeaders['Referer'] = 'https://platform.twitter.com/'
+        requestHeaders['Origin'] = 'https://platform.twitter.com'
       } else {
         // For other image CDNs, set a generic Referer
         requestHeaders['Referer'] = refererUrl
@@ -463,34 +529,124 @@ function createWindow() {
       callback({ requestHeaders })
     }
   )
-  
-  // Modify CSP headers to allow Reddit embeds
-  // Reddit's embed iframes need to be allowed even when loaded from file:// protocol
+
+  // Set Referer headers for Twitter video requests
+  session.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://video.twimg.com/*',
+        'https://*.video.twimg.com/*'
+      ]
+    },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders }
+      
+      // Set Referer to platform.twitter.com to match the embed origin
+      requestHeaders['Referer'] = 'https://platform.twitter.com/'
+      requestHeaders['Origin'] = 'https://platform.twitter.com'
+      
+      console.log(`[Main Process] Setting Referer for Twitter video: ${details.url.substring(0, 80)}`)
+      
+      callback({ requestHeaders })
+    }
+  )
+
+  // Add CORS headers for Twitter video requests to allow them to load in embeds
   session.webRequest.onHeadersReceived(
     {
-      urls: ['https://embed.reddit.com/*', 'https://*.reddit.com/*']
+      urls: [
+        'https://video.twimg.com/*',
+        'https://*.video.twimg.com/*'
+      ]
     },
     (details, callback) => {
       const responseHeaders: Record<string, string | string[]> = { ...details.responseHeaders }
       
-      // Remove existing CSP headers (case-insensitive)
-      const cspKeys = Object.keys(responseHeaders).filter(key => 
-        key.toLowerCase() === 'content-security-policy' || 
-        key.toLowerCase() === 'content-security-policy-report-only'
-      )
+      // Add CORS headers to allow requests from platform.twitter.com
+      // Note: This modifies the response, but the server might still reject if it checks origin
+      responseHeaders['Access-Control-Allow-Origin'] = ['*']
+      responseHeaders['Access-Control-Allow-Methods'] = ['GET, HEAD, OPTIONS']
+      responseHeaders['Access-Control-Allow-Headers'] = ['*']
+      responseHeaders['Access-Control-Allow-Credentials'] = ['true']
       
-      cspKeys.forEach(key => {
-        delete responseHeaders[key]
-      })
-      
-      // Add new CSP that allows frames from any origin (including file://)
-      responseHeaders['Content-Security-Policy'] = [
-        "frame-ancestors * data: blob: file:; frame-src * data: blob: file:; script-src * 'unsafe-inline' 'unsafe-eval'; object-src *;"
-      ]
-      
-      console.log(`[Main Process] Modified CSP for Reddit: ${details.url.substring(0, 80)}`)
+      console.log(`[Main Process] Added CORS headers for Twitter video: ${details.url.substring(0, 80)}`)
       
       callback({ responseHeaders })
+    }
+  )
+
+  
+  // Modify CSP headers to allow embeds from various platforms
+  // These embeds need to be allowed even when loaded from file:// protocol
+  const modifyCSPForEmbeds = (details: Electron.OnHeadersReceivedListenerDetails, callback: (responseHeaders: Record<string, string | string[]>) => void) => {
+    const responseHeaders: Record<string, string | string[]> = { ...details.responseHeaders }
+    
+    // Remove existing CSP headers (case-insensitive)
+    const cspKeys = Object.keys(responseHeaders).filter(key => 
+      key.toLowerCase() === 'content-security-policy' || 
+      key.toLowerCase() === 'content-security-policy-report-only'
+    )
+    
+    cspKeys.forEach(key => {
+      delete responseHeaders[key]
+    })
+    
+    // Completely remove CSP restrictions for embeds
+    // In production with file://, CSP frame-ancestors doesn't support file: scheme
+    // So we remove all CSP restrictions to allow embeds to load
+    // This is safe because we control the Electron app environment
+    // Don't set any CSP - let the embeds load without restrictions
+    // (We already removed the existing CSP headers above)
+    
+    callback(responseHeaders)
+  }
+
+  // Reddit embeds
+  session.webRequest.onHeadersReceived(
+    {
+      urls: ['https://embed.reddit.com/*', 'https://*.reddit.com/*', 'https://www.reddit.com/*']
+    },
+    (details, callback) => {
+      const isProduction = app.isPackaged
+      console.log(`[Main Process] ${isProduction ? '[PROD]' : '[DEV]'} Modified CSP for Reddit: ${details.url.substring(0, 80)}`)
+      modifyCSPForEmbeds(details, callback)
+    }
+  )
+
+  // YouTube embeds (youtube-nocookie.com and all YouTube resources)
+  session.webRequest.onHeadersReceived(
+    {
+      urls: [
+        'https://www.youtube-nocookie.com/*',
+        'https://youtube-nocookie.com/*',
+        'https://*.youtube-nocookie.com/*',
+        'https://www.youtube.com/*',
+        'https://youtube.com/*',
+        'https://*.youtube.com/*',
+        'https://*.ytimg.com/*',
+        'https://*.googlevideo.com/*'
+      ]
+    },
+    (details, callback) => {
+      console.log(`[Main Process] Modified CSP for YouTube: ${details.url.substring(0, 80)}`)
+      modifyCSPForEmbeds(details, callback)
+    }
+  )
+
+  // Twitter/X embeds
+  session.webRequest.onHeadersReceived(
+    {
+      urls: [
+        'https://platform.twitter.com/*',
+        'https://*.twitter.com/*',
+        'https://*.x.com/*',
+        'https://publish.twitter.com/*',
+        'https://syndication.twitter.com/*'
+      ]
+    },
+    (details, callback) => {
+      console.log(`[Main Process] Modified CSP for Twitter: ${details.url.substring(0, 80)}`)
+      modifyCSPForEmbeds(details, callback)
     }
   )
 
@@ -570,8 +726,51 @@ function createWindow() {
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
   } else {
-    // win.loadFile('dist/index.html')
-    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    // In production, use a local HTTP server instead of file://
+    // This makes the environment identical to dev mode and fixes embed issues
+    const localServer = createServer((req, res) => {
+      let filePath = req.url === '/' ? '/index.html' : req.url || '/index.html'
+      // Remove query string
+      filePath = filePath.split('?')[0]
+      
+      const fullPath = path.join(RENDERER_DIST, filePath)
+      
+      try {
+        const stats = statSync(fullPath)
+        if (stats.isFile()) {
+          const content = readFileSync(fullPath)
+          const ext = path.extname(fullPath).toLowerCase()
+          
+          let contentType = 'text/html'
+          if (ext === '.js') contentType = 'application/javascript'
+          else if (ext === '.css') contentType = 'text/css'
+          else if (ext === '.json') contentType = 'application/json'
+          else if (ext === '.png') contentType = 'image/png'
+          else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg'
+          else if (ext === '.svg') contentType = 'image/svg+xml'
+          else if (ext === '.ico') contentType = 'image/x-icon'
+          
+          res.writeHead(200, { 'Content-Type': contentType })
+          res.end(content)
+        } else {
+          res.writeHead(404)
+          res.end('Not found')
+        }
+      } catch (error) {
+        res.writeHead(404)
+        res.end('Not found')
+      }
+    })
+    
+    // Start server on a random available port
+    localServer.listen(0, '127.0.0.1', () => {
+      const port = (localServer.address() as { port: number })?.port || 0
+      const url = `http://127.0.0.1:${port}`
+      console.log(`[Main Process] Starting local HTTP server for production: ${url}`)
+      if (win && !win.isDestroyed()) {
+        win.loadURL(url)
+      }
+    })
   }
 }
 
@@ -594,8 +793,20 @@ app.on('activate', () => {
 })
 
 // IPC Handlers
-ipcMain.handle('fetch-mentions', async (_event, username: string, size: number = 150, offset: number = 0) => {
+ipcMain.handle('fetch-mentions', async (_event, username: string, size: number = 150, offset: number = 0, useCache: boolean = true) => {
   try {
+    // Check cache first if enabled
+    if (useCache) {
+      const cachedIds = mentionCache.getCachedQuery(username, size, offset)
+      if (cachedIds && cachedIds.length > 0) {
+        const cachedMessages = mentionCache.getCachedMessages(cachedIds)
+        if (cachedMessages.length > 0) {
+          console.log(`[Main Process] Using cached mentions for "${username}" (${cachedMessages.length} messages)`)
+          return { success: true, data: cachedMessages, cached: true }
+        }
+      }
+    }
+
     const url = `https://polecat.me/api/mentions/${encodeURIComponent(username)}?size=${size}&offset=${offset}`
     
     console.log(`[Main Process] Fetching mentions for "${username}":`)
@@ -654,10 +865,15 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
       )
       console.log(`  - First 5 dates:`, sampleDates)
       
-      return { success: true, data: dataWithIds }
+      // Store in cache
+      if (useCache) {
+        mentionCache.storeQuery(username, size, offset, dataWithIds)
+      }
+      
+      return { success: true, data: dataWithIds, cached: false }
     }
     
-    return { success: true, data }
+    return { success: true, data, cached: false }
   } catch (error) {
     console.error('[Main Process] Error fetching mentions:', error)
     console.error(`  - Username: ${username}`)
@@ -668,6 +884,16 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
     }
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
+})
+
+// Cache management IPC handlers
+ipcMain.handle('clear-mention-cache', async () => {
+  mentionCache.clearAll()
+  return { success: true }
+})
+
+ipcMain.handle('get-cache-stats', async () => {
+  return mentionCache.getStats()
 })
 
 // Fallback API: rustlesearch.dev search API
@@ -2014,6 +2240,8 @@ app.on('before-quit', () => {
 })
 
 app.whenReady().then(() => {
+  // Clear expired cache entries on startup
+  mentionCache.clearExpired()
   createApplicationMenu()
   createWindow()
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, memo } from 'react'
 
 interface TikTokEmbedProps {
   url: string
@@ -42,7 +42,7 @@ function extractTikTokVideoId(url: string): string | null {
   }
 }
 
-export default function TikTokEmbed({ url, autoplay = false, mute = false, loop = false, onError }: TikTokEmbedProps) {
+function TikTokEmbed({ url, autoplay = false, mute = false, loop = false, onError }: TikTokEmbedProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [playerUrl, setPlayerUrl] = useState<string | null>(null)
@@ -254,3 +254,12 @@ export default function TikTokEmbed({ url, autoplay = false, mute = false, loop 
     </div>
   )
 }
+
+export default memo(TikTokEmbed, (prevProps, nextProps) => {
+  return (
+    prevProps.url === nextProps.url &&
+    prevProps.autoplay === nextProps.autoplay &&
+    prevProps.mute === nextProps.mute &&
+    prevProps.loop === nextProps.loop
+  )
+})

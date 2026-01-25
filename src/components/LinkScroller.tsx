@@ -683,7 +683,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
           }
         })
       }
-      return `https://www.youtube.com/embed/${videoId}?${params.toString()}`
+      return `https://www.youtube-nocookie.com/embed/${videoId}?${params.toString()}`
     }
     
     // Handle youtu.be short links: https://youtu.be/VIDEO_ID
@@ -705,7 +705,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
         if (startSeconds !== null) {
           params.set('start', startSeconds.toString())
         }
-        return `https://www.youtube.com/embed/videoseries?${params.toString()}`
+        return `https://www.youtube-nocookie.com/embed/videoseries?${params.toString()}`
       }
       
       // Check for YouTube Shorts: youtube.com/shorts/VIDEO_ID
@@ -747,7 +747,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
           if (startSeconds !== null && !params.has('start')) {
             params.set('start', startSeconds.toString())
           }
-          return `https://www.youtube.com/embed/${embedId}?${params.toString()}`
+          return `https://www.youtube-nocookie.com/embed/${embedId}?${params.toString()}`
         }
       }
       
@@ -2086,14 +2086,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       const startTime = Date.now()
       
       // Fetch mentions for each filter term in parallel
-      logger.api(`Fetching mentions for ${uniqueFilterTerms.length} unique terms (${filterTerms.length} original)`)
+      // Use cache unless this is a refresh (append=false and offset=0 means refresh)
+      const useCache = append || currentOffset > 0
+      logger.api(`Fetching mentions for ${uniqueFilterTerms.length} unique terms (${filterTerms.length} original) - cache: ${useCache}`)
       const fetchPromises = uniqueFilterTerms.map(term => 
-        window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset)
+        window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset, useCache)
       )
       
       const results = await Promise.all(fetchPromises)
       const fetchTime = Date.now() - startTime
-      logger.api(`All IPC calls completed in ${fetchTime}ms`)
+      const cachedCount = results.filter(r => r.cached).length
+      logger.api(`All IPC calls completed in ${fetchTime}ms (${cachedCount}/${results.length} from cache)`)
       
       // Merge results by unique ID (date-nick)
       const mentionsMap = new Map<string, MentionData>()
@@ -2102,7 +2105,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         const term = uniqueFilterTerms[index]
         if (result.success && Array.isArray(result.data)) {
           const termData = result.data as MentionData[]
-          logger.api(`Processing ${termData.length} mentions for term "${term}"`)
+          const source = result.cached ? 'cache' : 'API'
+          logger.api(`Processing ${termData.length} mentions for term "${term}" (from ${source})`)
           
           termData.forEach(mention => {
             // Use date-nick as unique ID (no hash needed)
@@ -2589,11 +2593,15 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     return () => window.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
+  // Cache for card objects to prevent unnecessary re-renders
+  const cardCacheRef = useRef<Map<string, LinkCard>>(new Map())
+  
   // Process mentions into link cards
   const linkCards = useMemo(() => {
     const cards: LinkCard[] = []
+    const newCache = new Map<string, LinkCard>()
     
-    mentions.forEach((mention, index) => {
+    mentions.forEach((mention) => {
       // Filter out NSFW if toggle is off
       if (!showNSFW && containsNSFW(mention.text)) {
         return // Skip this mention entirely
@@ -2662,15 +2670,18 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             return
           }
           
-          // Create unique ID using date, index, urlIndex, and a hash of the URL
+          // Create unique ID using date, nick, urlIndex, and a hash of the URL
           // This ensures uniqueness even if the same URL appears multiple times
+          // Note: Using mention.id (which is date-nick) instead of index for stability
           const urlHash = url.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
-          const uniqueId = `${mention.date}-${index}-${urlIndex}-${urlHash}-${url.slice(-20)}`
+          const uniqueId = `${mention.id}-${urlIndex}-${urlHash}-${url.slice(-20)}`
           
           // Check if user is trusted
           const isTrusted = isTrustedUser(mention.nick, trustedUsers)
           
-          cards.push({
+          // Check if we have a cached card with the same data
+          const cachedCard = cardCacheRef.current.get(uniqueId)
+          const cardData = {
             id: uniqueId,
             url: actualUrl, // Use the actual media URL if it's a Reddit media link
             text: mention.text,
@@ -2692,14 +2703,32 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             isLSF,
             isTrusted, // Add trusted flag
             isStreaming: mention.isStreaming, // Pass through streaming flag
-          })
+          }
+          
+          // Reuse cached card if data matches, otherwise create new one
+          let card: LinkCard
+          if (cachedCard && 
+              cachedCard.url === cardData.url &&
+              cachedCard.text === cardData.text &&
+              cachedCard.nick === cardData.nick &&
+              cachedCard.date === cardData.date &&
+              cachedCard.isTrusted === cardData.isTrusted &&
+              cachedCard.isStreaming === cardData.isStreaming) {
+            card = cachedCard
+          } else {
+            card = cardData
+          }
+          
+          cards.push(card)
+          newCache.set(uniqueId, card)
         })
       } else if (showNonLinks) {
         // If no URLs and showNonLinks is enabled, create a card for the message
-        const uniqueId = `${mention.date}-${index}-no-link`
+        // Use mention.id (date-nick) for stable ID
+        const uniqueId = `${mention.id}-no-link`
         const isTrusted = isTrustedUser(mention.nick, trustedUsers)
         
-        cards.push({
+        const cardData = {
           id: uniqueId,
           url: '', // Empty URL for non-link messages
           text: mention.text,
@@ -2709,10 +2738,30 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           linkType: undefined,
           isTrusted,
           isStreaming: mention.isStreaming, // Pass through streaming flag
-        })
+        }
+        
+        // Check if we have a cached card with the same data
+        const cachedCard = cardCacheRef.current.get(uniqueId)
+        let card: LinkCard
+        if (cachedCard && 
+            cachedCard.text === cardData.text &&
+            cachedCard.nick === cardData.nick &&
+            cachedCard.date === cardData.date &&
+            cachedCard.isTrusted === cardData.isTrusted &&
+            cachedCard.isStreaming === cardData.isStreaming) {
+          card = cachedCard
+        } else {
+          card = cardData
+        }
+        
+        cards.push(card)
+        newCache.set(uniqueId, card)
       }
     })
 
+    // Update cache for next render
+    cardCacheRef.current = newCache
+    
     return cards
   }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers, mutedUsers])
 
