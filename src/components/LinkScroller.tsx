@@ -674,6 +674,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[],
           {columnCards.map((card) => (
             <div 
               key={card.id}
+              id={`card-${card.id}`}
               className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
             >
               {/* Embed content above - constrained to prevent overflow */}
@@ -804,7 +805,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[],
                     <button
                       onClick={() => onCardClick(card.id)}
                       className="btn btn-sm btn-circle btn-primary flex-shrink-0"
-                      title="View in highlight mode"
+                      title="Expand"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
@@ -1092,6 +1093,8 @@ function LinkScroller() {
   // Load settings on mount
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // View mode: 'overview' or 'highlight'
+  const [viewMode, setViewMode] = useState<'overview' | 'highlight'>('overview')
   // Initialize tempSettings with safe defaults
   const [tempSettings, setTempSettings] = useState<Settings>(() => ({
     filter: settings.filter || 'mrMouton',
@@ -1117,6 +1120,8 @@ function LinkScroller() {
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(true)
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
+  // For overview mode: card ID that's expanded in modal
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null)
   const [autoplayEnabled, setAutoplayEnabled] = useState(true) // Default to true for highlight mode
   const [muteEnabled, setMuteEnabled] = useState(false) // Default to false (sound on)
   const [loopEnabled, setLoopEnabled] = useState(false) // Default to false (no loop)
@@ -1639,7 +1644,39 @@ function LinkScroller() {
     fetchMentions(filter, 0, false)
   }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId])
 
-  // Handle keyboard shortcuts (must be after navigateHighlight and handleRefresh are defined)
+  // Helper function to navigate in overview modal
+  const navigateOverviewModal = useCallback((direction: 'next' | 'prev') => {
+    if (!expandedCardId) return
+    
+    const currentIndex = linkCards.findIndex(card => card.id === expandedCardId)
+    if (currentIndex === -1) return
+    
+    if (direction === 'next') {
+      if (currentIndex < linkCards.length - 1) {
+        setExpandedCardId(linkCards[currentIndex + 1].id)
+        // Scroll the card into view in the overview
+        setTimeout(() => {
+          const cardElement = document.getElementById(`card-${linkCards[currentIndex + 1].id}`)
+          if (cardElement) {
+            cardElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }
+        }, 100)
+      }
+    } else {
+      if (currentIndex > 0) {
+        setExpandedCardId(linkCards[currentIndex - 1].id)
+        // Scroll the card into view in the overview
+        setTimeout(() => {
+          const cardElement = document.getElementById(`card-${linkCards[currentIndex - 1].id}`)
+          if (cardElement) {
+            cardElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }
+        }, 100)
+      }
+    }
+  }, [expandedCardId, linkCards])
+
+  // Handle keyboard shortcuts (must be after navigateHighlight, navigateOverviewModal, and handleRefresh are defined)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't trigger shortcuts when typing in inputs or when settings modal is open
@@ -1659,13 +1696,17 @@ function LinkScroller() {
         e.preventDefault()
         switch (keybind.action) {
           case 'next':
-            if (highlightedCardId) {
+            if (viewMode === 'highlight' && highlightedCardId) {
               navigateHighlight('next')
+            } else if (viewMode === 'overview' && expandedCardId) {
+              navigateOverviewModal('next')
             }
             break
           case 'previous':
-            if (highlightedCardId) {
+            if (viewMode === 'highlight' && highlightedCardId) {
               navigateHighlight('prev')
+            } else if (viewMode === 'overview' && expandedCardId) {
+              navigateOverviewModal('prev')
             }
             break
           case 'toggleAutoplay':
@@ -1689,11 +1730,189 @@ function LinkScroller() {
     
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [settings.keybinds, highlightedCardId, autoplayEnabled, muteEnabled, loopEnabled, settingsOpen, navigateHighlight, handleRefresh])
+  }, [settings.keybinds, highlightedCardId, expandedCardId, viewMode, autoplayEnabled, muteEnabled, loopEnabled, settingsOpen, navigateHighlight, navigateOverviewModal, handleRefresh])
 
-  // Highlight Layout Component
-  if (highlightedCard) {
+  // Get expanded card for overview modal
+  const expandedCard = expandedCardId ? linkCards.find(card => card.id === expandedCardId) : null
+  const expandedIndex = expandedCardId ? linkCards.findIndex(card => card.id === expandedCardId) : -1
+
+  // Settings Modal - renders on top of both modes (outside both components)
+  const settingsModal = settingsOpen && (
+    <div className="modal modal-open z-[100]">
+      <div className="modal-box max-w-4xl">
+        <h3 className="font-bold text-lg mb-4">Settings</h3>
+        
+        {/* Tabs */}
+        <div className="tabs tabs-bordered mb-4">
+          <button
+            className={`tab ${settingsTab === 'filtering' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('filtering')}
+          >
+            Filtering
+          </button>
+          <button
+            className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('keybinds')}
+          >
+            Keybinds
+          </button>
+          <button
+            className={`tab ${settingsTab === 'theme' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('theme')}
+          >
+            Theme
+          </button>
+        </div>
+        
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+          {/* Filtering Tab */}
+          {settingsTab === 'filtering' && (
+            <div className="space-y-4">
+              {/* Filter input */}
+              <div>
+                <label className="label">
+                  <span className="label-text">Filter (username):</span>
+                </label>
+                <input
+                  type="text"
+                  value={tempSettings.filter}
+                  onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
+                  placeholder="Enter username"
+                  className="input input-bordered w-full"
+                />
+              </div>
+
+              {/* Show NSFW toggle */}
+              <div className="form-control">
+                <label className="label cursor-pointer">
+                  <span className="label-text">Show NSFW</span>
+                  <input
+                    type="checkbox"
+                    checked={tempSettings.showNSFW}
+                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
+                    className="toggle toggle-primary"
+                  />
+                </label>
+              </div>
+
+              {/* Show NSFL toggle */}
+              <div className="form-control">
+                <label className="label cursor-pointer">
+                  <span className="label-text">Show NSFL</span>
+                  <input
+                    type="checkbox"
+                    checked={tempSettings.showNSFL}
+                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
+                    className="toggle toggle-primary"
+                  />
+                </label>
+              </div>
+
+              {/* Banned terms */}
+              <ListManager
+                title="Banned Terms"
+                items={tempSettings.bannedTerms}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
+                placeholder="Enter term to ban"
+                helpText="Messages containing these terms will be filtered out"
+              />
+
+              {/* Banned users */}
+              <ListManager
+                title="Banned Users"
+                items={tempSettings.bannedUsers}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
+                placeholder="Enter username"
+                helpText="Messages from these users will be filtered out"
+              />
+
+              {/* Trusted users */}
+              <ListManager
+                title="Trusted Users"
+                items={tempSettings.trustedUsers}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
+                placeholder="Enter username"
+                helpText="Cards from these users will have a golden outline"
+              />
+
+              {/* Show platforms */}
+              <div>
+                <label className="label">
+                  <span className="label-text">Show Platforms</span>
+                </label>
+                <div className="space-y-2">
+                  {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
+                    <label key={platform} className="label cursor-pointer justify-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
+                        onChange={(e) => {
+                          const currentDisabled = tempSettings.disabledPlatforms || []
+                          if (e.target.checked) {
+                            setTempSettings({
+                              ...tempSettings,
+                              disabledPlatforms: currentDisabled.filter(p => p !== platform)
+                            })
+                          } else {
+                            setTempSettings({
+                              ...tempSettings,
+                              disabledPlatforms: [...currentDisabled, platform]
+                            })
+                          }
+                        }}
+                        className="checkbox checkbox-primary checkbox-sm"
+                      />
+                      <span className="label-text">{platform}</span>
+                    </label>
+                  ))}
+                </div>
+                <label className="label">
+                  <span className="label-text-alt">Uncheck platforms to hide them</span>
+                </label>
+              </div>
+            </div>
+          )}
+          
+          {/* Keybinds Tab */}
+          {settingsTab === 'keybinds' && (
+            <KeybindsTab
+              keybinds={tempSettings.keybinds}
+              onKeybindsChange={(keybinds) => setTempSettings({ ...tempSettings, keybinds })}
+            />
+          )}
+          
+          {/* Theme Tab */}
+          {settingsTab === 'theme' && (
+            <ThemeTab
+              theme={tempSettings.theme}
+              onThemeChange={(theme) => setTempSettings({ ...tempSettings, theme })}
+            />
+          )}
+        </div>
+
+        <div className="modal-action">
+          <button
+            className="btn btn-ghost"
+            onClick={() => setSettingsOpen(false)}
+          >
+            Cancel
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={handleSaveSettings}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+      <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}></div>
+    </div>
+  )
+
+  // Main render - switch between overview and highlight modes
+  if (viewMode === 'highlight' && highlightedCard) {
     return (
+      <>
       <div className={`h-screen flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}>
         {/* Left side - Content only (70%) */}
         <div className="w-[70%] overflow-y-auto p-6 border-r border-base-300">
@@ -2018,15 +2237,16 @@ function LinkScroller() {
 
         {/* Floating action buttons - bottom right */}
         <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
-          {/* Close button */}
+          {/* Mode toggle button */}
           <button
-            onClick={() => setHighlightedCardId(null)}
-            className="btn btn-circle btn-error shadow-lg"
-            title="Close highlight view"
+            onClick={() => {
+              setViewMode('overview')
+              setHighlightedCardId(null)
+            }}
+            className="btn btn-circle btn-primary shadow-lg"
+            title="Switch to Overview Mode"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            O
           </button>
           
           {/* Refresh button */}
@@ -2052,13 +2272,16 @@ function LinkScroller() {
             </svg>
           </button>
         </div>
-
       </div>
+      {settingsModal}
+      </>
     )
   }
 
+  // Overview Mode
   return (
-    <div className="min-h-screen bg-base-200 p-4">
+    <>
+      <div className="min-h-screen bg-base-200 p-4">
       {loading && mentions.length === 0 && (
         <div className="flex justify-center items-center py-8">
           <span className="loading loading-spinner loading-lg"></span>
@@ -2081,7 +2304,7 @@ function LinkScroller() {
       {!loading && linkCards.length > 0 && (
         <>
           <div className="max-w-7xl mx-auto">
-            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setHighlightedCardId(cardId)} getEmbedTheme={getEmbedTheme} />
+            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setExpandedCardId(cardId)} getEmbedTheme={getEmbedTheme} />
           </div>
           {/* Load More button */}
           {hasMore && (
@@ -2116,181 +2339,137 @@ function LinkScroller() {
         </div>
       )}
 
-      {/* Settings Modal - accessible from both views */}
-      {settingsOpen && (
-        <div className="modal modal-open z-[100]">
-          <div className="modal-box max-w-4xl">
-            <h3 className="font-bold text-lg mb-4">Settings</h3>
-            
-            {/* Tabs */}
-            <div className="tabs tabs-bordered mb-4">
+      {/* Overview Modal */}
+      {expandedCard && viewMode === 'overview' && (
+        <div className="modal modal-open z-[90]">
+          <div className="modal-box w-[90vw] h-[85vh] max-w-none p-0 flex flex-col">
+            {/* Header with X button */}
+            <div className="flex justify-between items-center p-4 border-b border-base-300 flex-shrink-0">
+              <div className="text-sm text-base-content/70">
+                {expandedIndex + 1} / {linkCards.length}
+              </div>
               <button
-                className={`tab ${settingsTab === 'filtering' ? 'tab-active' : ''}`}
-                onClick={() => setSettingsTab('filtering')}
+                onClick={() => setExpandedCardId(null)}
+                className="btn btn-sm btn-circle btn-ghost"
+                title="Close"
               >
-                Filtering
-              </button>
-              <button
-                className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
-                onClick={() => setSettingsTab('keybinds')}
-              >
-                Keybinds
-              </button>
-              <button
-                className={`tab ${settingsTab === 'theme' ? 'tab-active' : ''}`}
-                onClick={() => setSettingsTab('theme')}
-              >
-                Theme
+                ✕
               </button>
             </div>
             
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-              {/* Filtering Tab */}
-              {settingsTab === 'filtering' && (
+            {/* Content area */}
+            <div className="flex-1 flex overflow-hidden relative">
+              {/* Left side - Message info */}
+              <div className="w-80 border-r border-base-300 overflow-y-auto p-4 flex-shrink-0">
                 <div className="space-y-4">
-                  {/* Filter input */}
                   <div>
-                    <label className="label">
-                      <span className="label-text">Filter (username):</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={tempSettings.filter}
-                      onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
-                      placeholder="Enter username"
-                      className="input input-bordered w-full"
-                    />
+                    <div className="text-xs text-base-content/50 mb-1">User</div>
+                    <div className="font-semibold">{expandedCard.username}</div>
                   </div>
-
-                  {/* Show NSFW toggle */}
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Show NSFW</span>
-                      <input
-                        type="checkbox"
-                        checked={tempSettings.showNSFW}
-                        onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
-                        className="toggle toggle-primary"
-                      />
-                    </label>
-                  </div>
-
-                  {/* Show NSFL toggle */}
-                  <div className="form-control">
-                    <label className="label cursor-pointer">
-                      <span className="label-text">Show NSFL</span>
-                      <input
-                        type="checkbox"
-                        checked={tempSettings.showNSFL}
-                        onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
-                        className="toggle toggle-primary"
-                      />
-                    </label>
-                  </div>
-
-                  {/* Banned terms */}
-                  <ListManager
-                    title="Banned Terms"
-                    items={tempSettings.bannedTerms}
-                    onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
-                    placeholder="Enter term to ban"
-                    helpText="Messages containing these terms will be filtered out"
-                  />
-
-                  {/* Banned users */}
-                  <ListManager
-                    title="Banned Users"
-                    items={tempSettings.bannedUsers}
-                    onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
-                    placeholder="Enter username"
-                    helpText="Messages from these users will be filtered out"
-                  />
-
-                  {/* Trusted users */}
-                  <ListManager
-                    title="Trusted Users"
-                    items={tempSettings.trustedUsers}
-                    onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
-                    placeholder="Enter username"
-                    helpText="Cards from these users will have a golden outline"
-                  />
-
-                  {/* Show platforms */}
                   <div>
-                    <label className="label">
-                      <span className="label-text">Show Platforms</span>
-                    </label>
-                    <div className="space-y-2">
-                      {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
-                        <label key={platform} className="label cursor-pointer justify-start gap-2">
-                          <input
-                            type="checkbox"
-                            checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
-                            onChange={(e) => {
-                              const currentDisabled = tempSettings.disabledPlatforms || []
-                              if (e.target.checked) {
-                                setTempSettings({
-                                  ...tempSettings,
-                                  disabledPlatforms: currentDisabled.filter(p => p !== platform)
-                                })
-                              } else {
-                                setTempSettings({
-                                  ...tempSettings,
-                                  disabledPlatforms: [...currentDisabled, platform]
-                                })
-                              }
-                            }}
-                            className="checkbox checkbox-primary checkbox-sm"
-                          />
-                          <span className="label-text">{platform}</span>
-                        </label>
-                      ))}
+                    <div className="text-xs text-base-content/50 mb-1">Message</div>
+                    <div className="text-sm whitespace-pre-wrap break-words">{expandedCard.text}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-base-content/50 mb-1">Link</div>
+                    <a
+                      href={expandedCard.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="link link-primary text-sm break-all"
+                    >
+                      {expandedCard.url}
+                    </a>
+                  </div>
+                  {expandedCard.timestamp && (
+                    <div>
+                      <div className="text-xs text-base-content/50 mb-1">Time</div>
+                      <div className="text-sm">{new Date(expandedCard.timestamp).toLocaleString()}</div>
                     </div>
-                    <label className="label">
-                      <span className="label-text-alt">Uncheck platforms to hide them</span>
-                    </label>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
               
-              {/* Keybinds Tab */}
-              {settingsTab === 'keybinds' && (
-                <KeybindsTab
-                  keybinds={tempSettings.keybinds}
-                  onKeybindsChange={(keybinds) => setTempSettings({ ...tempSettings, keybinds })}
-                />
-              )}
-              
-              {/* Theme Tab */}
-              {settingsTab === 'theme' && (
-                <ThemeTab
-                  theme={tempSettings.theme}
-                  onThemeChange={(theme) => setTempSettings({ ...tempSettings, theme })}
-                />
-              )}
-            </div>
-
-            <div className="modal-action">
-              <button
-                className="btn btn-ghost"
-                onClick={() => setSettingsOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleSaveSettings}
-              >
-                Save
-              </button>
+              {/* Center - Embed */}
+              <div className="flex-1 overflow-y-auto p-6 flex items-center justify-center">
+                <div className="w-full max-w-4xl">
+                  {expandedCard.isDirectMedia ? (
+                    <div>
+                      {expandedCard.mediaType === 'image' ? (
+                        <ImageEmbed url={expandedCard.url} alt={expandedCard.text} />
+                      ) : (
+                        <VideoEmbed url={expandedCard.url} autoplay={false} muted={false} controls={true} />
+                      )}
+                    </div>
+                  ) : expandedCard.isYouTube && expandedCard.embedUrl ? (
+                    <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl} autoplay={false} mute={false} />
+                  ) : expandedCard.isTwitter ? (
+                    <TwitterEmbed url={expandedCard.url} theme={getEmbedTheme()} />
+                  ) : expandedCard.isTikTok ? (
+                    <TikTokEmbed url={expandedCard.url} autoplay={false} mute={false} loop={false} />
+                  ) : expandedCard.isReddit ? (
+                    <RedditEmbed url={expandedCard.url} theme={getEmbedTheme()} />
+                  ) : expandedCard.isStreamable ? (
+                    <StreamableEmbed url={expandedCard.url} autoplay={false} mute={false} loop={false} />
+                  ) : expandedCard.isWikipedia ? (
+                    <WikipediaEmbed url={expandedCard.url} />
+                  ) : expandedCard.isBluesky ? (
+                    <BlueskyEmbed url={expandedCard.url} />
+                  ) : (
+                    <div className="bg-base-200 rounded-lg p-6">
+                      <a href={expandedCard.url} target="_blank" rel="noopener noreferrer" className="link link-primary break-all">
+                        {expandedCard.url}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
-          <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}></div>
+          
+          {/* Navigation arrows - outside modal box */}
+          <button
+            onClick={() => navigateOverviewModal('prev')}
+            disabled={expandedIndex <= 0}
+            className="absolute left-4 top-1/2 -translate-y-1/2 btn btn-circle btn-primary z-[91] shadow-lg"
+            title="Previous"
+          >
+            ←
+          </button>
+          <button
+            onClick={() => navigateOverviewModal('next')}
+            disabled={expandedIndex >= linkCards.length - 1}
+            className="absolute right-4 top-1/2 -translate-y-1/2 btn btn-circle btn-primary z-[91] shadow-lg"
+            title="Next"
+          >
+            →
+          </button>
+          
+          <div className="modal-backdrop" onClick={() => setExpandedCardId(null)}></div>
         </div>
       )}
 
       {/* Floating action buttons - bottom right */}
       <div className="fixed bottom-6 right-6 flex flex-row gap-3 z-50">
+        {/* Mode toggle button */}
+        <button
+          onClick={() => {
+            if (viewMode === 'overview') {
+              setViewMode('highlight')
+              if (linkCards.length > 0 && !highlightedCardId) {
+                setHighlightedCardId(linkCards[0].id)
+              }
+            } else {
+              setViewMode('overview')
+              setHighlightedCardId(null)
+            }
+          }}
+          className="btn btn-circle btn-primary shadow-lg"
+          title={viewMode === 'overview' ? 'Switch to Highlight Mode' : 'Switch to Overview Mode'}
+        >
+          {viewMode === 'overview' ? 'H' : 'O'}
+        </button>
+        
         {/* Refresh button */}
         <button
           onClick={handleRefresh}
@@ -2312,9 +2491,11 @@ function LinkScroller() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.645-.869l.214-1.281z" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-        </button>
+          </button>
+        </div>
       </div>
-    </div>
+      {settingsModal}
+    </>
   )
 }
 
