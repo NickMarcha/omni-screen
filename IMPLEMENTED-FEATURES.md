@@ -27,6 +27,12 @@ The Link Scroller is the primary feature of the application, allowing users to b
   - TikTok (video links)
   - Reddit (post links)
   - Imgur (album/gallery links)
+  - Bluesky (post links)
+  - Kick (stream links)
+  - Twitch (stream links)
+  - Streamable (video links)
+  - Wikipedia (article links)
+  - LSF (LivestreamFail post links)
   - Generic links (fallback)
 
 #### Display Modes
@@ -65,14 +71,33 @@ The Link Scroller is the primary feature of the application, allowing users to b
 ### Filtering and Settings
 
 #### Settings Modal
-Accessible via floating cog button (bottom-right):
-- **Username Filter**: Filter mentions by specific username
+Accessible via floating cog button (bottom-right) with three tabs:
+
+**Filtering Tab**:
+- **Filter Terms**: List of usernames/terms to filter mentions by (supports multiple terms)
 - **Show NSFW**: Toggle to show/hide NSFW content
 - **Show NSFL**: Toggle to show/hide NSFL content
+- **Show Non-Links**: Toggle to include messages without links in the feed
 - **Banned Terms**: List of terms that filter out messages
 - **Banned Users**: List of usernames whose messages are filtered
-- **Disabled Platforms**: Checkboxes to disable specific platforms (YouTube, Twitter, TikTok, Reddit, Kick, Twitch, Streamable, Imgur)
-- **Trusted Users**: List of users whose cards have brighter background
+- **Trusted Users**: List of users whose cards have a golden outline
+- **Muted Users**: List of users temporarily filtered out for 24 hours (with expiration timestamps)
+- **Platform Display Modes**: Per-platform settings (embed/text/filter) for:
+  - YouTube, Twitter, TikTok, Reddit, Kick, Twitch, Streamable, Imgur, Wikipedia, Bluesky, LSF
+
+**Keybinds Tab**:
+- Customizable keyboard shortcuts for:
+  - Navigation (previous/next card)
+  - View mode switching
+  - Settings toggle
+  - Refresh feed
+  - And more...
+
+**Theme Tab**:
+- **Theme Mode**: System/light/dark theme selection
+- **Light Theme**: Choose light theme variant
+- **Dark Theme**: Choose dark theme variant
+- **Embed Theme**: Follow system, light, or dark for embeds
 
 #### Settings Persistence
 - All settings saved to `localStorage`
@@ -149,9 +174,46 @@ Accessible via floating cog button (bottom-right):
 
 #### Direct Media Embeds
 - **Images**: Component `src/components/embeds/ImageEmbed.tsx`
+  - Automatic CORS bypass via proxy for blocked domains (4cdn.org, imgur.com, etc.)
+  - Falls back to IPC proxy handler when direct loading fails
+  - Supports all common image formats
 - **Videos**: Component `src/components/embeds/VideoEmbed.tsx`
   - Supports autoplay and mute controls
   - Different behavior in highlight vs overview mode
+
+#### Bluesky Embeds
+- **Detection**: Post links (`bsky.app/profile/.../post/...`)
+- **Implementation**:
+  - Uses Bluesky oEmbed API: `https://embed.bsky.app/oembed`
+  - Dynamically loads embed script
+  - Component: `src/components/embeds/BlueskyEmbed.tsx`
+
+#### Kick Embeds
+- **Detection**: Stream links (`kick.com/username`)
+- **Implementation**:
+  - Embedded iframe support
+  - Autoplay and mute controls
+  - Component: `src/components/embeds/KickEmbed.tsx`
+
+#### Streamable Embeds
+- **Detection**: Video links (`streamable.com/...`)
+- **Implementation**:
+  - Embedded iframe support
+  - Autoplay, mute, and loop controls
+  - Component: `src/components/embeds/StreamableEmbed.tsx`
+
+#### Wikipedia Embeds
+- **Detection**: Article links (`wikipedia.org/wiki/...`)
+- **Implementation**:
+  - Embedded iframe support
+  - Component: `src/components/embeds/WikipediaEmbed.tsx`
+
+#### LSF (LivestreamFail) Embeds
+- **Detection**: Post links (`livestreamfails.com/post/...`)
+- **Implementation**:
+  - Embedded iframe support
+  - Autoplay and mute controls
+  - Component: `src/components/embeds/LSFEmbed.tsx`
 
 ### UI Components
 
@@ -205,6 +267,12 @@ Accessible via floating cog button (bottom-right):
 - Falls back to BrowserView extraction if needed
 - Returns structured album data
 
+**`fetch-image`**:
+- Proxies image requests through main process to bypass CORS
+- Sets appropriate Referer headers for different image CDNs (4cdn.org, imgur.com, twimg.com)
+- Returns images as base64 data URLs
+- Used as fallback when direct image loading fails
+
 **`open-login-window`**:
 - Opens new window for service login (Twitter, TikTok, Reddit)
 - Uses persistent session partition
@@ -215,6 +283,11 @@ Accessible via floating cog button (bottom-right):
 - Cookies persist across application restarts
 - Shared between main window and login windows
 - Enables authenticated embed fetching
+
+#### WebRequest Handlers
+- **YouTube**: Sets Referer headers for YouTube API compliance
+- **Image CDNs**: Sets appropriate Referer headers for 4cdn.org, imgur.com, twimg.com to bypass CORS
+- **Reddit**: Modifies CSP headers to allow embeds from file:// protocol
 
 #### BrowserView Usage
 - Hidden `BrowserView` instances for:
@@ -236,7 +309,12 @@ Accessible via floating cog button (bottom-right):
 - **`YouTubeEmbed.tsx`**: YouTube video embeds
 - **`TikTokEmbed.tsx`**: TikTok video embeds
 - **`RedditEmbed.tsx`**: Reddit post embeds
-- **`ImageEmbed.tsx`**: Direct image embeds
+- **`BlueskyEmbed.tsx`**: Bluesky post embeds
+- **`KickEmbed.tsx`**: Kick stream embeds
+- **`StreamableEmbed.tsx`**: Streamable video embeds
+- **`WikipediaEmbed.tsx`**: Wikipedia article embeds
+- **`LSFEmbed.tsx`**: LivestreamFail post embeds
+- **`ImageEmbed.tsx`**: Direct image embeds (with CORS proxy support)
 - **`VideoEmbed.tsx`**: Direct video embeds
 
 #### Utility Components
@@ -249,13 +327,17 @@ Accessible via floating cog button (bottom-right):
 - Structure:
   ```typescript
   {
-    filter: string
+    filter: string[]  // Array of usernames/terms
     showNSFW: boolean
     showNSFL: boolean
+    showNonLinks: boolean
     bannedTerms: string[]
     bannedUsers: string[]
-    disabledPlatforms: string[]
+    platformSettings: Record<string, PlatformDisplayMode>  // 'embed' | 'text' | 'filter'
     trustedUsers: string[]
+    mutedUsers?: MutedUser[]  // With expiration timestamps
+    keybinds: Keybind[]
+    theme: ThemeSettings  // { mode, lightTheme, darkTheme, embedTheme }
   }
   ```
 
@@ -355,11 +437,42 @@ omni-screen/
 └── package.json
 ```
 
+### Application Menu
+
+#### Custom Menu Bar
+- **File Menu**: Quit option
+- **Edit Menu**: Standard editing options (cut, copy, paste, etc.)
+- **View Menu**: Reload, dev tools, zoom controls, fullscreen
+- **Window Menu**:
+  - **Always On Top**: Toggle window to stay above other windows
+  - **Transparency**: Submenu with opacity levels (100%, 75%, 50%, 25%)
+  - Minimize, close options
+- **Help Menu**:
+  - **Production**: Links to GitHub repository, issues page
+  - **Development**: Includes Electron documentation links plus GitHub links
+
+#### Window Options
+- **Always On Top**: Keep window above other applications
+- **Transparency**: Adjustable opacity levels (25%, 50%, 75%, 100%)
+- **Transparent Background**: Enabled in webPreferences for transparency support
+
+### Image CORS Bypass
+
+#### Automatic Proxy System
+- **WebRequest Handlers**: Set Referer headers for common image CDNs
+  - 4cdn.org → Sets Referer to 4chan.org
+  - imgur.com → Sets Referer to imgur.com
+  - twimg.com → Sets Referer to twitter.com
+- **IPC Proxy Handler**: `fetch-image` handler in main process
+  - Fetches images through main process (no CORS restrictions)
+  - Returns base64 data URLs
+  - Automatic fallback when direct loading fails
+- **ImageEmbed Component**: Automatically uses proxy for known CORS-prone domains
+
 ## Future Enhancements (Not Yet Implemented)
 
 - Split-screen mode for multiple feeds
 - Unified chat integration
-- Additional embed types (Kick, Twitch, Streamable)
 - Search functionality
 - Bookmarking/favorites
 - Export functionality

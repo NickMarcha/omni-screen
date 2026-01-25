@@ -2,9 +2,62 @@
 
 A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
 
+## 📥 Download
+
+**Latest Release**: [Download from GitHub Releases](https://github.com/NickMarcha/omni-screen/releases/)
+
+## ❓ FAQ
+
+### Why is it an app and not a website?
+
+Technical issues with using third-party websites/APIs can be bypassed with a native desktop application. Alternatively, I could run a server, but I ain't paying for that. The Electron app allows us to bypass CORS restrictions and access APIs that would otherwise be blocked in a browser.
+
+### Windows SmartScreen Warning
+
+If you see a Windows SmartScreen warning when installing, this is a standard issue with unsigned applications. Google it if you're worried - it's just Windows being cautious about apps that aren't code-signed. The application is safe to use.
+
 ## 🎯 Overview
 
-Omni Screen is a downloadable desktop application built on existing Destiny.gg community apps. The application is designed as a native client to bypass CORS restrictions from various backends, enabling seamless integration of multiple services and features.
+Omni Screen is a downloadable desktop application built for the Destiny.gg community. The application is designed as a native client to bypass CORS restrictions from various backends, enabling seamless integration of multiple services and features.
+
+## ✨ Current Features
+
+### Link Scroller
+
+The primary feature of Omni Screen, allowing you to browse through links shared in Destiny.gg chat mentions.
+
+#### Key Features:
+- **Mentions API Integration**: Retrieve and display links from messages that mention specific users
+- **Multiple View Modes**:
+  - **Overview Mode**: Grid/list view of all link cards for quick browsing
+  - **Highlight Mode**: Full-screen view with embedded content and navigation controls
+- **Rich Embed Support**:
+  - YouTube (including Shorts)
+  - Twitter/X (tweet embeds)
+  - TikTok (video embeds)
+  - Reddit (post embeds)
+  - Imgur (album/gallery support)
+  - Bluesky (post embeds)
+  - Direct images and videos
+  - And more...
+- **Advanced Filtering**:
+  - Filter by username/terms
+  - Show/hide NSFW/NSFL content
+  - Ban specific terms or users
+  - Mute users temporarily (24-hour expiration)
+  - Trusted users (highlighted cards)
+  - Platform-specific display modes (embed/text/filter)
+- **Customizable Settings**:
+  - Customizable keyboard shortcuts
+  - Theme settings (system/light/dark modes)
+  - All settings persist across sessions
+- **Smart Navigation**:
+  - Previous/Next arrows
+  - Position counter
+  - Autoplay and mute controls
+  - Infinite scrolling with auto-load
+
+For detailed feature documentation, see [IMPLEMENTED-FEATURES.md](./IMPLEMENTED-FEATURES.md).
 
 ## 🚀 Planned Features
 
@@ -18,23 +71,6 @@ Omni Screen is a downloadable desktop application built on existing Destiny.gg c
   - Destiny's YouTube streams
   - Destiny's Kick streams
 - View all chat activity in one unified interface
-
-### Link Scroller
-- **Embed Card Navigation**: Scroll through cards displaying embedded content from links posted in DGG chat (with future support for YouTube and Kick chat links)
-- **View Modes**:
-  - **Card View**: Browse links as cards for quick preview
-  - **Fullscreen View**: View links in fullscreen mode for immersive experience
-- **Mentions API Integration**: Retrieve and display links from messages that mention specific users
-  - API Endpoint: `polecat.me/api/mentions/{username}?size=150&offset=0`
-  - Example: `polecat.me/api/mentions/mrMouton?size=150&offset=0`
-  - Note: The API doesn't support empty strings; may integrate rustlesearch for broader search capabilities in the future
-- **Link Filtering**: Whitelist/blacklist system to control which link types load and display as embed cards:
-  - Twitter/X links
-  - YouTube links
-  - Streamable links
-  - Reddit links
-  - Direct MP4 links
-  - And more...
 
 ## 🛠️ Technical Details
 
@@ -92,4 +128,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ---
 
-**Note**: This project is currently in active development. Features listed above are planned and may be subject to change.
+**Note**: This project is in active development. Planned features may be subject to change.
