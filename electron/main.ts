@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
+import { ChatWebSocket } from './chatWebSocket'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -26,6 +27,9 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+
+// Chat WebSocket instance
+let chatWebSocket: ChatWebSocket | null = null
 
 // Get the persistent session (shared across all windows and persists between restarts)
 function getDefaultSession() {
@@ -1456,6 +1460,134 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
   }
 })
 
+// Chat WebSocket IPC handlers
+ipcMain.handle('chat-websocket-connect', async (_event) => {
+  try {
+    if (!chatWebSocket) {
+      chatWebSocket = new ChatWebSocket()
+      
+      // Helper function to safely send messages to renderer
+      const safeSend = (channel: string, ...args: any[]) => {
+        try {
+          // Check if window exists and is not destroyed
+          if (!win) return
+          
+          // Check if window is destroyed - this might throw, so wrap in try-catch
+          let isDestroyed = false
+          try {
+            isDestroyed = win.isDestroyed()
+          } catch {
+            // If checking isDestroyed throws, assume it's destroyed
+            return
+          }
+          
+          if (isDestroyed) return
+          
+          // Check if webContents exists and is not destroyed
+          if (!win.webContents) return
+          
+          let webContentsDestroyed = false
+          try {
+            webContentsDestroyed = win.webContents.isDestroyed()
+          } catch {
+            // If checking isDestroyed throws, assume it's destroyed
+            return
+          }
+          
+          if (webContentsDestroyed) return
+          
+          // Now safe to send
+          win.webContents.send(channel, ...args)
+        } catch (error) {
+          // Window or webContents was destroyed - silently ignore
+          // This is expected during app shutdown
+        }
+      }
+      
+      // Forward events to renderer
+      chatWebSocket.on('connected', () => {
+        safeSend('chat-websocket-connected')
+      })
+      
+      chatWebSocket.on('disconnected', (data) => {
+        safeSend('chat-websocket-disconnected', data)
+      })
+      
+      chatWebSocket.on('error', (error) => {
+        try {
+          const errorMessage = error instanceof Error ? error.message : (error?.message || String(error) || 'Unknown error')
+          safeSend('chat-websocket-error', { message: errorMessage })
+        } catch (sendError) {
+          console.error('[Main Process] Failed to send WebSocket error to renderer:', sendError)
+        }
+      })
+      
+      chatWebSocket.on('history', (history) => {
+        console.log(`[Main Process] Received history event with ${history.messages?.length || 0} messages`)
+        safeSend('chat-websocket-history', history)
+      })
+      
+      chatWebSocket.on('message', (data) => {
+        console.log(`[Main Process] Received message event from ${data.message?.nick || 'unknown'}`)
+        safeSend('chat-websocket-message', data)
+      })
+      
+      chatWebSocket.on('userEvent', (event) => {
+        safeSend('chat-websocket-user-event', event)
+      })
+      
+      chatWebSocket.on('paidEvents', (event) => {
+        safeSend('chat-websocket-paid-events', event)
+      })
+      
+      chatWebSocket.on('pin', (event) => {
+        safeSend('chat-websocket-pin', event)
+      })
+      
+      chatWebSocket.on('names', (event) => {
+        safeSend('chat-websocket-names', event)
+      })
+      
+      chatWebSocket.on('mute', (event) => {
+        safeSend('chat-websocket-mute', event)
+      })
+      
+      chatWebSocket.on('me', (event) => {
+        safeSend('chat-websocket-me', event)
+      })
+    }
+    
+    if (!chatWebSocket.isConnected()) {
+      chatWebSocket.connect()
+    }
+    
+    return { success: true }
+  } catch (error) {
+    console.error('[Main Process] Error connecting chat WebSocket:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('chat-websocket-disconnect', async (_event) => {
+  try {
+    if (chatWebSocket) {
+      chatWebSocket.disconnect()
+      chatWebSocket.destroy()
+      chatWebSocket = null
+    }
+    return { success: true }
+  } catch (error) {
+    console.error('[Main Process] Error disconnecting chat WebSocket:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('chat-websocket-status', async (_event) => {
+  return {
+    connected: chatWebSocket?.isConnected() || false
+  }
+})
+
 ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
   try {
     console.log('[Main Process] Fetching LSF video URL for:', lsfUrl)
@@ -1543,8 +1675,29 @@ ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any
   fileLogger.writeLog(level, 'renderer', message, args)
 })
 
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+  const errorMessage = error instanceof Error ? error.message : String(error) || 'Unknown error'
+  const errorStack = error instanceof Error ? error.stack : String(error)
+  console.error('[Main Process] Uncaught Exception:', errorMessage)
+  console.error('[Main Process] Uncaught Exception stack:', errorStack)
+  fileLogger.writeLog('error', 'main', `Uncaught Exception: ${errorMessage}`, [errorStack])
+  // Don't exit - log and continue
+})
+
+process.on('unhandledRejection', (reason, _promise) => {
+  const reasonMessage = reason instanceof Error ? reason.message : String(reason) || 'Unknown reason'
+  console.error('[Main Process] Unhandled Rejection:', reasonMessage)
+  fileLogger.writeLog('error', 'main', `Unhandled Rejection: ${reasonMessage}`, [reason])
+  // Don't exit - log and continue
+})
+
 // Cleanup on app quit
 app.on('before-quit', () => {
+  if (chatWebSocket) {
+    chatWebSocket.destroy()
+    chatWebSocket = null
+  }
   fileLogger.close()
 })
 
