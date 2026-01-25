@@ -30,13 +30,15 @@ export default function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = f
     return urlObj.toString()
   }
 
+  const finalEmbedUrl = buildEmbedUrl()
+
   return (
     <div>
       <div className="aspect-video w-full mb-4 rounded-lg overflow-hidden bg-base-200">
         <iframe
           width="100%"
           height="100%"
-          src={buildEmbedUrl()}
+          src={finalEmbedUrl}
           frameBorder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen

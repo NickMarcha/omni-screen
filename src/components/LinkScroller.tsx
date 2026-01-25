@@ -7,6 +7,8 @@ import RedditEmbed from './embeds/RedditEmbed'
 import StreamableEmbed from './embeds/StreamableEmbed'
 import WikipediaEmbed from './embeds/WikipediaEmbed'
 import BlueskyEmbed from './embeds/BlueskyEmbed'
+import KickEmbed from './embeds/KickEmbed'
+import LSFEmbed from './embeds/LSFEmbed'
 import VideoEmbed from './embeds/VideoEmbed'
 import ImageEmbed from './embeds/ImageEmbed'
 import ListManager from './ListManager'
@@ -71,6 +73,8 @@ interface LinkCard {
   isStreamable?: boolean
   isWikipedia?: boolean
   isBluesky?: boolean
+  isKick?: boolean
+  isLSF?: boolean
   isTrusted?: boolean
 }
 
@@ -146,10 +150,20 @@ function isTrustedUser(nick: string, trustedUsers: string[] | undefined): boolea
 }
 
 // Check if platform is disabled
-function isPlatformDisabled(linkType: string | undefined, disabledPlatforms: string[] | undefined): boolean {
-  if (!linkType || !disabledPlatforms || disabledPlatforms.length === 0) return false
+type PlatformDisplayMode = 'filter' | 'text' | 'embed'
+
+// Get platform display mode for a given link type
+function getPlatformDisplayMode(linkType: string | undefined, platformSettings: Record<string, PlatformDisplayMode> | undefined): PlatformDisplayMode {
+  if (!linkType || !platformSettings) return 'embed' // Default to embed
   const lowerLinkType = linkType.toLowerCase()
-  return disabledPlatforms.some(platform => platform.trim() && lowerLinkType === platform.trim().toLowerCase())
+  // Find matching platform in settings (case-insensitive)
+  const platformKey = Object.keys(platformSettings).find(key => key.toLowerCase() === lowerLinkType)
+  return platformKey ? platformSettings[platformKey] : 'embed' // Default to embed if not found
+}
+
+// Check if platform should be filtered out
+function isPlatformFiltered(linkType: string | undefined, platformSettings: Record<string, PlatformDisplayMode> | undefined): boolean {
+  return getPlatformDisplayMode(linkType, platformSettings) === 'filter'
 }
 
 // Keybind interface
@@ -181,7 +195,7 @@ interface Settings {
   showNSFL: boolean
   bannedTerms: string[] // Changed from string to array
   bannedUsers: string[] // New: list of banned usernames
-  disabledPlatforms: string[] // New: list of disabled platforms
+  platformSettings: Record<string, PlatformDisplayMode> // New: platform display settings (filter/text/embed)
   trustedUsers: string[] // New: list of trusted usernames
   keybinds: Keybind[] // New: customizable keyboard shortcuts
   theme: ThemeSettings // New: theme settings
@@ -211,13 +225,33 @@ function loadSettings(): Settings {
         { action: 'settings', key: ',', ctrl: false, shift: false, alt: false },
       ]
       
+      // Migrate old disabledPlatforms to new platformSettings
+      const allPlatforms = ['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur', 'Wikipedia', 'Bluesky', 'LSF']
+      let platformSettings: Record<string, PlatformDisplayMode> = {}
+      
+      if (parsed.platformSettings && typeof parsed.platformSettings === 'object') {
+        // New format already exists
+        platformSettings = parsed.platformSettings
+      } else if (Array.isArray(parsed.disabledPlatforms)) {
+        // Migrate from old format: disabledPlatforms array
+        allPlatforms.forEach(platform => {
+          const isDisabled = parsed.disabledPlatforms.some((p: string) => p.toLowerCase() === platform.toLowerCase())
+          platformSettings[platform] = isDisabled ? 'filter' : 'embed'
+        })
+      } else {
+        // Default: all platforms set to 'embed'
+        allPlatforms.forEach(platform => {
+          platformSettings[platform] = 'embed'
+        })
+      }
+      
       const migrated: Settings = {
         filter: parsed.filter || 'mrMouton',
         showNSFW: parsed.showNSFW ?? false,
         showNSFL: parsed.showNSFL ?? false,
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
-        disabledPlatforms: Array.isArray(parsed.disabledPlatforms) ? parsed.disabledPlatforms : [],
+        platformSettings: platformSettings,
         trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
         keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
         theme: parsed.theme && typeof parsed.theme === 'object' ? {
@@ -242,13 +276,28 @@ function loadSettings(): Settings {
     { action: 'settings', key: ',', ctrl: false, shift: false, alt: false },
   ]
   
+  // Default platform settings: all set to 'embed'
+  const defaultPlatformSettings: Record<string, PlatformDisplayMode> = {
+    'YouTube': 'embed',
+    'Twitter': 'embed',
+    'TikTok': 'embed',
+    'Reddit': 'embed',
+    'Kick': 'embed',
+    'Twitch': 'embed',
+    'Streamable': 'embed',
+    'Imgur': 'embed',
+    'Wikipedia': 'embed',
+    'Bluesky': 'embed',
+    'LSF': 'embed',
+  }
+  
   const defaults: Settings = {
     filter: 'mrMouton',
     showNSFW: false,
     showNSFL: false,
     bannedTerms: [],
     bannedUsers: [],
-    disabledPlatforms: [],
+    platformSettings: defaultPlatformSettings,
     trustedUsers: [],
     keybinds: defaultKeybinds,
     theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
@@ -286,6 +335,7 @@ function getLinkType(url: string): string {
     if (hostname.includes('imgur.com')) return 'Imgur'
     if (hostname.includes('wikipedia.org')) return 'Wikipedia'
     if (hostname.includes('bsky.app')) return 'Bluesky'
+    if (hostname.includes('arazu.io')) return 'LSF'
     return 'Link'
   } catch {
     return 'Link'
@@ -306,6 +356,7 @@ function getLinkTypeIcon(linkType?: string): string | null {
     'Imgur': imgurIcon,
     'Wikipedia': wikipediaIcon,
     'Bluesky': blueskyIcon,
+    'LSF': redditIcon, // Use Reddit icon as placeholder for LSF (LSF is related to Reddit)
   }
   return iconMap[linkType] || null
 }
@@ -315,6 +366,19 @@ function isYouTubeLink(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase()
     return hostname.includes('youtube.com') || hostname.includes('youtu.be')
+  } catch {
+    return false
+  }
+}
+
+// Check if URL is a YouTube clip (clips should not be embedded)
+function isYouTubeClipLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    const pathname = urlObj.pathname.toLowerCase()
+    // YouTube clip URLs have format: /clip/CLIP_ID
+    return hostname.includes('youtube.com') && pathname.startsWith('/clip/')
   } catch {
     return false
   }
@@ -448,6 +512,49 @@ function isStreamableLink(url: string): boolean {
   }
 }
 
+// Check if URL is a Kick livestream link (excludes clips)
+function isKickLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    const pathname = urlObj.pathname.toLowerCase()
+    
+    // Only match kick.com domains
+    if (!hostname.includes('kick.com')) {
+      return false
+    }
+    
+    // Exclude clip URLs (they contain /clips/ in the path)
+    if (pathname.includes('/clips/')) {
+      return false
+    }
+    
+    // Match livestream URLs: /username or player.kick.com/username
+    // Pathname should be just /username (single segment after the leading slash)
+    const pathSegments = pathname.split('/').filter(segment => segment.length > 0)
+    return pathSegments.length === 1 || hostname.includes('player.kick.com')
+  } catch {
+    return false
+  }
+}
+
+// Check if URL is an LSF link
+function isLSFLink(url: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.toLowerCase()
+    // Match arazu.io domain and check if it's a clip URL (starts with /t3_)
+    if (hostname.includes('arazu.io')) {
+      const pathname = urlObj.pathname
+      // LSF clip URLs have format: /t3_XXXXX/
+      return /^\/t3_/.test(pathname)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 // Extract YouTube embed URL from various YouTube URL formats
 // Convert YouTube timestamp parameter to seconds
 // Supports formats: t=53, t=1h2m3s, t=1m30s, etc.
@@ -545,6 +652,14 @@ function getYouTubeEmbedUrl(url: string): string | null {
         }
       }
       
+      // Check for YouTube Clips: youtube.com/clip/CLIP_ID
+      // Note: Clips require fetching the video ID from the clip page
+      // This will be handled separately in the YouTubeEmbed component
+      if (urlObj.pathname.startsWith('/clip/')) {
+        // Return null here - the YouTubeEmbed component will handle fetching the video ID
+        return null
+      }
+      
       // Check for video ID in various formats
       // youtube.com/watch?v=VIDEO_ID
       const videoId = urlObj.searchParams.get('v')
@@ -588,7 +703,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark' }) {
+function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode> }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -630,6 +745,8 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[],
       return baseHeight + 400
     } else if (card.isStreamable) {
       return baseHeight + 400
+    } else if (card.isKick) {
+      return baseHeight + 400 // Similar to Streamable
     } else if (card.isImgur) {
       return baseHeight + 100
     } else {
@@ -697,66 +814,243 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[],
                       />
                     )}
                   </div>
-                ) : card.isYouTube && card.embedUrl ? (
-                  <div className="p-2">
-                    <YouTubeEmbed 
-                      url={card.url} 
-                      embedUrl={card.embedUrl}
-                      autoplay={false}
-                      mute={false}
-                      showLink={false}
-                    />
-                  </div>
-                ) : card.isTwitter ? (
-                  <div className="p-2">
-                    <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
-                  </div>
-                ) : card.isTikTok ? (
-                  <div className="p-2">
-                    <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
-                  </div>
-                ) : card.isReddit ? (
-                  <div className="p-2">
-                    <RedditEmbed url={card.url} theme={getEmbedTheme()} />
-                  </div>
-                ) : card.isStreamable ? (
-                  <div className="p-2">
-                    <StreamableEmbed url={card.url} autoplay={false} mute={false} />
-                  </div>
-                ) : card.isWikipedia ? (
-                  <div className="p-2">
-                    <WikipediaEmbed url={card.url} />
-                  </div>
-                ) : card.isBluesky ? (
-                  <div className="p-2">
-                    <BlueskyEmbed url={card.url} />
-                  </div>
-                ) : card.isImgur ? (
-                  <div className="p-2">
-                    <div className="bg-base-200 rounded-lg p-4 text-center">
-                      <img 
-                        src={imgurIcon} 
-                        alt="Imgur" 
-                        className="w-8 h-8 mx-auto mb-2"
-                      />
-                      <p className="text-sm text-base-content/70">Imgur Album</p>
-                      <a
-                        href={card.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-primary text-xs break-all"
-                      >
-                        {card.url}
-                      </a>
+                ) : (() => {
+                  // Check platform display mode
+                  const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
+                  const twitterMode = getPlatformDisplayMode('Twitter', platformSettings)
+                  const tiktokMode = getPlatformDisplayMode('TikTok', platformSettings)
+                  const redditMode = getPlatformDisplayMode('Reddit', platformSettings)
+                  const streamableMode = getPlatformDisplayMode('Streamable', platformSettings)
+                  const wikipediaMode = getPlatformDisplayMode('Wikipedia', platformSettings)
+                  const blueskyMode = getPlatformDisplayMode('Bluesky', platformSettings)
+                  const kickMode = getPlatformDisplayMode('Kick', platformSettings)
+                  const lsfMode = getPlatformDisplayMode('LSF', platformSettings)
+                  const imgurMode = getPlatformDisplayMode('Imgur', platformSettings)
+                  
+                  // Show text version if platform setting is 'text'
+                  if (card.isYouTube && youtubeMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'YouTube link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isTwitter && twitterMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Twitter link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isTikTok && tiktokMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'TikTok link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isReddit && redditMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Reddit link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isStreamable && streamableMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Streamable link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isWikipedia && wikipediaMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isBluesky && blueskyMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Bluesky link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isKick && kickMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Kick link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isLSF && lsfMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'LSF link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  if (card.isImgur && imgurMode === 'text') {
+                    return (
+                      <div className="card-body break-words overflow-wrap-anywhere p-4">
+                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          {renderTextWithLinks(card.text, card.url, 'Imgur link')}
+                        </p>
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                          {card.url}
+                        </a>
+                      </div>
+                    )
+                  }
+                  
+                  // Show embed version if platform setting is 'embed'
+                  if (card.isYouTube && youtubeMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <YouTubeEmbed 
+                          url={card.url} 
+                          embedUrl={card.embedUrl!}
+                          autoplay={false}
+                          mute={false}
+                          showLink={false}
+                        />
+                      </div>
+                    )
+                  }
+                  if (card.isTwitter && twitterMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
+                      </div>
+                    )
+                  }
+                  if (card.isTikTok && tiktokMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
+                      </div>
+                    )
+                  }
+                  if (card.isReddit && redditMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <RedditEmbed url={card.url} theme={getEmbedTheme()} />
+                      </div>
+                    )
+                  }
+                  if (card.isStreamable && streamableMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <StreamableEmbed url={card.url} autoplay={false} mute={false} />
+                      </div>
+                    )
+                  }
+                  if (card.isWikipedia && wikipediaMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <WikipediaEmbed url={card.url} />
+                      </div>
+                    )
+                  }
+                  if (card.isBluesky && blueskyMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <BlueskyEmbed url={card.url} />
+                      </div>
+                    )
+                  }
+                  if (card.isKick && kickMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <KickEmbed url={card.url} autoplay={false} mute={false} />
+                      </div>
+                    )
+                  }
+                  if (card.isLSF && lsfMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <LSFEmbed url={card.url} autoplay={false} mute={false} />
+                      </div>
+                    )
+                  }
+                  if (card.isImgur && imgurMode === 'embed') {
+                    return (
+                      <div className="p-2">
+                        <div className="bg-base-200 rounded-lg p-4 text-center">
+                          <img 
+                            src={imgurIcon} 
+                            alt="Imgur" 
+                            className="w-8 h-8 mx-auto mb-2"
+                          />
+                          <p className="text-sm text-base-content/70">Imgur Album</p>
+                          <a
+                            href={card.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="link link-primary text-xs break-all"
+                          >
+                            {card.url}
+                          </a>
+                        </div>
+                      </div>
+                    )
+                  }
+                  
+                  // Fallback for other cases
+                  return (
+                    <div className="card-body break-words overflow-wrap-anywhere">
+                      <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                        {renderTextWithLinks(card.text)}
+                      </p>
                     </div>
-                  </div>
-                ) : (
-                  <div className="card-body break-words overflow-wrap-anywhere">
-                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                      {renderTextWithLinks(card.text)}
-                    </p>
-                  </div>
-                )}
+                  )
+                })()}
               </div>
               
               {/* Text content and metadata at bottom - always visible */}
@@ -779,6 +1073,10 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[],
                         ? renderTextWithLinks(card.text, card.url, 'Wikipedia link')
                         : card.isBluesky
                         ? renderTextWithLinks(card.text, card.url, 'Bluesky link')
+                        : card.isKick
+                        ? renderTextWithLinks(card.text, card.url, 'Kick link')
+                        : card.isLSF
+                        ? renderTextWithLinks(card.text, card.url, 'LSF link')
                         : renderTextWithLinks(card.text)
                       }
                     </p>
@@ -1102,7 +1400,19 @@ function LinkScroller() {
     showNSFL: settings.showNSFL ?? false,
     bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
     bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
-    disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
+    platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : {
+      'YouTube': 'embed',
+      'Twitter': 'embed',
+      'TikTok': 'embed',
+      'Reddit': 'embed',
+      'Kick': 'embed',
+      'Twitch': 'embed',
+      'Streamable': 'embed',
+      'Imgur': 'embed',
+      'Wikipedia': 'embed',
+      'Bluesky': 'embed',
+      'LSF': 'embed',
+    },
     trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
     theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
@@ -1111,7 +1421,7 @@ function LinkScroller() {
   // Settings tab state
   const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
   
-  const { filter, showNSFW, showNSFL, bannedTerms, bannedUsers, disabledPlatforms, trustedUsers } = settings
+  const { filter, showNSFW, showNSFL, bannedTerms, bannedUsers, platformSettings, trustedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1135,16 +1445,29 @@ function LinkScroller() {
   useEffect(() => {
     if (settingsOpen) {
       // Ensure all fields are present with defaults
+      const defaultPlatformSettings: Record<string, PlatformDisplayMode> = {
+        'YouTube': 'embed',
+        'Twitter': 'embed',
+        'TikTok': 'embed',
+        'Reddit': 'embed',
+        'Kick': 'embed',
+        'Twitch': 'embed',
+        'Streamable': 'embed',
+        'Imgur': 'embed',
+        'Wikipedia': 'embed',
+        'Bluesky': 'embed',
+        'LSF': 'embed',
+      }
       setTempSettings({
         filter: settings.filter || 'mrMouton',
         showNSFW: settings.showNSFW ?? false,
         showNSFL: settings.showNSFL ?? false,
         bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
-        disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
+        platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : defaultPlatformSettings,
         trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
-    keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : [],
-    theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
+        keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : [],
+        theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
       })
     }
   }, [settingsOpen, settings])
@@ -1230,7 +1553,7 @@ function LinkScroller() {
     // Listen for system theme changes if using system mode
     if (settings.theme.mode === 'system') {
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-      const updateTheme = (e: MediaQueryListEvent | MediaQueryList) => {
+      const updateTheme = (_e: MediaQueryListEvent | MediaQueryList) => {
         applyTheme(settings.theme) // Re-apply theme to handle system changes
       }
       updateTheme(mediaQuery)
@@ -1423,7 +1746,9 @@ function LinkScroller() {
         }
         
         const mediaInfo = isDirectMedia(actualUrl)
-        const isYouTube = isYouTubeLink(actualUrl)
+        const isYouTubeClip = isYouTubeClipLink(actualUrl)
+        // Only treat as embeddable YouTube if it's not a clip
+        const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
         const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
         const isTwitter = isTwitterStatusLink(actualUrl)
         const isTikTok = isTikTokVideoLink(actualUrl)
@@ -1432,11 +1757,13 @@ function LinkScroller() {
         const isStreamable = isStreamableLink(actualUrl)
         const isWikipedia = isWikipediaLink(actualUrl)
         const isBluesky = isBlueskyLink(actualUrl)
+        const isKick = isKickLink(actualUrl)
+        const isLSF = isLSFLink(actualUrl)
         
         const linkType = getLinkType(url)
         
-        // Filter out disabled platforms
-        if (isPlatformDisabled(linkType, disabledPlatforms)) {
+        // Filter out platforms set to 'filter'
+        if (isPlatformFiltered(linkType, platformSettings)) {
           return
         }
         
@@ -1466,13 +1793,15 @@ function LinkScroller() {
           isStreamable,
           isWikipedia,
           isBluesky,
+          isKick,
+          isLSF,
           isTrusted, // Add trusted flag
         })
       })
     })
 
     return cards
-  }, [mentions, showNSFW, showNSFL, bannedTerms, bannedUsers, disabledPlatforms, trustedUsers])
+  }, [mentions, showNSFW, showNSFL, bannedTerms, bannedUsers, platformSettings, trustedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -1835,39 +2164,79 @@ function LinkScroller() {
                 helpText="Cards from these users will have a golden outline"
               />
 
-              {/* Show platforms */}
+              {/* Platform display settings */}
               <div>
                 <label className="label">
-                  <span className="label-text">Show Platforms</span>
+                  <span className="label-text">Platform Display Settings</span>
                 </label>
-                <div className="space-y-2">
-                  {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
-                    <label key={platform} className="label cursor-pointer justify-start gap-2">
-                      <input
-                        type="checkbox"
-                        checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
-                        onChange={(e) => {
-                          const currentDisabled = tempSettings.disabledPlatforms || []
-                          if (e.target.checked) {
-                            setTempSettings({
-                              ...tempSettings,
-                              disabledPlatforms: currentDisabled.filter(p => p !== platform)
-                            })
-                          } else {
-                            setTempSettings({
-                              ...tempSettings,
-                              disabledPlatforms: [...currentDisabled, platform]
-                            })
-                          }
-                        }}
-                        className="checkbox checkbox-primary checkbox-sm"
-                      />
-                      <span className="label-text">{platform}</span>
-                    </label>
-                  ))}
+                <div className="space-y-4">
+                  {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur', 'Wikipedia', 'Bluesky', 'LSF'].map((platform) => {
+                    const currentMode = tempSettings.platformSettings?.[platform] || 'embed'
+                    return (
+                      <div key={platform} className="border border-base-300 rounded-lg p-3">
+                        <div className="font-semibold mb-2">{platform}</div>
+                        <div className="flex gap-4">
+                          <label className="label cursor-pointer gap-2">
+                            <input
+                              type="radio"
+                              name={`platform-${platform}`}
+                              checked={currentMode === 'filter'}
+                              onChange={() => {
+                                setTempSettings({
+                                  ...tempSettings,
+                                  platformSettings: {
+                                    ...tempSettings.platformSettings,
+                                    [platform]: 'filter'
+                                  }
+                                })
+                              }}
+                              className="radio radio-primary radio-sm"
+                            />
+                            <span className="label-text">Filter out</span>
+                          </label>
+                          <label className="label cursor-pointer gap-2">
+                            <input
+                              type="radio"
+                              name={`platform-${platform}`}
+                              checked={currentMode === 'text'}
+                              onChange={() => {
+                                setTempSettings({
+                                  ...tempSettings,
+                                  platformSettings: {
+                                    ...tempSettings.platformSettings,
+                                    [platform]: 'text'
+                                  }
+                                })
+                              }}
+                              className="radio radio-primary radio-sm"
+                            />
+                            <span className="label-text">Text</span>
+                          </label>
+                          <label className="label cursor-pointer gap-2">
+                            <input
+                              type="radio"
+                              name={`platform-${platform}`}
+                              checked={currentMode === 'embed'}
+                              onChange={() => {
+                                setTempSettings({
+                                  ...tempSettings,
+                                  platformSettings: {
+                                    ...tempSettings.platformSettings,
+                                    [platform]: 'embed'
+                                  }
+                                })
+                              }}
+                              className="radio radio-primary radio-sm"
+                            />
+                            <span className="label-text">Embed</span>
+                          </label>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
                 <label className="label">
-                  <span className="label-text-alt">Uncheck platforms to hide them</span>
+                  <span className="label-text-alt">Choose how each platform should be displayed: Filter out (hide), Text (link only), or Embed (full embed)</span>
                 </label>
               </div>
             </div>
@@ -1937,7 +2306,7 @@ function LinkScroller() {
               <div>
                 <YouTubeEmbed 
                   url={highlightedCard.url} 
-                  embedUrl={highlightedCard.embedUrl}
+                  embedUrl={highlightedCard.embedUrl!}
                   autoplay={autoplayEnabled}
                   mute={autoplayEnabled ? muteEnabled : false}
                 />
@@ -1975,6 +2344,22 @@ function LinkScroller() {
             ) : highlightedCard.isBluesky ? (
               <div>
                 <BlueskyEmbed url={highlightedCard.url} />
+              </div>
+            ) : highlightedCard.isKick ? (
+              <div>
+                <KickEmbed 
+                  url={highlightedCard.url} 
+                  autoplay={autoplayEnabled}
+                  mute={autoplayEnabled ? muteEnabled : false}
+                />
+              </div>
+            ) : highlightedCard.isLSF ? (
+              <div>
+                <LSFEmbed 
+                  url={highlightedCard.url} 
+                  autoplay={autoplayEnabled}
+                  mute={autoplayEnabled ? muteEnabled : false}
+                />
               </div>
             ) : highlightedCard.isImgur ? (
               <div>
@@ -2135,6 +2520,10 @@ function LinkScroller() {
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link')
                     : highlightedCard.isImgur
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link')
+                    : highlightedCard.isKick
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link')
+                    : highlightedCard.isLSF
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link')
                     : renderTextWithLinks(highlightedCard.text)
                   }
                 </p>
@@ -2304,7 +2693,7 @@ function LinkScroller() {
       {!loading && linkCards.length > 0 && (
         <>
           <div className="max-w-7xl mx-auto">
-            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setExpandedCardId(cardId)} getEmbedTheme={getEmbedTheme} />
+            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setExpandedCardId(cardId)} getEmbedTheme={getEmbedTheme} platformSettings={platformSettings} />
           </div>
           {/* Load More button */}
           {hasMore && (
@@ -2364,7 +2753,7 @@ function LinkScroller() {
                 <div className="space-y-4">
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">User</div>
-                    <div className="font-semibold">{expandedCard.username}</div>
+                    <div className="font-semibold">{expandedCard.nick}</div>
                   </div>
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">Message</div>
@@ -2381,10 +2770,10 @@ function LinkScroller() {
                       {expandedCard.url}
                     </a>
                   </div>
-                  {expandedCard.timestamp && (
+                  {expandedCard.date && (
                     <div>
                       <div className="text-xs text-base-content/50 mb-1">Time</div>
-                      <div className="text-sm">{new Date(expandedCard.timestamp).toLocaleString()}</div>
+                      <div className="text-sm">{new Date(expandedCard.date).toLocaleString()}</div>
                     </div>
                   )}
                 </div>
@@ -2402,7 +2791,7 @@ function LinkScroller() {
                       )}
                     </div>
                   ) : expandedCard.isYouTube && expandedCard.embedUrl ? (
-                    <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl} autoplay={false} mute={false} />
+                    <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl || null} autoplay={false} mute={false} />
                   ) : expandedCard.isTwitter ? (
                     <TwitterEmbed url={expandedCard.url} theme={getEmbedTheme()} />
                   ) : expandedCard.isTikTok ? (
@@ -2415,6 +2804,10 @@ function LinkScroller() {
                     <WikipediaEmbed url={expandedCard.url} />
                   ) : expandedCard.isBluesky ? (
                     <BlueskyEmbed url={expandedCard.url} />
+                  ) : expandedCard.isKick ? (
+                    <KickEmbed url={expandedCard.url} autoplay={false} mute={false} />
+                  ) : expandedCard.isLSF ? (
+                    <LSFEmbed url={expandedCard.url} autoplay={false} mute={false} />
                   ) : (
                     <div className="bg-base-200 rounded-lg p-6">
                       <a href={expandedCard.url} target="_blank" rel="noopener noreferrer" className="link link-primary break-all">

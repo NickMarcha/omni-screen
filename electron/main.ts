@@ -1333,4 +1333,45 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
   }
 })
 
+ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
+  try {
+    console.log('[Main Process] Fetching LSF video URL for:', lsfUrl)
+    
+    const response = await fetch(lsfUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }
+    })
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    
+    const html = await response.text()
+    
+    // Extract video URL from <source id="clip-source" src="...">
+    const sourceMatch = html.match(/<source[^>]*id=["']clip-source["'][^>]*src=["']([^"']+)["']/i)
+    if (sourceMatch && sourceMatch[1]) {
+      const videoUrl = sourceMatch[1]
+      console.log('[Main Process] Extracted LSF video URL:', videoUrl.substring(0, 100) + '...')
+      return { success: true, data: { videoUrl } }
+    }
+    
+    // Fallback: try to find any source tag with .mp4
+    const mp4Match = html.match(/<source[^>]*src=["']([^"']+\.mp4[^"']*)["']/i)
+    if (mp4Match && mp4Match[1]) {
+      const videoUrl = mp4Match[1]
+      console.log('[Main Process] Extracted LSF video URL (fallback):', videoUrl.substring(0, 100) + '...')
+      return { success: true, data: { videoUrl } }
+    }
+    
+    throw new Error('Could not find video source in LSF page HTML')
+  } catch (error) {
+    console.error('[Main Process] Error fetching LSF video URL:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    return { success: false, error: errorMessage }
+  }
+})
+
 app.whenReady().then(createWindow)
