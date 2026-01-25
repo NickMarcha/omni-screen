@@ -154,9 +154,11 @@ export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEm
         }, 10000)
 
         try {
-          // Store tweet ID on the container for later reference
+          // Store tweet ID and theme on the container for later reference
           if (currentContainer) {
             currentContainer.setAttribute('data-tweet-id', tweetId)
+            currentContainer.setAttribute('data-theme', theme)
+            currentContainer.setAttribute('data-dnt', 'true')
           }
           
           // @ts-ignore
@@ -176,6 +178,14 @@ export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEm
             
             const iframe = currentContainer.querySelector('iframe')
             const embedDiv = currentContainer.querySelector('.twitter-tweet-rendered, .twitter-tweet')
+            const blockquote = currentContainer.querySelector('blockquote.twitter-tweet')
+            
+            // Ensure blockquote has data-theme attribute
+            if (blockquote && !blockquote.getAttribute('data-theme')) {
+              blockquote.setAttribute('data-theme', theme)
+              blockquote.setAttribute('data-dnt', 'true')
+            }
+            
             if (iframe || embedDiv) {
               // Check if iframe has a very small height (likely error state)
               if (iframe) {
