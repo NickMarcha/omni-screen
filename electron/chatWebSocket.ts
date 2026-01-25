@@ -317,7 +317,6 @@ export class ChatWebSocket extends EventEmitter {
         // MSG {...}
         try {
           const msgData = JSON.parse(message.substring(4)) as ChatMessage
-          console.log(`[ChatWebSocket] Emitting MSG event from ${msgData.nick}`)
           this.emit('message', { type: 'MSG', message: msgData })
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse MSG:', e, 'Message:', message.substring(0, 100))

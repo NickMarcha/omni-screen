@@ -54,10 +54,6 @@ export default function BlueskyEmbed({ url, onError }: BlueskyEmbedProps) {
         console.log('[BlueskyEmbed] Got oEmbed response:', data)
 
         if (data.html) {
-          // Extract script src to check if we need to load it
-          const scriptMatch = data.html.match(/<script[^>]*src="([^"]+)"/i)
-          const scriptSrc = scriptMatch ? scriptMatch[1] : null
-          
           // Remove the script tag from HTML - the manager will load it
           let html = data.html.replace(/<script[^>]*>.*?<\/script>/gi, '')
           setEmbedHtml(html)

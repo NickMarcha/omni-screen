@@ -476,7 +476,7 @@ export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEm
             console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Processing resize message:`, {
               currentHeight,
               newHeight: height,
-              heightDiff: Math.abs(height - currentHeight)
+              heightDiff: height !== null ? Math.abs(height - currentHeight) : null
             })
             
             // Create a unique key for this message to deduplicate (include iframe src to make it per-embed)
@@ -523,7 +523,7 @@ export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEm
             
             // Only update if the height is significantly different (avoid unnecessary updates)
             // currentHeight is already declared above
-            const heightDiff = Math.abs(height - currentHeight)
+            const heightDiff = height !== null ? Math.abs(height - currentHeight) : 0
             console.log(`[TwitterEmbed ${effectiveTweetId || 'unknown'}] Final check before update:`, {
               currentHeight,
               newHeight: height,

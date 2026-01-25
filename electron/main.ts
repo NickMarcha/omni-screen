@@ -31,6 +31,37 @@ let win: BrowserWindow | null
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
 
+// Update transparency menu to reflect current opacity
+function updateTransparencyMenu(opacity: number) {
+  const menu = Menu.getApplicationMenu()
+  if (!menu) return
+  
+  const windowMenu = menu.items.find(item => item.label === 'Window')
+  if (!windowMenu || !windowMenu.submenu) return
+  
+  const transparencySubmenu = (windowMenu.submenu as Electron.Menu).items.find(
+    item => item.label === 'Transparency'
+  )
+  if (!transparencySubmenu || !transparencySubmenu.submenu) return
+  
+  const submenu = transparencySubmenu.submenu as Electron.Menu
+  submenu.items.forEach((item) => {
+    if (item.type === 'radio') {
+      item.checked = false
+      // Match based on label
+      if (opacity === 1.0 && item.label === '100% (Opaque)') {
+        item.checked = true
+      } else if (opacity === 0.75 && item.label === '75%') {
+        item.checked = true
+      } else if (opacity === 0.5 && item.label === '50%') {
+        item.checked = true
+      } else if (opacity === 0.25 && item.label === '25%') {
+        item.checked = true
+      }
+    }
+  })
+}
+
 // Get the persistent session (shared across all windows and persists between restarts)
 function getDefaultSession() {
   // Use the persistent session partition
@@ -168,6 +199,196 @@ async function fetchWithCookies(url: string, options: RequestInit = {}): Promise
   })
 }
 
+// Create application menu
+function createApplicationMenu() {
+  const isProduction = app.isPackaged
+  const githubUrl = 'https://github.com/NickMarcha/omni-screen'
+  
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        { role: 'quit', label: 'Quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+        { role: 'selectAll', label: 'Select All' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Fullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [
+        {
+          label: 'Always On Top',
+          type: 'checkbox',
+          checked: false,
+          click: (menuItem) => {
+            if (win) {
+              win.setAlwaysOnTop(menuItem.checked)
+            }
+          }
+        },
+        {
+          label: 'Transparency',
+          submenu: [
+            {
+              label: '100% (Opaque)',
+              type: 'radio',
+              checked: true,
+              click: () => {
+                if (win) {
+                  win.setOpacity(1.0)
+                  updateTransparencyMenu(1.0)
+                }
+              }
+            },
+            {
+              label: '75%',
+              type: 'radio',
+              checked: false,
+              click: () => {
+                if (win) {
+                  win.setOpacity(0.75)
+                  updateTransparencyMenu(0.75)
+                }
+              }
+            },
+            {
+              label: '50%',
+              type: 'radio',
+              checked: false,
+              click: () => {
+                if (win) {
+                  win.setOpacity(0.5)
+                  updateTransparencyMenu(0.5)
+                }
+              }
+            },
+            {
+              label: '25%',
+              type: 'radio',
+              checked: false,
+              click: () => {
+                if (win) {
+                  win.setOpacity(0.25)
+                  updateTransparencyMenu(0.25)
+                }
+              }
+            }
+          ]
+        },
+        { type: 'separator' },
+        { role: 'minimize', label: 'Minimize' },
+        { role: 'close', label: 'Close' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: isProduction
+        ? [
+            {
+              label: 'About Omni Screen',
+              click: () => {
+                shell.openExternal(githubUrl)
+              }
+            },
+            {
+              label: 'GitHub Repository',
+              click: () => {
+                shell.openExternal(githubUrl)
+              }
+            },
+            {
+              label: 'Report Issue',
+              click: () => {
+                shell.openExternal(`${githubUrl}/issues`)
+              }
+            }
+          ]
+        : [
+            {
+              label: 'About Electron',
+              click: () => {
+                shell.openExternal('https://www.electronjs.org')
+              }
+            },
+            {
+              label: 'Electron Documentation',
+              click: () => {
+                shell.openExternal('https://www.electronjs.org/docs')
+              }
+            },
+            { type: 'separator' },
+            {
+              label: 'About Omni Screen',
+              click: () => {
+                shell.openExternal(githubUrl)
+              }
+            },
+            {
+              label: 'GitHub Repository',
+              click: () => {
+                shell.openExternal(githubUrl)
+              }
+            }
+          ]
+    }
+  ]
+
+  // macOS specific menu adjustments
+  if (process.platform === 'darwin') {
+    template.unshift({
+      label: app.getName(),
+      submenu: [
+        { role: 'about', label: 'About ' + app.getName() },
+        { type: 'separator' },
+        { role: 'services', label: 'Services' },
+        { type: 'separator' },
+        { role: 'hide', label: 'Hide ' + app.getName() },
+        { role: 'hideOthers', label: 'Hide Others' },
+        { role: 'unhide', label: 'Show All' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Quit ' + app.getName() }
+      ]
+    })
+
+    // Update Window menu for macOS
+    const windowMenu = template.find(menu => menu.label === 'Window')
+    if (windowMenu && 'submenu' in windowMenu && Array.isArray(windowMenu.submenu)) {
+      windowMenu.submenu = [
+        ...(windowMenu.submenu as Electron.MenuItemConstructorOptions[]),
+        { type: 'separator' },
+        { role: 'front', label: 'Bring All to Front' }
+      ]
+    }
+  }
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
+}
+
 function createWindow() {
   // Handle external links - open in default browser
   // This will be set on the window after it's created
@@ -176,7 +397,7 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    icon: path.join(process.env.VITE_PUBLIC, 'feelswierdman.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       // Use persistent session partition to save cookies between restarts
@@ -184,6 +405,8 @@ function createWindow() {
       // Disable web security to allow cross-origin requests with credentials
       // This is needed for Twitter oEmbed API which doesn't allow CORS with credentials
       webSecurity: false,
+      // Enable transparency for window transparency option
+      transparent: true,
     },
   })
 
@@ -206,6 +429,36 @@ function createWindow() {
       // Always set Referer for YouTube requests
       requestHeaders['Referer'] = refererUrl
       console.log(`[Main Process] Setting Referer for YouTube: ${refererUrl} -> ${details.url.substring(0, 80)}`)
+      
+      callback({ requestHeaders })
+    }
+  )
+  
+  // Set Referer header for 4cdn.org and other image CDNs to bypass CORS restrictions
+  session.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://i.4cdn.org/*',
+        'https://*.4cdn.org/*',
+        'https://*.imgur.com/*',
+        'https://i.imgur.com/*',
+        'https://pbs.twimg.com/*',
+        'https://*.twimg.com/*'
+      ]
+    },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders }
+      
+      // For 4cdn.org, set Referer to 4chan.org (their main site)
+      if (details.url.includes('4cdn.org')) {
+        requestHeaders['Referer'] = 'https://www.4chan.org/'
+        requestHeaders['Origin'] = 'https://www.4chan.org'
+      } else {
+        // For other image CDNs, set a generic Referer
+        requestHeaders['Referer'] = refererUrl
+      }
+      
+      console.log(`[Main Process] Setting Referer for image CDN: ${requestHeaders['Referer']} -> ${details.url.substring(0, 80)}`)
       
       callback({ requestHeaders })
     }
@@ -1287,6 +1540,66 @@ ipcMain.handle('fetch-imgur-album', async (_event, imgurUrl: string) => {
   }
 })
 
+// Proxy image requests to bypass CORS restrictions
+ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
+  try {
+    console.log('[Main Process] Fetching image:', imageUrl.substring(0, 80))
+    
+    // Prepare headers for the request
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    // Set appropriate Referer based on the domain
+    if (imageUrl.includes('4cdn.org')) {
+      headers['Referer'] = 'https://www.4chan.org/'
+      headers['Origin'] = 'https://www.4chan.org'
+    } else if (imageUrl.includes('imgur.com')) {
+      headers['Referer'] = 'https://imgur.com/'
+    } else if (imageUrl.includes('twimg.com')) {
+      headers['Referer'] = 'https://twitter.com/'
+    }
+    
+    // Fetch the image using regular fetch (main process has no CORS restrictions)
+    const response = await fetch(imageUrl, {
+      headers
+    })
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`)
+    }
+    
+    // Get the image as a buffer
+    const arrayBuffer = await response.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    
+    // Determine content type from response or URL
+    let contentType = response.headers.get('content-type') || 'image/jpeg'
+    if (!contentType.startsWith('image/')) {
+      // Fallback: try to determine from URL extension
+      if (imageUrl.match(/\.(jpg|jpeg)$/i)) contentType = 'image/jpeg'
+      else if (imageUrl.match(/\.png$/i)) contentType = 'image/png'
+      else if (imageUrl.match(/\.gif$/i)) contentType = 'image/gif'
+      else if (imageUrl.match(/\.webp$/i)) contentType = 'image/webp'
+      else contentType = 'image/jpeg' // Default fallback
+    }
+    
+    // Convert to base64 data URL
+    const base64 = buffer.toString('base64')
+    const dataUrl = `data:${contentType};base64,${base64}`
+    
+    console.log('[Main Process] Successfully fetched image, size:', buffer.length, 'bytes')
+    
+    return { success: true, dataUrl }
+  } catch (error) {
+    console.error('[Main Process] Error fetching image:', error)
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }
+  }
+})
+
 ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'light' | 'dark' = 'dark') => {
   try {
     console.log('Fetching Reddit embed for URL:', redditUrl)
@@ -1528,7 +1841,6 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       })
       
       chatWebSocket.on('message', (data) => {
-        console.log(`[Main Process] Received message event from ${data.message?.nick || 'unknown'}`)
         safeSend('chat-websocket-message', data)
       })
       
@@ -1701,4 +2013,7 @@ app.on('before-quit', () => {
   fileLogger.close()
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createApplicationMenu()
+  createWindow()
+})

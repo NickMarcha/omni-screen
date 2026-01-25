@@ -1,10 +1,34 @@
 import { useState, useEffect, useCallback } from 'react'
+import yeeCharmGif from '../assets/media/YeeCharm.gif'
+import abaGrinchPng from '../assets/media/AbaGrinch.png'
+import achshullyRetardedPng from '../assets/media/ACHshullyRetarded.png'
+import bennyLovePng from '../assets/media/BennyLove.png'
+import donaldSmadgePng from '../assets/media/DonaldSmadge.png'
+import mehdiAwarePng from '../assets/media/mehdiAware.png'
+import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
+import noHopePng from '../assets/media/NoHope.png'
+import whickedSteinPng from '../assets/media/WhickedStein.png'
 
 interface MenuProps {
   onNavigate: (page: 'link-scroller' | 'omni-screen') => void
 }
 
 function Menu({ onNavigate }: MenuProps) {
+  // Random icon for Link Scroller
+  const linkScrollerIcons = [
+    abaGrinchPng,
+    achshullyRetardedPng,
+    bennyLovePng,
+    donaldSmadgePng,
+    mehdiAwarePng,
+    manHoldsCatPng,
+    noHopePng,
+    whickedSteinPng
+  ]
+  const [randomIcon] = useState(() => 
+    linkScrollerIcons[Math.floor(Math.random() * linkScrollerIcons.length)]
+  )
+
   // Update UI state
   const [checking, setChecking] = useState(false)
   const [updateAvailable, setUpdateAvailable] = useState(false)
@@ -81,7 +105,11 @@ function Menu({ onNavigate }: MenuProps) {
 
   return (
     <div className="min-h-screen bg-base-100 text-base-content flex flex-col items-center justify-center p-8">
-      <h1 className="text-5xl font-bold text-center mb-2 text-primary">Omni Screen</h1>
+      <h1 className="text-5xl font-bold text-center mb-2 text-primary flex items-center justify-center gap-3">
+        <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
+        Omni Screen
+        <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
+      </h1>
       <p className="text-base-content/60 text-sm mb-12">Vibed by StrawWaffle</p>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl w-full mb-8">
@@ -90,11 +118,14 @@ function Menu({ onNavigate }: MenuProps) {
           className="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-shadow cursor-pointer"
           onClick={() => onNavigate('link-scroller')}
         >
-          <div className="card-body items-center text-center">
-            <h2 className="card-title text-2xl mb-4">Link Scroller</h2>
-            <p className="text-base-content/70">
-              Browse and filter messages with embedded media from various platforms
-            </p>
+          <div className="card-body flex-row items-center gap-6">
+            <img src={randomIcon} alt="" className="w-32 h-32 object-contain flex-shrink-0" />
+            <div className="flex flex-col text-left">
+              <h2 className="card-title text-2xl mb-2">Link Scroller</h2>
+              <p className="text-base-content/70">
+                Browse and filter messages with embedded media from various platforms
+              </p>
+            </div>
           </div>
         </button>
 

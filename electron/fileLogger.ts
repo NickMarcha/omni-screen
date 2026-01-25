@@ -3,14 +3,6 @@ import path from 'path'
 import { app } from 'electron'
 import { fileURLToPath } from 'node:url'
 
-interface LogEntry {
-  timestamp: string
-  level: string
-  process: 'main' | 'renderer'
-  message: string
-  args?: any[]
-}
-
 class FileLogger {
   private logFilePath: string | null = null
   private logStream: fs.WriteStream | null = null
@@ -101,13 +93,6 @@ class FileLogger {
 
     try {
       const timestamp = new Date().toISOString()
-      const logEntry: LogEntry = {
-        timestamp,
-        level,
-        process,
-        message,
-        args: args.length > 0 ? args : undefined
-      }
 
       // Format log line
       let logLine = `[${timestamp}] [${level.toUpperCase()}] [${process.toUpperCase()}] ${message}`

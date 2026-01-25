@@ -22,6 +22,13 @@ import streamableIcon from '../assets/icons/third-party/streamable.ico'
 import imgurIcon from '../assets/icons/third-party/imgur.png'
 import wikipediaIcon from '../assets/icons/third-party/wikipedia.png'
 import blueskyIcon from '../assets/icons/third-party/bluesky.svg'
+import jorkingitGif from '../assets/media/jorkingit.gif'
+import feelswierdmanPng from '../assets/media/feelswierdman.png'
+import pepeCharmGif from '../assets/media/PepeCharm.gif'
+import yeeCharmGif from '../assets/media/YeeCharm.gif'
+import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
+import bennyLovePng from '../assets/media/BennyLove.png'
+import achshullyRetardedPng from '../assets/media/ACHshullyRetarded.png'
 
 interface MentionData {
   id: string // Unique ID: date-nick (no hash needed)
@@ -1717,6 +1724,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Emotes data
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   
+  // Random loading spinner (chosen once per component mount)
+  const loadingSpinner = useMemo(() => Math.random() < 0.5 ? pepeCharmGif : yeeCharmGif, [])
+  
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean
@@ -2430,8 +2440,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             }
             return [mention, ...prev]
           })
-          
-          logger.api(`New WebSocket message from ${mention.nick} matching terms: ${matchingTerms.join(', ')}`)
         }
       }
     }
@@ -2588,27 +2596,27 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     mentions.forEach((mention, index) => {
       // Filter out NSFW if toggle is off
       if (!showNSFW && containsNSFW(mention.text)) {
-        return
+        return // Skip this mention entirely
       }
 
       // Filter out NSFL if toggle is off
       if (!showNSFL && containsNSFL(mention.text)) {
-        return
+        return // Skip this mention entirely
       }
 
       // Filter out banned terms
       if (containsBannedTerms(mention.text, bannedTerms)) {
-        return
+        return // Skip this mention entirely
       }
 
       // Filter out banned users
       if (isBannedUser(mention.nick, bannedUsers)) {
-        return
+        return // Skip this mention entirely
       }
 
       // Filter out muted users (mutes expire after 24 hours)
       if (isMutedUser(mention.nick, mutedUsers)) {
-        return
+        return // Skip this mention entirely
       }
 
       const urls = extractUrls(mention.text)
@@ -2974,7 +2982,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   const settingsModal = settingsOpen && (
     <div className="modal modal-open z-[100]">
       <div className="modal-box max-w-4xl">
-        <h3 className="font-bold text-lg mb-4">Settings</h3>
+        <h3 className="font-bold text-lg mb-4 flex items-center justify-between">
+          <span>Settings</span>
+          <img src={manHoldsCatPng} alt="" className="w-16 h-16 object-contain" />
+        </h3>
         
         {/* Tabs */}
         <div className="tabs tabs-bordered mb-4">
@@ -3015,7 +3026,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               <div className="grid grid-cols-3 gap-4">
                 <div className="form-control">
                   <label className="label cursor-pointer">
-                    <span className="label-text">Show NSFW</span>
+                    <span className="label-text flex items-center gap-2">
+                      Show NSFW
+                      <img src={jorkingitGif} alt="" className="w-12 h-12 object-contain" />
+                    </span>
                     <input
                       type="checkbox"
                       checked={tempSettings.showNSFW}
@@ -3027,7 +3041,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
                 <div className="form-control">
                   <label className="label cursor-pointer">
-                    <span className="label-text">Show NSFL</span>
+                    <span className="label-text flex items-center gap-2">
+                      Show NSFL
+                      <img src={feelswierdmanPng} alt="" className="w-12 h-12 object-contain" />
+                    </span>
                     <input
                       type="checkbox"
                       checked={tempSettings.showNSFL}
@@ -3069,18 +3086,29 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               />
 
               {/* Trusted users */}
-              <ListManager
-                title="Trusted Users"
-                items={tempSettings.trustedUsers}
-                onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
-                placeholder="Enter username"
-                helpText="Cards from these users will have a golden outline"
-              />
+              <div>
+                <label className="label">
+                  <span className="label-text font-semibold flex items-center gap-2">
+                    Trusted Users
+                    <img src={bennyLovePng} alt="" className="w-12 h-12 object-contain" />
+                  </span>
+                </label>
+                <ListManager
+                  title=""
+                  items={tempSettings.trustedUsers}
+                  onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
+                  placeholder="Enter username"
+                  helpText="Cards from these users will have a golden outline"
+                />
+              </div>
 
               {/* Muted users */}
               <div>
                 <label className="label">
-                  <span className="label-text font-semibold">Muted Users</span>
+                  <span className="label-text font-semibold flex items-center gap-2">
+                    Muted Users
+                    <img src={achshullyRetardedPng} alt="" className="w-12 h-12 object-contain" />
+                  </span>
                 </label>
                 <div className="text-xs text-base-content/70 mb-2">
                   Muted users are temporarily filtered out for 24 hours. Expired mutes are automatically removed.
@@ -3253,14 +3281,31 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Only render highlight mode if we're in highlight mode AND have a valid card
   // If card is missing but we're in highlight mode, try to find a valid card or stay in highlight
   if (viewMode === 'highlight') {
-    // If highlightedCardId exists but card is missing, try to find it or use first card
-    if (highlightedCardId && !highlightedCard && linkCards.length > 0) {
-      // Card might have been filtered out, try to find a replacement
-      const firstCard = linkCards[0]
-      if (firstCard) {
-        setHighlightedCardId(firstCard.id)
-        return null // Return null to trigger re-render
+    // Ensure we have a valid highlighted card if there are any cards available
+    if (linkCards.length > 0) {
+      // If no highlightedCardId is set, or the current highlightedCard doesn't exist, use the first card
+      if (!highlightedCardId || !highlightedCard) {
+        const firstCard = linkCards[0]
+        if (firstCard) {
+          setHighlightedCardId(firstCard.id)
+          return null // Return null to trigger re-render with new highlightedCardId
+        }
       }
+    } else {
+      // No cards available, can't render highlight mode
+      return (
+        <div className="min-h-screen bg-base-200 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-lg text-base-content/70 mb-4">No cards to display</p>
+            <button
+              onClick={() => setViewMode('overview')}
+              className="btn btn-primary"
+            >
+              Switch to Overview Mode
+            </button>
+          </div>
+        </div>
+      )
     }
     
     // Only render highlight mode if we have a valid card
@@ -3350,7 +3395,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               <div>
                 {loadingImgurAlbum ? (
                   <div className="flex justify-center items-center py-12">
-                    <span className="loading loading-spinner loading-lg"></span>
+                    <img 
+                      src={loadingSpinner} 
+                      alt="Loading..." 
+                      className="w-16 h-16 object-contain"
+                    />
                     <span className="ml-4">Loading Imgur album...</span>
                   </div>
                 ) : imgurAlbumError ? (
@@ -3593,7 +3642,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 >
                   {loadingMore ? (
                     <>
-                      <span className="loading loading-spinner loading-xs"></span>
+                      <img 
+                        src={loadingSpinner} 
+                        alt="Loading..." 
+                        className="w-4 h-4 object-contain"
+                      />
                       Loading...
                     </>
                   ) : (
@@ -3603,8 +3656,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               </div>
             )}
             {!hasMore && linkCards.length > 0 && (
-              <div className="mt-4 text-center text-xs text-base-content/50">
-                No more links to load
+              <div className="mt-4 text-center">
+                <img 
+                  src={manHoldsCatPng} 
+                  alt="No more links" 
+                  className="mx-auto max-w-xs mb-2"
+                />
+                <p className="text-xs text-base-content/50">No more links to load</p>
               </div>
             )}
           </div>
@@ -3844,7 +3902,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       <div className="min-h-screen bg-base-200 p-4">
       {loading && mentions.length === 0 && (
         <div className="flex justify-center items-center py-8">
-          <span className="loading loading-spinner loading-lg"></span>
+          <img 
+            src={loadingSpinner} 
+            alt="Loading..." 
+            className="w-16 h-16 object-contain"
+          />
         </div>
       )}
 
@@ -3919,7 +3981,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 >
                   {loadingMore ? (
                     <>
-                      <span className="loading loading-spinner loading-sm"></span>
+                      <img 
+                        src={loadingSpinner} 
+                        alt="Loading..." 
+                        className="w-4 h-4 object-contain"
+                      />
                       Loading...
                     </>
                   ) : (
@@ -3929,8 +3995,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               </div>
             )}
             {!hasMore && linkCards.length > 0 && (
-              <div className="text-center py-8 text-base-content/70">
-                No more links to load
+              <div className="text-center py-8">
+                <img 
+                  src={manHoldsCatPng} 
+                  alt="No more links" 
+                  className="mx-auto max-w-xs mb-4"
+                />
+                <p className="text-base-content/70">No more links to load</p>
               </div>
             )}
           </>
