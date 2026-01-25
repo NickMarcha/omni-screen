@@ -30,6 +30,7 @@ interface MentionData {
   nick: string
   flairs: string
   matchedTerms: string[] // Terms from filter that matched this mention
+  searchAfter?: number // For rustlesearch API pagination
 }
 
 interface ImgurAlbumMedia {
@@ -1643,9 +1644,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mentions, setMentions] = useState<MentionData[]>([])
+  // Ref to track if a fetch is in progress to prevent duplicate calls
+  const fetchInProgressRef = useRef(false)
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(true)
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
+  // Rustlesearch fallback state
+  const [usingRustlesearch, setUsingRustlesearch] = useState(false)
+  const [rustlesearchSearchAfter, setRustlesearchSearchAfter] = useState<number | undefined>(undefined)
   // For overview mode: card ID that's expanded in modal
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null)
   const [autoplayEnabled, setAutoplayEnabled] = useState(true) // Default to true for highlight mode
@@ -1820,15 +1826,25 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   const SIZE = 150
 
   const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false) => {
+    // Prevent duplicate concurrent calls
+    if (fetchInProgressRef.current) {
+      logger.api('fetchMentions: Another fetch already in progress, skipping duplicate call')
+      return
+    }
+    
+    // Deduplicate filter terms to avoid duplicate API calls
+    const uniqueFilterTerms = Array.from(new Set(filterTerms.map(term => term.trim()).filter(term => term.length > 0)))
+    
     logger.api('fetchMentions called', {
-      filterTerms,
+      originalFilterTerms: filterTerms,
+      uniqueFilterTerms,
       currentOffset,
       append,
       size: SIZE,
       timestamp: new Date().toISOString()
     })
     
-    if (filterTerms.length === 0) {
+    if (uniqueFilterTerms.length === 0) {
       logger.api('No filter terms provided, skipping fetch')
       if (!append) {
         setMentions([])
@@ -1836,6 +1852,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
       return
     }
+    
+    // Mark fetch as in progress
+    fetchInProgressRef.current = true
     
     if (append) {
       setLoadingMore(true)
@@ -1850,8 +1869,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       const startTime = Date.now()
       
       // Fetch mentions for each filter term in parallel
-      logger.api(`Fetching mentions for ${filterTerms.length} terms`)
-      const fetchPromises = filterTerms.map(term => 
+      logger.api(`Fetching mentions for ${uniqueFilterTerms.length} unique terms (${filterTerms.length} original)`)
+      const fetchPromises = uniqueFilterTerms.map(term => 
         window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset)
       )
       
@@ -1863,7 +1882,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       const mentionsMap = new Map<string, MentionData>()
       
       results.forEach((result, index) => {
-        const term = filterTerms[index]
+        const term = uniqueFilterTerms[index]
         if (result.success && Array.isArray(result.data)) {
           const termData = result.data as MentionData[]
           logger.api(`Processing ${termData.length} mentions for term "${term}"`)
@@ -1893,8 +1912,136 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       })
       
       // Convert map to array and sort by date (newest first)
-      const mergedData = Array.from(mentionsMap.values()).sort((a, b) => b.date - a.date)
-      logger.api(`Merged ${mergedData.length} unique mentions from ${filterTerms.length} terms`)
+      let mergedData = Array.from(mentionsMap.values()).sort((a, b) => b.date - a.date)
+      logger.api(`Merged ${mergedData.length} unique mentions from ${uniqueFilterTerms.length} unique terms`)
+      
+      // If mentions API returned no results and we're not appending, try rustlesearch fallback
+      if (mergedData.length === 0 && !append) {
+        logger.api('Mentions API returned no results, trying rustlesearch fallback')
+        logger.api(`Filter terms: ${uniqueFilterTerms.join(', ')}`)
+        
+        try {
+          logger.api(`Invoking fetch-rustlesearch IPC with terms: ${uniqueFilterTerms.join(', ')}`)
+          const rustleResult = await window.ipcRenderer.invoke('fetch-rustlesearch', uniqueFilterTerms, undefined, SIZE)
+          
+          logger.api(`Rustlesearch IPC result: success=${rustleResult.success}, dataLength=${rustleResult.data?.length || 0}, error=${rustleResult.error || 'none'}`)
+          
+          if (rustleResult.success && Array.isArray(rustleResult.data)) {
+            const rustleData = rustleResult.data as MentionData[]
+            logger.api(`Rustlesearch returned ${rustleData.length} messages`)
+            
+            if (rustleData.length > 0) {
+              logger.api(`First rustlesearch message: date=${new Date(rustleData[0].date).toISOString()}, nick=${rustleData[0].nick}, text=${rustleData[0].text.substring(0, 50)}...`)
+            }
+            
+            mergedData = rustleData.sort((a, b) => b.date - a.date)
+            
+            // Store searchAfter for pagination and mark as using rustlesearch
+            if (rustleResult.searchAfter) {
+              setRustlesearchSearchAfter(rustleResult.searchAfter)
+              logger.api(`Stored rustlesearch searchAfter: ${rustleResult.searchAfter}`)
+            }
+            setUsingRustlesearch(true)
+            logger.api('Marked as using rustlesearch fallback')
+            
+            // Update hasMore based on rustlesearch response
+            setHasMore(rustleResult.hasMore || false)
+            logger.api(`Set hasMore to: ${rustleResult.hasMore || false}`)
+          } else {
+            const errorMsg = rustleResult.error || 'Unknown error'
+            logger.error('Rustlesearch fallback failed:', errorMsg)
+            logger.error('Rustlesearch result details:', rustleResult)
+            
+            // Check for rate limit info
+            if (rustleResult.rateLimitInfo) {
+              const { retryAfter, retryDate } = rustleResult.rateLimitInfo
+              if (retryAfter && retryDate) {
+                const retryDateObj = new Date(retryDate)
+                const minutesUntilRetry = Math.ceil(retryAfter / 60)
+                const retryTimeStr = retryDateObj.toLocaleTimeString()
+                
+                logger.error(`Rate limited: Please wait ${minutesUntilRetry} minute(s) before retrying (retry after ${retryTimeStr})`)
+                setError(`Rustlesearch API rate limited. Please wait ${minutesUntilRetry} minute(s) before retrying. (Retry after ${retryTimeStr})`)
+              } else {
+                setError(`Rustlesearch API error: ${errorMsg}`)
+              }
+            } else {
+              setError(`Rustlesearch API error: ${errorMsg}`)
+            }
+            
+            setHasMore(false)
+          }
+        } catch (rustleErr) {
+          logger.error('Exception in rustlesearch fallback:', rustleErr)
+          if (rustleErr instanceof Error) {
+            logger.error('Error message:', rustleErr.message)
+            logger.error('Error stack:', rustleErr.stack)
+          }
+          setHasMore(false)
+        }
+      } else if (append && usingRustlesearch && rustlesearchSearchAfter !== undefined) {
+        // Continue using rustlesearch for pagination
+        logger.api('Continuing with rustlesearch pagination')
+        
+        try {
+          const rustleResult = await window.ipcRenderer.invoke(
+            'fetch-rustlesearch', 
+            uniqueFilterTerms, 
+            rustlesearchSearchAfter, 
+            SIZE
+          )
+          
+          if (rustleResult.success && Array.isArray(rustleResult.data)) {
+            const rustleData = rustleResult.data as MentionData[]
+            logger.api(`Rustlesearch pagination returned ${rustleData.length} messages`)
+            
+            mergedData = rustleData.sort((a, b) => b.date - a.date)
+            
+            // Update searchAfter for next page
+            if (rustleResult.searchAfter) {
+              setRustlesearchSearchAfter(rustleResult.searchAfter)
+            } else {
+              setRustlesearchSearchAfter(undefined)
+            }
+            
+            setHasMore(rustleResult.hasMore || false)
+          } else {
+            const errorMsg = rustleResult.error || 'Unknown error'
+            logger.error('Rustlesearch pagination failed:', errorMsg)
+            
+            // Check for rate limit info
+            if (rustleResult.rateLimitInfo) {
+              const { retryAfter, retryDate } = rustleResult.rateLimitInfo
+              if (retryAfter && retryDate) {
+                const retryDateObj = new Date(retryDate)
+                const minutesUntilRetry = Math.ceil(retryAfter / 60)
+                const retryTimeStr = retryDateObj.toLocaleTimeString()
+                
+                logger.error(`Rate limited: Please wait ${minutesUntilRetry} minute(s) before retrying (retry after ${retryTimeStr})`)
+                setError(`Rustlesearch API rate limited. Please wait ${minutesUntilRetry} minute(s) before retrying. (Retry after ${retryTimeStr})`)
+              } else {
+                setError(`Rustlesearch API error: ${errorMsg}`)
+              }
+            } else {
+              setError(`Rustlesearch API error: ${errorMsg}`)
+            }
+            
+            setHasMore(false)
+          }
+        } catch (rustleErr) {
+          logger.error('Exception in rustlesearch pagination:', rustleErr)
+          setHasMore(false)
+        }
+      } else {
+        // Normal mentions API flow
+        logger.api(`Skipping rustlesearch fallback: mergedData.length=${mergedData.length}, append=${append}, usingRustlesearch=${usingRustlesearch}`)
+        // If any fetch returned fewer results than requested, we might have reached the end
+        // But since we're merging multiple fetches, we check if total merged is less than expected
+        const hasMoreResult = mergedData.length >= SIZE
+        setHasMore(hasMoreResult)
+        setOffset(currentOffset + mergedData.length)
+        logger.api(`Updated state: offset=${currentOffset + mergedData.length}, hasMore=${hasMoreResult}`)
+      }
       
       if (mergedData.length > 0) {
         const firstFew = mergedData.slice(0, 3).map(m => ({
@@ -1933,13 +2080,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         logger.api('Setting new mentions (replacing existing)')
         setMentions(mergedData)
       }
-      
-      // If any fetch returned fewer results than requested, we might have reached the end
-      // But since we're merging multiple fetches, we check if total merged is less than expected
-      const hasMore = mergedData.length >= SIZE
-      setHasMore(hasMore)
-      setOffset(currentOffset + mergedData.length)
-      logger.api(`Updated state: offset=${currentOffset + mergedData.length}, hasMore=${hasMore}`)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
       logger.error('Exception in fetchMentions:', err)
@@ -1950,6 +2090,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       setError(errorMsg)
       setHasMore(false)
     } finally {
+      // Mark fetch as complete
+      fetchInProgressRef.current = false
+      
       if (append) {
         setLoadingMore(false)
         logger.api('Finished loading more')
@@ -1958,7 +2101,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         logger.api('Finished fetching')
       }
     }
-  }, [])
+  }, [usingRustlesearch, rustlesearchSearchAfter])
 
   // Reset and fetch when filter changes
   useEffect(() => {
@@ -1966,6 +2109,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       setOffset(0)
       setHasMore(true)
       setMentions([])
+      setUsingRustlesearch(false)
+      setRustlesearchSearchAfter(undefined)
       fetchMentions(filter, 0, false)
     }
   }, [filter, fetchMentions])
@@ -1973,6 +2118,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Handle load more button click
   const handleLoadMore = useCallback(() => {
     if (loadingMore || !hasMore || loading) return
+    // For rustlesearch, we use searchAfter instead of offset, but fetchMentions handles this internally
     fetchMentions(filter, offset, true)
   }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
 

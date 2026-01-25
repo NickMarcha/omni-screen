@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView, she
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { update } from './update'
+import { fileLogger } from './fileLogger'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -14,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // │ │ ├── main.js
 // │ │ └── preload.mjs
 // │
+// Set APP_ROOT to project root (one level up from dist-electron)
 process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
@@ -406,6 +408,129 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
     if (error instanceof Error) {
       console.error(`  - Error message: ${error.message}`)
       console.error(`  - Error stack: ${error.stack}`)
+    }
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+// Fallback API: rustlesearch.dev search API
+// Used when mentions API returns no results
+// Parameters:
+//   - filterTerms: array of search terms (joined with |)
+//   - searchAfter: optional pagination token from previous response
+//   - size: number of results to fetch
+// Note: username parameter exists but won't be used for now
+ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searchAfter?: number, size: number = 150) => {
+  try {
+    // Join filter terms with | separator
+    const textParam = filterTerms.join('|')
+    
+    // Build URL with parameters
+    const url = new URL('https://api-v2.rustlesearch.dev/anon/search')
+    url.searchParams.set('text', textParam)
+    url.searchParams.set('channel', 'Destinygg')
+    if (searchAfter) {
+      url.searchParams.set('searchAfter', searchAfter.toString())
+    }
+    // Optional: date range (commented out for now, can be added later)
+    // const today = new Date()
+    // const oneYearAgo = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate())
+    // url.searchParams.set('start_date', oneYearAgo.toISOString().split('T')[0])
+    // url.searchParams.set('end_date', today.toISOString().split('T')[0])
+    
+    console.log(`[Main Process] Fetching rustlesearch for terms: ${filterTerms.join(', ')}`)
+    console.log(`  - URL: ${url.toString()}`)
+    console.log(`  - SearchAfter: ${searchAfter || 'none'}, Size: ${size}`)
+    
+    const startTime = Date.now()
+    const response = await fetch(url.toString(), {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    })
+    
+    const fetchTime = Date.now() - startTime
+    console.log(`  - Response status: ${response.status} (took ${fetchTime}ms)`)
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unable to read error response')
+      console.error(`  - Error response body: ${errorText}`)
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    
+    const result = await response.json()
+    
+    if (result.type !== 'Success' || !result.data) {
+      throw new Error(result.error || 'Invalid response format')
+    }
+    
+    const messages = result.data.messages || []
+    const dataLength = messages.length
+    console.log(`  - Received ${dataLength} messages`)
+    
+    // Map rustlesearch format to MentionData format
+    const mappedData = messages.map((msg: any) => {
+      // Convert ISO timestamp to number (milliseconds)
+      const date = new Date(msg.ts).getTime()
+      // Use date-username as unique ID
+      const uniqueId = `${date}-${msg.username || ''}`
+      
+      return {
+        id: uniqueId,
+        date: date,
+        text: msg.text || '',
+        nick: msg.username || '',
+        flairs: '', // rustlesearch doesn't provide flairs
+        matchedTerms: filterTerms, // All terms matched since we searched for them
+        // Store searchAfter for pagination
+        searchAfter: msg.searchAfter
+      }
+    })
+    
+    // Get the last searchAfter value for pagination
+    const lastSearchAfter = mappedData.length > 0 
+      ? mappedData[mappedData.length - 1].searchAfter 
+      : undefined
+    
+    console.log(`  - Mapped ${mappedData.length} messages`)
+    if (lastSearchAfter) {
+      console.log(`  - Last searchAfter: ${lastSearchAfter}`)
+    }
+    
+    return { 
+      success: true, 
+      data: mappedData,
+      searchAfter: lastSearchAfter, // Return for pagination
+      hasMore: dataLength > 0 && lastSearchAfter !== undefined // Has more if we got results and have a searchAfter
+    }
+  } catch (error) {
+    console.error('[Main Process] Error fetching rustlesearch:', error)
+    console.error(`  - Filter terms: ${filterTerms.join(', ')}`)
+    if (error instanceof Error) {
+      console.error(`  - Error message: ${error.message}`)
+      console.error(`  - Error stack: ${error.stack}`)
+      
+      // Include rate limit info in response if available
+      const rateLimitInfo = (error as any).rateLimitInfo
+      if (rateLimitInfo) {
+        const retryAfter = rateLimitInfo.retryAfter
+        const retryDate = retryAfter ? new Date(Date.now() + retryAfter * 1000) : null
+        
+        return { 
+          success: false, 
+          error: error.message,
+          rateLimitInfo: {
+            retryAfter,
+            retryDate: retryDate?.toISOString(),
+            limit: rateLimitInfo.limit,
+            remaining: rateLimitInfo.remaining,
+            reset: rateLimitInfo.reset
+          }
+        }
+      }
     }
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
@@ -1370,6 +1495,57 @@ ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     return { success: false, error: errorMessage }
   }
+})
+
+// Initialize file logger after APP_ROOT is set (line 18)
+// This ensures the logs directory is created in the correct location (project root/logs)
+fileLogger.initialize()
+
+// Intercept console methods in main process to write to file
+const originalConsoleLog = console.log
+const originalConsoleError = console.error
+const originalConsoleWarn = console.warn
+const originalConsoleInfo = console.info
+const originalConsoleDebug = console.debug
+
+console.log = (...args: any[]) => {
+  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+  fileLogger.writeLog('info', 'main', message, args)
+  originalConsoleLog.apply(console, args)
+}
+
+console.error = (...args: any[]) => {
+  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+  fileLogger.writeLog('error', 'main', message, args)
+  originalConsoleError.apply(console, args)
+}
+
+console.warn = (...args: any[]) => {
+  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+  fileLogger.writeLog('warn', 'main', message, args)
+  originalConsoleWarn.apply(console, args)
+}
+
+console.info = (...args: any[]) => {
+  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+  fileLogger.writeLog('info', 'main', message, args)
+  originalConsoleInfo.apply(console, args)
+}
+
+console.debug = (...args: any[]) => {
+  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+  fileLogger.writeLog('debug', 'main', message, args)
+  originalConsoleDebug.apply(console, args)
+}
+
+// IPC handler for renderer process to send logs
+ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any[] = []) => {
+  fileLogger.writeLog(level, 'renderer', message, args)
+})
+
+// Cleanup on app quit
+app.on('before-quit', () => {
+  fileLogger.close()
 })
 
 app.whenReady().then(createWindow)

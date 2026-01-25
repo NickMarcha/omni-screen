@@ -14,6 +14,22 @@ class Logger {
   }
 
   /**
+   * Send log to file via IPC (if available)
+   */
+  private sendToFile(level: string, message: string, args: any[]) {
+    try {
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        // Send to main process to write to file
+        window.ipcRenderer.invoke('log-to-file', level, message, args).catch(() => {
+          // Silently fail if IPC is not available
+        })
+      }
+    } catch (e) {
+      // Silently fail if IPC is not available
+    }
+  }
+
+  /**
    * Enable or disable all logging
    */
   setEnabled(enabled: boolean) {
@@ -62,7 +78,11 @@ class Logger {
     if (!this.isEnabled(type)) return
 
     const prefix = `[${type.toUpperCase()}]`
+    const fullMessage = `${prefix} ${message}`
     console.log(prefix, message, ...args)
+    
+    // Also send to file logger
+    this.sendToFile(type, fullMessage, args)
   }
 
   /**

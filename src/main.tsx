@@ -53,9 +53,45 @@ window.ipcRenderer.on('main-process-message', (_event, message) => {
   console.log(message)
 })
 
+// Intercept console methods in renderer to send to main process for file logging
+// This must be done before other console overrides
+const originalConsoleLog = console.log
+const originalConsoleError = console.error
+const originalConsoleWarn = console.warn
+const originalConsoleInfo = console.info
+const originalConsoleDebug = console.debug
+
+const sendToFile = (level: string, ...args: any[]) => {
+  try {
+    if (typeof window !== 'undefined' && window.ipcRenderer) {
+      const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
+      window.ipcRenderer.invoke('log-to-file', level, message, args).catch(() => {
+        // Silently fail if IPC is not available
+      })
+    }
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+// Override console methods to send to file (but preserve original behavior)
+console.log = (...args: any[]) => {
+  sendToFile('info', ...args)
+  originalConsoleLog.apply(console, args)
+}
+
+console.info = (...args: any[]) => {
+  sendToFile('info', ...args)
+  originalConsoleInfo.apply(console, args)
+}
+
+console.debug = (...args: any[]) => {
+  sendToFile('debug', ...args)
+  originalConsoleDebug.apply(console, args)
+}
+
 // Suppress TikTok SDK errors globally to reduce console noise
-const originalError = console.error
-const originalWarn = console.warn
+// Note: These overrides will also send to file before suppressing
 
 // Suppress specific TikTok/Chrome cookie warnings
 const shouldSuppress = (args: any[]): boolean => {
@@ -70,14 +106,16 @@ const shouldSuppress = (args: any[]): boolean => {
 }
 
 console.error = (...args: any[]) => {
+  sendToFile('error', ...args)
   if (!shouldSuppress(args)) {
-    originalError.apply(console, args)
+    originalConsoleError.apply(console, args)
   }
 }
 
 console.warn = (...args: any[]) => {
+  sendToFile('warn', ...args)
   if (!shouldSuppress(args)) {
-    originalWarn.apply(console, args)
+    originalConsoleWarn.apply(console, args)
   }
 }
 
