@@ -2,6 +2,45 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
+import { logger } from './utils/logger'
+
+// Apply theme immediately on load (before React renders)
+function applyInitialTheme() {
+  try {
+    const saved = localStorage.getItem('omni-screen-settings')
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      const theme = parsed.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' }
+      const html = document.documentElement
+      const body = document.body
+      
+      let themeToApply: string
+      if (theme.mode === 'system') {
+        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+        themeToApply = mediaQuery.matches ? (theme.darkTheme || 'business') : (theme.lightTheme || 'retro')
+      } else if (theme.mode === 'light') {
+        themeToApply = theme.lightTheme || 'retro'
+      } else {
+        themeToApply = theme.darkTheme || 'business'
+      }
+      html.setAttribute('data-theme', themeToApply)
+      body.setAttribute('data-theme', themeToApply)
+    } else {
+      // Default to business theme
+      document.documentElement.setAttribute('data-theme', 'business')
+      document.body.setAttribute('data-theme', 'business')
+    }
+    } catch (e) {
+      console.error('Failed to apply initial theme:', e)
+      // Fallback to business
+      document.documentElement.setAttribute('data-theme', 'business')
+      document.body.setAttribute('data-theme', 'business')
+      logger.theme('Applied fallback theme: business')
+    }
+  }
+
+// Apply theme before React renders
+applyInitialTheme()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

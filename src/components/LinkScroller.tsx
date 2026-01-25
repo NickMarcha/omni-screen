@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { logger } from '../utils/logger'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
@@ -151,6 +152,28 @@ function isPlatformDisabled(linkType: string | undefined, disabledPlatforms: str
   return disabledPlatforms.some(platform => platform.trim() && lowerLinkType === platform.trim().toLowerCase())
 }
 
+// Keybind interface
+interface Keybind {
+  action: string
+  key: string
+  ctrl?: boolean
+  shift?: boolean
+  alt?: boolean
+}
+
+// Theme settings
+type ThemeMode = 'system' | 'light' | 'dark'
+type LightTheme = 'light' | 'cupcake' | 'bumblebee' | 'emerald' | 'corporate' | 'retro' | 'cyberpunk' | 'valentine' | 'garden' | 'lofi' | 'pastel' | 'fantasy' | 'wireframe' | 'cmyk' | 'autumn' | 'acid' | 'lemonade' | 'winter' | 'nord' | 'caramellatte' | 'silk'
+type DarkTheme = 'dark' | 'synthwave' | 'halloween' | 'forest' | 'aqua' | 'black' | 'luxury' | 'dracula' | 'business' | 'acid' | 'night' | 'coffee' | 'dim' | 'sunset' | 'abyss'
+type EmbedThemeMode = 'follow' | 'light' | 'dark'
+
+interface ThemeSettings {
+  mode: ThemeMode // system, light, or dark
+  lightTheme: LightTheme // Selected light theme
+  darkTheme: DarkTheme // Selected dark theme
+  embedTheme: EmbedThemeMode // Embed theme: follow, light, or dark
+}
+
 // Settings interface
 interface Settings {
   filter: string
@@ -160,6 +183,8 @@ interface Settings {
   bannedUsers: string[] // New: list of banned usernames
   disabledPlatforms: string[] // New: list of disabled platforms
   trustedUsers: string[] // New: list of trusted usernames
+  keybinds: Keybind[] // New: customizable keyboard shortcuts
+  theme: ThemeSettings // New: theme settings
 }
 
 // Load settings from localStorage
@@ -168,7 +193,7 @@ function loadSettings(): Settings {
     const saved = localStorage.getItem('omni-screen-settings')
     if (saved) {
       const parsed = JSON.parse(saved)
-      console.log('Loaded settings from localStorage:', parsed)
+      logger.settings('Loaded settings from localStorage')
       
       // Migrate old format (bannedTerms as string) to new format (array)
       if (typeof parsed.bannedTerms === 'string') {
@@ -176,6 +201,16 @@ function loadSettings(): Settings {
       }
       
       // Ensure all new fields exist with defaults
+      const defaultKeybinds: Keybind[] = [
+        { action: 'next', key: 'ArrowRight', ctrl: false, shift: false, alt: false },
+        { action: 'previous', key: 'ArrowLeft', ctrl: false, shift: false, alt: false },
+        { action: 'toggleAutoplay', key: 'a', ctrl: false, shift: false, alt: false },
+        { action: 'toggleMute', key: 'm', ctrl: false, shift: false, alt: false },
+        { action: 'toggleLoop', key: 'l', ctrl: false, shift: false, alt: false },
+        { action: 'refresh', key: 'r', ctrl: true, shift: false, alt: false },
+        { action: 'settings', key: ',', ctrl: false, shift: false, alt: false },
+      ]
+      
       const migrated: Settings = {
         filter: parsed.filter || 'mrMouton',
         showNSFW: parsed.showNSFW ?? false,
@@ -184,12 +219,29 @@ function loadSettings(): Settings {
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
         disabledPlatforms: Array.isArray(parsed.disabledPlatforms) ? parsed.disabledPlatforms : [],
         trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
+        keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
+        theme: parsed.theme && typeof parsed.theme === 'object' ? {
+          mode: parsed.theme.mode || 'system',
+          lightTheme: parsed.theme.lightTheme || 'retro',
+          darkTheme: parsed.theme.darkTheme || 'business',
+          embedTheme: parsed.theme.embedTheme || 'follow'
+        } : { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
       }
       return migrated
     }
   } catch (e) {
-    console.error('Failed to load settings:', e)
+    logger.error('Failed to load settings:', e)
   }
+  const defaultKeybinds: Keybind[] = [
+    { action: 'next', key: 'ArrowRight', ctrl: false, shift: false, alt: false },
+    { action: 'previous', key: 'ArrowLeft', ctrl: false, shift: false, alt: false },
+    { action: 'toggleAutoplay', key: 'a', ctrl: false, shift: false, alt: false },
+    { action: 'toggleMute', key: 'm', ctrl: false, shift: false, alt: false },
+    { action: 'toggleLoop', key: 'l', ctrl: false, shift: false, alt: false },
+    { action: 'refresh', key: 'r', ctrl: true, shift: false, alt: false },
+    { action: 'settings', key: ',', ctrl: false, shift: false, alt: false },
+  ]
+  
   const defaults: Settings = {
     filter: 'mrMouton',
     showNSFW: false,
@@ -198,8 +250,10 @@ function loadSettings(): Settings {
     bannedUsers: [],
     disabledPlatforms: [],
     trustedUsers: [],
+    keybinds: defaultKeybinds,
+    theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
   }
-  console.log('Using default settings:', defaults)
+    logger.settings('Using default settings')
   return defaults
 }
 
@@ -207,14 +261,14 @@ function loadSettings(): Settings {
 function saveSettings(settings: Settings) {
   try {
     localStorage.setItem('omni-screen-settings', JSON.stringify(settings))
-    console.log('Saved settings to localStorage:', settings)
+    logger.settings('Saved settings to localStorage')
     // Verify it was saved
     const verify = localStorage.getItem('omni-screen-settings')
     if (!verify) {
-      console.error('Settings were not saved - localStorage may be disabled')
+      logger.error('Settings were not saved - localStorage may be disabled')
     }
   } catch (e) {
-    console.error('Failed to save settings:', e)
+    logger.error('Failed to save settings:', e)
   }
 }
 
@@ -534,7 +588,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (cardId: string) => void }) {
+function MasonryGrid({ cards, onCardClick, getEmbedTheme }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark' }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -654,7 +708,7 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                   </div>
                 ) : card.isTwitter ? (
                   <div className="p-2">
-                    <TwitterEmbed url={card.url} />
+                    <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
                   </div>
                 ) : card.isTikTok ? (
                   <div className="p-2">
@@ -662,7 +716,7 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
                   </div>
                 ) : card.isReddit ? (
                   <div className="p-2">
-                    <RedditEmbed url={card.url} theme="dark" />
+                    <RedditEmbed url={card.url} theme={getEmbedTheme()} />
                   </div>
                 ) : card.isStreamable ? (
                   <div className="p-2">
@@ -768,6 +822,222 @@ function MasonryGrid({ cards, onCardClick }: { cards: LinkCard[], onCardClick: (
 }
 
 // Render text with clickable links
+// Keybinds Tab Component
+function KeybindsTab({ keybinds, onKeybindsChange }: { keybinds: Keybind[]; onKeybindsChange: (keybinds: Keybind[]) => void }) {
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [capturedKeys, setCapturedKeys] = useState<{ key: string; ctrl: boolean; shift: boolean; alt: boolean } | null>(null)
+  
+  const actionNames: Record<string, string> = {
+    next: 'Next Card',
+    previous: 'Previous Card',
+    toggleAutoplay: 'Toggle Autoplay',
+    toggleMute: 'Toggle Mute',
+    toggleLoop: 'Toggle Loop',
+    refresh: 'Refresh Feed',
+    settings: 'Open Settings',
+  }
+  
+  return (
+    <div className="space-y-4">
+      <div className="text-sm text-base-content/70 mb-4">
+        Click on a keybind to customize it. Press the keys you want to use.
+      </div>
+      {keybinds.map((keybind, index) => (
+        <div key={index} className="flex items-center gap-4">
+          <div className="flex-1">
+            <label className="label">
+              <span className="label-text">{actionNames[keybind.action] || keybind.action}</span>
+            </label>
+          </div>
+          <div className="flex-1">
+            {editingIndex === index ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  className="input input-bordered input-sm flex-1"
+                  placeholder="Press keys..."
+                  onKeyDown={(e) => {
+                    e.preventDefault()
+                    const key = e.key === ' ' ? 'Space' : e.key
+                    setCapturedKeys({
+                      key,
+                      ctrl: e.ctrlKey,
+                      shift: e.shiftKey,
+                      alt: e.altKey,
+                    })
+                  }}
+                  onBlur={() => {
+                    if (capturedKeys) {
+                      const newKeybinds = [...keybinds]
+                      newKeybinds[index] = {
+                        ...newKeybinds[index],
+                        ...capturedKeys,
+                      }
+                      onKeybindsChange(newKeybinds)
+                      setCapturedKeys(null)
+                    }
+                    setEditingIndex(null)
+                  }}
+                  autoFocus
+                />
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => {
+                    setEditingIndex(null)
+                    setCapturedKeys(null)
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                className="btn btn-sm btn-outline w-full"
+                onClick={() => setEditingIndex(index)}
+              >
+                {[
+                  keybind.ctrl && 'Ctrl',
+                  keybind.alt && 'Alt',
+                  keybind.shift && 'Shift',
+                  keybind.key,
+                ]
+                  .filter(Boolean)
+                  .join(' + ')}
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Theme Tab Component
+function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThemeChange: (theme: ThemeSettings) => void }) {
+  const lightThemes: LightTheme[] = [
+    'light', 'cupcake', 'bumblebee', 'emerald', 'corporate', 'retro', 'cyberpunk', 
+    'valentine', 'garden', 'lofi', 'pastel', 'fantasy', 'wireframe', 'cmyk', 
+    'autumn', 'acid', 'lemonade', 'winter', 'nord', 'caramellatte', 'silk'
+  ]
+  
+  const darkThemes: DarkTheme[] = [
+    'dark', 'synthwave', 'halloween', 'forest', 'aqua', 'black', 'luxury', 
+    'dracula', 'business', 'acid', 'night', 'coffee', 'dim', 'sunset', 'abyss'
+  ]
+  
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="label">
+          <span className="label-text">Theme Mode</span>
+        </label>
+        <select
+          className="select select-bordered w-full"
+          value={theme.mode}
+          onChange={(e) => {
+            onThemeChange({
+              ...theme,
+              mode: e.target.value as ThemeMode,
+            })
+          }}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <label className="label">
+          <span className="label-text-alt">
+            {theme.mode === 'system' && 'Follows your system theme preference'}
+            {theme.mode === 'light' && 'Always use light theme'}
+            {theme.mode === 'dark' && 'Always use dark theme'}
+          </span>
+        </label>
+      </div>
+      
+      <div>
+        <label className="label">
+          <span className="label-text">Light Theme</span>
+        </label>
+        <select
+          className="select select-bordered w-full"
+          value={theme.lightTheme || 'retro'}
+          onChange={(e) => {
+            onThemeChange({
+              ...theme,
+              lightTheme: e.target.value as LightTheme,
+            })
+          }}
+          disabled={theme.mode === 'dark'}
+        >
+          {lightThemes.map((themeName) => (
+            <option key={themeName} value={themeName}>
+              {themeName.charAt(0).toUpperCase() + themeName.slice(1)}
+            </option>
+          ))}
+        </select>
+        <label className="label">
+          <span className="label-text-alt">
+            {theme.mode === 'dark' ? 'Disabled when dark mode is selected' : 'Theme to use for light mode'}
+          </span>
+        </label>
+      </div>
+      
+      <div>
+        <label className="label">
+          <span className="label-text">Dark Theme</span>
+        </label>
+        <select
+          className="select select-bordered w-full"
+          value={theme.darkTheme || 'business'}
+          onChange={(e) => {
+            onThemeChange({
+              ...theme,
+              darkTheme: e.target.value as DarkTheme,
+            })
+          }}
+          disabled={theme.mode === 'light'}
+        >
+          {darkThemes.map((themeName) => (
+            <option key={themeName} value={themeName}>
+              {themeName.charAt(0).toUpperCase() + themeName.slice(1)}
+            </option>
+          ))}
+        </select>
+        <label className="label">
+          <span className="label-text-alt">
+            {theme.mode === 'light' ? 'Disabled when light mode is selected' : 'Theme to use for dark mode'}
+          </span>
+        </label>
+      </div>
+      
+      <div>
+        <label className="label">
+          <span className="label-text">Embed Theme</span>
+        </label>
+        <select
+          className="select select-bordered w-full"
+          value={theme.embedTheme || 'follow'}
+          onChange={(e) => {
+            onThemeChange({
+              ...theme,
+              embedTheme: e.target.value as EmbedThemeMode,
+            })
+          }}
+        >
+          <option value="follow">Follow Theme</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <label className="label">
+          <span className="label-text-alt">
+            Theme to use for embedded content (Twitter, YouTube, etc.). "Follow Theme" uses the current app theme.
+          </span>
+        </label>
+      </div>
+    </div>
+  )
+}
+
 function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
@@ -831,7 +1101,12 @@ function LinkScroller() {
     bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
     disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
     trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
+    keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
+    theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
   }))
+  
+  // Settings tab state
+  const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
   
   const { filter, showNSFW, showNSFL, bannedTerms, bannedUsers, disabledPlatforms, trustedUsers } = settings
   
@@ -863,6 +1138,8 @@ function LinkScroller() {
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
         disabledPlatforms: Array.isArray(settings.disabledPlatforms) ? settings.disabledPlatforms : [],
         trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
+    keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : [],
+    theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
       })
     }
   }, [settingsOpen, settings])
@@ -877,12 +1154,91 @@ function LinkScroller() {
   const handleSaveSettings = () => {
     updateSettings(tempSettings)
     setSettingsOpen(false)
+    // Apply theme immediately
+    applyTheme(tempSettings.theme)
   }
+  
+  // Apply theme to document
+  const applyTheme = useCallback((themeSettings: ThemeSettings) => {
+    const html = document.documentElement
+    const body = document.body
+    
+    // Clear any custom CSS variables first
+    const varsToRemove = ['--b1', '--b2', '--b3', '--bc', '--p', '--pc', '--s', '--sc', '--a', '--ac', '--n', '--nc', '--in', '--inc', '--su', '--suc', '--wa', '--wac', '--er', '--erc']
+    varsToRemove.forEach(v => html.style.removeProperty(v))
+    
+    let themeToApply: string
+    
+    if (themeSettings.mode === 'system') {
+      // Use system preference
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      themeToApply = mediaQuery.matches ? themeSettings.darkTheme : themeSettings.lightTheme
+    } else if (themeSettings.mode === 'light') {
+      themeToApply = themeSettings.lightTheme
+    } else {
+      themeToApply = themeSettings.darkTheme
+    }
+    
+    html.setAttribute('data-theme', themeToApply)
+    body.setAttribute('data-theme', themeToApply)
+    logger.theme(`Theme applied: ${themeToApply}`)
+    
+    // Also apply to root div for proper cascading
+    const rootDiv = document.getElementById('root')
+    if (rootDiv) {
+      const themeValue = html.getAttribute('data-theme')
+      if (themeValue) {
+        rootDiv.setAttribute('data-theme', themeValue)
+      }
+    }
+    
+    // Verify theme was applied (only log in debug mode)
+    logger.debug('Theme applied', {
+      html: html.getAttribute('data-theme'),
+      body: body.getAttribute('data-theme'),
+      root: rootDiv?.getAttribute('data-theme')
+    })
+  }, [])
+  
+  // Helper function to get embed theme
+  const getEmbedTheme = useCallback((): 'light' | 'dark' => {
+    if (settings.theme.embedTheme === 'follow') {
+      // Follow the current app theme
+      if (settings.theme.mode === 'system') {
+        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+        return mediaQuery.matches ? 'dark' : 'light'
+      } else if (settings.theme.mode === 'light') {
+        return 'light'
+      } else {
+        return 'dark'
+      }
+    } else {
+      // Override with explicit light or dark
+      return settings.theme.embedTheme
+    }
+  }, [settings.theme])
+  
+  // Apply theme on mount and when settings change
+  useEffect(() => {
+    applyTheme(settings.theme)
+    
+    // Listen for system theme changes if using system mode
+    if (settings.theme.mode === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const updateTheme = (e: MediaQueryListEvent | MediaQueryList) => {
+        applyTheme(settings.theme) // Re-apply theme to handle system changes
+      }
+      updateTheme(mediaQuery)
+      mediaQuery.addEventListener('change', updateTheme)
+      return () => mediaQuery.removeEventListener('change', updateTheme)
+    }
+  }, [settings.theme, applyTheme])
+  
 
   const SIZE = 150
 
   const fetchMentions = useCallback(async (username: string, currentOffset: number, append: boolean = false) => {
-    console.log(`[Renderer] fetchMentions called:`, {
+    logger.api('fetchMentions called', {
       username,
       currentOffset,
       append,
@@ -892,21 +1248,21 @@ function LinkScroller() {
     
     if (append) {
       setLoadingMore(true)
-      console.log(`[Renderer] Loading more mentions (offset: ${currentOffset})...`)
+      logger.api(`Loading more mentions (offset: ${currentOffset})`)
     } else {
       setLoading(true)
       setError(null)
-      console.log(`[Renderer] Fetching fresh mentions (offset: ${currentOffset})...`)
+      logger.api(`Fetching fresh mentions (offset: ${currentOffset})`)
     }
     
     try {
       const startTime = Date.now()
-      console.log(`[Renderer] Invoking IPC: fetch-mentions with username="${username}", size=${SIZE}, offset=${currentOffset}`)
+      logger.api(`Invoking IPC: fetch-mentions`, { username, size: SIZE, offset: currentOffset })
       
       const result = await window.ipcRenderer.invoke('fetch-mentions', username, SIZE, currentOffset)
       
       const fetchTime = Date.now() - startTime
-      console.log(`[Renderer] IPC call completed in ${fetchTime}ms:`, {
+      logger.api(`IPC call completed in ${fetchTime}ms`, {
         success: result.success,
         dataLength: result.success ? (Array.isArray(result.data) ? result.data.length : 'not an array') : 'N/A',
         error: result.success ? null : result.error
@@ -914,7 +1270,7 @@ function LinkScroller() {
       
       if (result.success) {
         const newData = result.data as MentionData[]
-        console.log(`[Renderer] Processing ${newData.length} mentions`)
+        logger.api(`Processing ${newData.length} mentions`)
         
         // Log the order of mentions (first 3 and last 3)
         if (newData.length > 0) {
@@ -926,28 +1282,28 @@ function LinkScroller() {
             date: new Date(m.date).toISOString(),
             text: m.text.substring(0, 50) + '...'
           }))
-          console.log(`[Renderer] First 3 mentions:`, firstFew)
-          console.log(`[Renderer] Last 3 mentions:`, lastFew)
+          logger.debug('First 3 mentions:', firstFew)
+          logger.debug('Last 3 mentions:', lastFew)
           
           // Check if they're sorted (newest first or oldest first)
           const dates = newData.map(m => m.date)
           const isDescending = dates.every((date, i) => i === 0 || dates[i - 1] >= date)
           const isAscending = dates.every((date, i) => i === 0 || dates[i - 1] <= date)
-          console.log(`[Renderer] Order check: ${isDescending ? 'DESCENDING (newest first)' : isAscending ? 'ASCENDING (oldest first)' : 'UNSORTED'}`)
+          logger.debug(`Order check: ${isDescending ? 'DESCENDING (newest first)' : isAscending ? 'ASCENDING (oldest first)' : 'UNSORTED'}`)
         }
         
         // Sort by date descending (newest first) to ensure consistent ordering
         const sortedData = [...newData].sort((a, b) => b.date - a.date)
-        console.log(`[Renderer] Sorted mentions by date (newest first)`)
+        logger.debug('Sorted mentions by date (newest first)')
         
         if (append) {
           setMentions(prev => {
             const combined = [...prev, ...sortedData]
-            console.log(`[Renderer] Appended mentions. Total now: ${combined.length}`)
+            logger.api(`Appended mentions. Total now: ${combined.length}`)
             return combined
           })
         } else {
-          console.log(`[Renderer] Setting new mentions (replacing existing)`)
+          logger.api('Setting new mentions (replacing existing)')
           setMentions(sortedData)
         }
         
@@ -955,17 +1311,17 @@ function LinkScroller() {
         const hasMore = newData.length === SIZE
         setHasMore(hasMore)
         setOffset(currentOffset + newData.length)
-        console.log(`[Renderer] Updated state: offset=${currentOffset + newData.length}, hasMore=${hasMore}`)
+        logger.api(`Updated state: offset=${currentOffset + newData.length}, hasMore=${hasMore}`)
       } else {
         const errorMsg = result.error || 'Failed to fetch mentions'
-        console.error(`[Renderer] Fetch failed: ${errorMsg}`)
+        logger.error(`Fetch failed: ${errorMsg}`)
         setError(errorMsg)
         setHasMore(false)
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-      console.error(`[Renderer] Exception in fetchMentions:`, err)
-      console.error(`[Renderer] Error details:`, {
+      logger.error('Exception in fetchMentions:', err)
+      logger.error('Error details:', {
         message: errorMsg,
         stack: err instanceof Error ? err.stack : 'No stack trace'
       })
@@ -974,10 +1330,10 @@ function LinkScroller() {
     } finally {
       if (append) {
         setLoadingMore(false)
-        console.log(`[Renderer] Finished loading more`)
+        logger.api('Finished loading more')
       } else {
         setLoading(false)
-        console.log(`[Renderer] Finished fetching`)
+        logger.api('Finished fetching')
       }
     }
   }, [])
@@ -1128,14 +1484,14 @@ function LinkScroller() {
       window.ipcRenderer.invoke('fetch-imgur-album', highlightedCard.url)
         .then((result) => {
           const fetchTime = Date.now() - startTime
-          console.log(`[Renderer] Imgur album IPC call completed in ${fetchTime}ms:`, {
+          logger.api(`Imgur album IPC call completed in ${fetchTime}ms`, {
             success: result.success,
             hasData: result.success && !!result.data,
             error: result.success ? null : result.error
           })
           
           if (result.success && result.data) {
-            console.log(`[Renderer] Imgur album data received:`, {
+            logger.api('Imgur album data received', {
               id: result.data.id,
               title: result.data.title,
               image_count: result.data.image_count,
@@ -1145,14 +1501,14 @@ function LinkScroller() {
             setImgurAlbumError(null)
           } else {
             const errorMsg = result.error || 'Failed to fetch Imgur album'
-            console.error(`[Renderer] Imgur album fetch failed:`, errorMsg)
+            logger.error(`Imgur album fetch failed: ${errorMsg}`)
             setImgurAlbumError(errorMsg)
             setImgurAlbumData(null)
           }
         })
         .catch((err) => {
           const fetchTime = Date.now() - startTime
-          console.error(`[Renderer] Error fetching Imgur album (took ${fetchTime}ms):`, err)
+          logger.error(`Error fetching Imgur album (took ${fetchTime}ms):`, err)
           setImgurAlbumError(err?.message || 'Unknown error occurred')
           setImgurAlbumData(null)
         })
@@ -1167,14 +1523,14 @@ function LinkScroller() {
     }
   }, [highlightedCard?.id, highlightedCard?.isImgur, highlightedCard?.url])
 
-  const navigateHighlight = async (direction: 'prev' | 'next') => {
+  const navigateHighlight = useCallback(async (direction: 'prev' | 'next') => {
     if (highlightedIndex === -1) return
     
     if (direction === 'next') {
       // If we're at the end, try to load more
       if (highlightedIndex === linkCards.length - 1) {
         if (hasMore && !loadingMore && !loading) {
-          console.log('[Renderer] At end of list, loading more mentions...')
+          logger.api('At end of list, loading more mentions...')
           waitingForMoreRef.current = true
           await fetchMentions(filter, offset, true)
           // The useEffect below will handle advancing to the next card after loading
@@ -1193,7 +1549,7 @@ function LinkScroller() {
       waitingForMoreRef.current = false
       if (highlightedIndex === 0) {
         // At beginning, refresh to get latest content
-        console.log('[Renderer] At beginning of list, refreshing feed...')
+        logger.api('At beginning of list, refreshing feed...')
         refreshingRef.current = true
         // Refresh the feed from the beginning
         setMentions([])
@@ -1208,7 +1564,7 @@ function LinkScroller() {
         setHighlightedCardId(linkCards[highlightedIndex - 1].id)
       }
     }
-  }
+  }, [highlightedIndex, linkCards, hasMore, loadingMore, loading, filter, offset, fetchMentions])
 
   // Auto-advance to next card after loading more content when at the end
   useEffect(() => {
@@ -1216,12 +1572,12 @@ function LinkScroller() {
       const currentIndex = linkCards.findIndex(card => card.id === highlightedCardId)
       if (currentIndex !== -1 && currentIndex < linkCards.length - 1) {
         // There's a next card now, move to it
-        console.log('[Renderer] Auto-advancing to next card after loading more content')
+        logger.api('Auto-advancing to next card after loading more content')
         setHighlightedCardId(linkCards[currentIndex + 1].id)
         waitingForMoreRef.current = false
       } else if (currentIndex === linkCards.length - 1 && !hasMore) {
         // Still at end and no more to load, loop to beginning
-        console.log('[Renderer] No more content, looping to beginning')
+        logger.api('No more content, looping to beginning')
         setHighlightedCardId(linkCards[0].id)
         waitingForMoreRef.current = false
       }
@@ -1231,7 +1587,7 @@ function LinkScroller() {
   // Auto-highlight first card after refreshing when at the beginning
   useEffect(() => {
     if (refreshingRef.current && !loading && linkCards.length > 0) {
-      console.log('[Renderer] Auto-highlighting first card after refresh')
+      logger.api('Auto-highlighting first card after refresh')
       setHighlightedCardId(linkCards[0].id)
       refreshingRef.current = false
     }
@@ -1256,8 +1612,8 @@ function LinkScroller() {
 
   // Handle refresh - reset feed and fetch from beginning
   const handleRefresh = useCallback(() => {
-    console.log(`[Renderer] Refresh triggered at ${new Date().toISOString()}`)
-    console.log(`[Renderer] Current state before refresh:`, {
+    logger.api(`Refresh triggered at ${new Date().toISOString()}`)
+    logger.debug('Current state before refresh:', {
       mentionsCount: mentions.length,
       offset,
       hasMore,
@@ -1279,9 +1635,61 @@ function LinkScroller() {
     setHasMore(true)
     setHighlightedCardId(null)
     
-    console.log(`[Renderer] State reset, calling fetchMentions with filter="${filter}", offset=0`)
+    logger.api(`State reset, calling fetchMentions with filter="${filter}", offset=0`)
     fetchMentions(filter, 0, false)
   }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId])
+
+  // Handle keyboard shortcuts (must be after navigateHighlight and handleRefresh are defined)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger shortcuts when typing in inputs or when settings modal is open
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || settingsOpen) {
+        return
+      }
+      
+      const keybind = settings.keybinds.find(kb => {
+        const keyMatch = kb.key === e.key || (kb.key === 'Space' && e.key === ' ')
+        return keyMatch && 
+               kb.ctrl === e.ctrlKey && 
+               kb.shift === e.shiftKey && 
+               kb.alt === e.altKey
+      })
+      
+      if (keybind) {
+        e.preventDefault()
+        switch (keybind.action) {
+          case 'next':
+            if (highlightedCardId) {
+              navigateHighlight('next')
+            }
+            break
+          case 'previous':
+            if (highlightedCardId) {
+              navigateHighlight('prev')
+            }
+            break
+          case 'toggleAutoplay':
+            setAutoplayEnabled(!autoplayEnabled)
+            break
+          case 'toggleMute':
+            setMuteEnabled(!muteEnabled)
+            break
+          case 'toggleLoop':
+            setLoopEnabled(!loopEnabled)
+            break
+          case 'refresh':
+            handleRefresh()
+            break
+          case 'settings':
+            setSettingsOpen(true)
+            break
+        }
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [settings.keybinds, highlightedCardId, autoplayEnabled, muteEnabled, loopEnabled, settingsOpen, navigateHighlight, handleRefresh])
 
   // Highlight Layout Component
   if (highlightedCard) {
@@ -1317,7 +1725,7 @@ function LinkScroller() {
               </div>
             ) : highlightedCard.isTwitter ? (
               <div key={highlightedCard.id}>
-                <TwitterEmbed url={highlightedCard.url} />
+                <TwitterEmbed url={highlightedCard.url} theme={getEmbedTheme()} />
               </div>
             ) : highlightedCard.isTikTok ? (
               <div>
@@ -1330,7 +1738,7 @@ function LinkScroller() {
               </div>
             ) : highlightedCard.isReddit ? (
               <div>
-                <RedditEmbed url={highlightedCard.url} theme="dark" />
+                <RedditEmbed url={highlightedCard.url} theme={getEmbedTheme()} />
               </div>
             ) : highlightedCard.isStreamable ? (
               <div>
@@ -1645,135 +2053,6 @@ function LinkScroller() {
           </button>
         </div>
 
-        {/* Settings Modal */}
-        {settingsOpen && (
-          <div className="modal modal-open z-[100]">
-            <div className="modal-box">
-              <h3 className="font-bold text-lg mb-4">Settings</h3>
-              
-              <div className="space-y-4">
-                {/* Filter input */}
-                <div>
-                  <label className="label">
-                    <span className="label-text">Filter (username):</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={tempSettings.filter}
-                    onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
-                    placeholder="Enter username"
-                    className="input input-bordered w-full"
-                  />
-                </div>
-
-                {/* Show NSFW toggle */}
-                <div className="form-control">
-                  <label className="label cursor-pointer">
-                    <span className="label-text">Show NSFW</span>
-                    <input
-                      type="checkbox"
-                      checked={tempSettings.showNSFW}
-                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
-                      className="toggle toggle-primary"
-                    />
-                  </label>
-                </div>
-
-                {/* Show NSFL toggle */}
-                <div className="form-control">
-                  <label className="label cursor-pointer">
-                    <span className="label-text">Show NSFL</span>
-                    <input
-                      type="checkbox"
-                      checked={tempSettings.showNSFL}
-                      onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
-                      className="toggle toggle-primary"
-                    />
-                  </label>
-                </div>
-
-                {/* Banned terms */}
-                <ListManager
-                  title="Banned Terms"
-                  items={tempSettings.bannedTerms}
-                  onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
-                  placeholder="Enter term to ban"
-                  helpText="Messages containing these terms will be filtered out"
-                />
-
-                {/* Banned users */}
-                <ListManager
-                  title="Banned Users"
-                  items={tempSettings.bannedUsers}
-                  onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
-                  placeholder="Enter username"
-                  helpText="Messages from these users will be filtered out"
-                />
-
-                {/* Trusted users */}
-                <ListManager
-                  title="Trusted Users"
-                  items={tempSettings.trustedUsers}
-                  onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
-                  placeholder="Enter username"
-                  helpText="Cards from these users will have a golden outline"
-                />
-
-                {/* Show platforms */}
-                <div>
-                  <label className="label">
-                    <span className="label-text">Show Platforms</span>
-                  </label>
-                  <div className="space-y-2">
-                    {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
-                      <label key={platform} className="label cursor-pointer justify-start gap-2">
-                        <input
-                          type="checkbox"
-                          checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
-                          onChange={(e) => {
-                            const currentDisabled = tempSettings.disabledPlatforms || []
-                            if (e.target.checked) {
-                              setTempSettings({
-                                ...tempSettings,
-                                disabledPlatforms: currentDisabled.filter(p => p !== platform)
-                              })
-                            } else {
-                              setTempSettings({
-                                ...tempSettings,
-                                disabledPlatforms: [...currentDisabled, platform]
-                              })
-                            }
-                          }}
-                          className="checkbox checkbox-primary checkbox-sm"
-                        />
-                        <span className="label-text">{platform}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <label className="label">
-                    <span className="label-text-alt">Uncheck platforms to hide them</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="modal-action">
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => setSettingsOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleSaveSettings}
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-            <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}></div>
-          </div>
-        )}
       </div>
     )
   }
@@ -1802,7 +2081,7 @@ function LinkScroller() {
       {!loading && linkCards.length > 0 && (
         <>
           <div className="max-w-7xl mx-auto">
-            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setHighlightedCardId(cardId)} />
+            <MasonryGrid cards={linkCards} onCardClick={(cardId) => setHighlightedCardId(cardId)} getEmbedTheme={getEmbedTheme} />
           </div>
           {/* Load More button */}
           {hasMore && (
@@ -1837,115 +2116,158 @@ function LinkScroller() {
         </div>
       )}
 
-      {/* Settings Modal */}
+      {/* Settings Modal - accessible from both views */}
       {settingsOpen && (
-        <div className="modal modal-open">
-          <div className="modal-box">
+        <div className="modal modal-open z-[100]">
+          <div className="modal-box max-w-4xl">
             <h3 className="font-bold text-lg mb-4">Settings</h3>
             
-            <div className="space-y-4">
-              {/* Filter input */}
-              <div>
-                <label className="label">
-                  <span className="label-text">Filter (username):</span>
-                </label>
-                <input
-                  type="text"
-                  value={tempSettings.filter}
-                  onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
-                  placeholder="Enter username"
-                  className="input input-bordered w-full"
-                />
-              </div>
+            {/* Tabs */}
+            <div className="tabs tabs-bordered mb-4">
+              <button
+                className={`tab ${settingsTab === 'filtering' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('filtering')}
+              >
+                Filtering
+              </button>
+              <button
+                className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('keybinds')}
+              >
+                Keybinds
+              </button>
+              <button
+                className={`tab ${settingsTab === 'theme' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('theme')}
+              >
+                Theme
+              </button>
+            </div>
+            
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+              {/* Filtering Tab */}
+              {settingsTab === 'filtering' && (
+                <div className="space-y-4">
+                  {/* Filter input */}
+                  <div>
+                    <label className="label">
+                      <span className="label-text">Filter (username):</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={tempSettings.filter}
+                      onChange={(e) => setTempSettings({ ...tempSettings, filter: e.target.value })}
+                      placeholder="Enter username"
+                      className="input input-bordered w-full"
+                    />
+                  </div>
 
-              {/* Show NSFW toggle */}
-              <div className="form-control">
-                <label className="label cursor-pointer">
-                  <span className="label-text">Show NSFW</span>
-                  <input
-                    type="checkbox"
-                    checked={tempSettings.showNSFW}
-                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
-                    className="toggle toggle-primary"
-                  />
-                </label>
-              </div>
-
-              {/* Show NSFL toggle */}
-              <div className="form-control">
-                <label className="label cursor-pointer">
-                  <span className="label-text">Show NSFL</span>
-                  <input
-                    type="checkbox"
-                    checked={tempSettings.showNSFL}
-                    onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
-                    className="toggle toggle-primary"
-                  />
-                </label>
-              </div>
-
-              {/* Banned terms */}
-              <ListManager
-                title="Banned Terms"
-                items={tempSettings.bannedTerms}
-                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
-                placeholder="Enter term to ban"
-                helpText="Messages containing these terms will be filtered out"
-              />
-
-              {/* Banned users */}
-              <ListManager
-                title="Banned Users"
-                items={tempSettings.bannedUsers}
-                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
-                placeholder="Enter username"
-                helpText="Messages from these users will be filtered out"
-              />
-
-              {/* Trusted users */}
-              <ListManager
-                title="Trusted Users"
-                items={tempSettings.trustedUsers}
-                onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
-                placeholder="Enter username"
-                helpText="Cards from these users will have a brighter background"
-              />
-
-              {/* Show platforms */}
-              <div>
-                <label className="label">
-                  <span className="label-text">Show Platforms</span>
-                </label>
-                <div className="space-y-2">
-                  {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
-                    <label key={platform} className="label cursor-pointer justify-start gap-2">
+                  {/* Show NSFW toggle */}
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Show NSFW</span>
                       <input
                         type="checkbox"
-                        checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
-                        onChange={(e) => {
-                          const currentDisabled = tempSettings.disabledPlatforms || []
-                          if (e.target.checked) {
-                            setTempSettings({
-                              ...tempSettings,
-                              disabledPlatforms: currentDisabled.filter(p => p !== platform)
-                            })
-                          } else {
-                            setTempSettings({
-                              ...tempSettings,
-                              disabledPlatforms: [...currentDisabled, platform]
-                            })
-                          }
-                        }}
-                        className="checkbox checkbox-primary checkbox-sm"
+                        checked={tempSettings.showNSFW}
+                        onChange={(e) => setTempSettings({ ...tempSettings, showNSFW: e.target.checked })}
+                        className="toggle toggle-primary"
                       />
-                      <span className="label-text">{platform}</span>
                     </label>
-                  ))}
+                  </div>
+
+                  {/* Show NSFL toggle */}
+                  <div className="form-control">
+                    <label className="label cursor-pointer">
+                      <span className="label-text">Show NSFL</span>
+                      <input
+                        type="checkbox"
+                        checked={tempSettings.showNSFL}
+                        onChange={(e) => setTempSettings({ ...tempSettings, showNSFL: e.target.checked })}
+                        className="toggle toggle-primary"
+                      />
+                    </label>
+                  </div>
+
+                  {/* Banned terms */}
+                  <ListManager
+                    title="Banned Terms"
+                    items={tempSettings.bannedTerms}
+                    onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedTerms: items })}
+                    placeholder="Enter term to ban"
+                    helpText="Messages containing these terms will be filtered out"
+                  />
+
+                  {/* Banned users */}
+                  <ListManager
+                    title="Banned Users"
+                    items={tempSettings.bannedUsers}
+                    onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
+                    placeholder="Enter username"
+                    helpText="Messages from these users will be filtered out"
+                  />
+
+                  {/* Trusted users */}
+                  <ListManager
+                    title="Trusted Users"
+                    items={tempSettings.trustedUsers}
+                    onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
+                    placeholder="Enter username"
+                    helpText="Cards from these users will have a golden outline"
+                  />
+
+                  {/* Show platforms */}
+                  <div>
+                    <label className="label">
+                      <span className="label-text">Show Platforms</span>
+                    </label>
+                    <div className="space-y-2">
+                      {['YouTube', 'Twitter', 'TikTok', 'Reddit', 'Kick', 'Twitch', 'Streamable', 'Imgur'].map((platform) => (
+                        <label key={platform} className="label cursor-pointer justify-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={!(tempSettings.disabledPlatforms || []).includes(platform)}
+                            onChange={(e) => {
+                              const currentDisabled = tempSettings.disabledPlatforms || []
+                              if (e.target.checked) {
+                                setTempSettings({
+                                  ...tempSettings,
+                                  disabledPlatforms: currentDisabled.filter(p => p !== platform)
+                                })
+                              } else {
+                                setTempSettings({
+                                  ...tempSettings,
+                                  disabledPlatforms: [...currentDisabled, platform]
+                                })
+                              }
+                            }}
+                            className="checkbox checkbox-primary checkbox-sm"
+                          />
+                          <span className="label-text">{platform}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <label className="label">
+                      <span className="label-text-alt">Uncheck platforms to hide them</span>
+                    </label>
+                  </div>
                 </div>
-                <label className="label">
-                  <span className="label-text-alt">Uncheck platforms to hide them</span>
-                </label>
-              </div>
+              )}
+              
+              {/* Keybinds Tab */}
+              {settingsTab === 'keybinds' && (
+                <KeybindsTab
+                  keybinds={tempSettings.keybinds}
+                  onKeybindsChange={(keybinds) => setTempSettings({ ...tempSettings, keybinds })}
+                />
+              )}
+              
+              {/* Theme Tab */}
+              {settingsTab === 'theme' && (
+                <ThemeTab
+                  theme={tempSettings.theme}
+                  onThemeChange={(theme) => setTempSettings({ ...tempSettings, theme })}
+                />
+              )}
             </div>
 
             <div className="modal-action">

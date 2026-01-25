@@ -3,10 +3,11 @@ import { loadScriptOnce } from '../../utils/scriptLoader'
 
 interface TwitterEmbedProps {
   url: string
+  theme?: 'light' | 'dark'
   onError?: (error: string) => void
 }
 
-export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
+export default function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [embedHtml, setEmbedHtml] = useState<string | null>(null)
@@ -163,7 +164,7 @@ export default function TwitterEmbed({ url, onError }: TwitterEmbedProps) {
             tweetId,
             currentContainer,
             {
-              theme: 'dark',
+              theme: theme,
               dnt: true,
               align: 'center'
             }
