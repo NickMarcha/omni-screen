@@ -2,6 +2,12 @@
 
 A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
 
+## 🎬 Link Scroller Demo
+
+![Link Scroller Demo](./docs/LinkScroller.webp)
+
+*Video showcasing the Link Scroller feature in action*
+
 ## 📥 Download
 
 **Latest Release**: [Download from GitHub Releases](https://github.com/NickMarcha/omni-screen/releases/)
