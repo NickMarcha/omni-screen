@@ -762,13 +762,33 @@ function createWindow() {
       }
     })
     
-    // Start server on a random available port
-    localServer.listen(0, '127.0.0.1', () => {
-      const port = (localServer.address() as { port: number })?.port || 0
-      const url = `http://127.0.0.1:${port}`
+    // Start server on a fixed port to ensure localStorage persists between restarts
+    // localStorage is scoped by origin, so we need a consistent port
+    const FIXED_PORT = 5173 // Use same port as Vite dev server for consistency
+    localServer.listen(FIXED_PORT, '127.0.0.1', () => {
+      const url = `http://127.0.0.1:${FIXED_PORT}`
       console.log(`[Main Process] Starting local HTTP server for production: ${url}`)
       if (win && !win.isDestroyed()) {
         win.loadURL(url)
+      }
+    }).on('error', (err: NodeJS.ErrnoException) => {
+      // If port is already in use, try a random port as fallback
+      if (err.code === 'EADDRINUSE') {
+        console.log(`[Main Process] Port ${FIXED_PORT} in use, trying random port...`)
+        localServer.listen(0, '127.0.0.1', () => {
+          const port = (localServer.address() as { port: number })?.port || 0
+          const url = `http://127.0.0.1:${port}`
+          console.log(`[Main Process] Starting local HTTP server on fallback port: ${url}`)
+          if (win && !win.isDestroyed()) {
+            win.loadURL(url)
+          }
+        })
+      } else {
+        console.error('[Main Process] Failed to start local HTTP server:', err)
+        // Fallback to file:// if server fails
+        if (win && !win.isDestroyed()) {
+          win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+        }
       }
     })
   }
