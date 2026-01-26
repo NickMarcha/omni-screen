@@ -895,14 +895,21 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
     
     return { success: true, data, cached: false }
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    const errorStack = error instanceof Error ? error.stack : undefined
+    
     console.error('[Main Process] Error fetching mentions:', error)
     console.error(`  - Username: ${username}`)
     console.error(`  - Size: ${size}, Offset: ${offset}`)
-    if (error instanceof Error) {
-      console.error(`  - Error message: ${error.message}`)
-      console.error(`  - Error stack: ${error.stack}`)
+    console.error(`  - Error message: ${errorMessage}`)
+    if (errorStack) {
+      console.error(`  - Error stack: ${errorStack}`)
     }
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    
+    // Also log to stderr for better visibility
+    console.error(`[Main Process] FAILED to fetch mentions for "${username}": ${errorMessage}`)
+    
+    return { success: false, error: errorMessage }
   }
 })
 
@@ -933,7 +940,7 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
     url.searchParams.set('text', textParam)
     url.searchParams.set('channel', 'Destinygg')
     if (searchAfter) {
-      url.searchParams.set('searchAfter', searchAfter.toString())
+      url.searchParams.set('search_after', searchAfter.toString()) // API uses underscore, not camelCase
     }
     // Optional: date range (commented out for now, can be added later)
     // const today = new Date()
@@ -970,9 +977,23 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
       throw new Error(result.error || 'Invalid response format')
     }
     
+    // Log response structure for debugging
+    console.log(`  - Response data keys: ${Object.keys(result.data).join(', ')}`)
+    if (result.data.searchAfter !== undefined) {
+      console.log(`  - Response-level searchAfter: ${result.data.searchAfter}`)
+    }
+    
     const messages = result.data.messages || []
     const dataLength = messages.length
     console.log(`  - Received ${dataLength} messages`)
+    
+    // Log first message structure for debugging
+    if (messages.length > 0) {
+      console.log(`  - First message keys: ${Object.keys(messages[0]).join(', ')}`)
+      if (messages[0].searchAfter !== undefined) {
+        console.log(`  - First message searchAfter: ${messages[0].searchAfter}`)
+      }
+    }
     
     // Map rustlesearch format to MentionData format
     const mappedData = messages.map((msg: any) => {
@@ -987,20 +1008,35 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
         text: msg.text || '',
         nick: msg.username || '',
         flairs: '', // rustlesearch doesn't provide flairs
-        matchedTerms: filterTerms, // All terms matched since we searched for them
-        // Store searchAfter for pagination
-        searchAfter: msg.searchAfter
+        matchedTerms: filterTerms // All terms matched since we searched for them
       }
     })
     
     // Get the last searchAfter value for pagination
-    const lastSearchAfter = mappedData.length > 0 
-      ? mappedData[mappedData.length - 1].searchAfter 
-      : undefined
+    // According to the API, each message has a searchAfter field
+    // We need to use the searchAfter from the last (oldest) message for the next page
+    let lastSearchAfter: number | undefined = undefined
+    
+    if (messages.length > 0) {
+      // Messages are returned in descending order (newest first)
+      // The last message in the array is the oldest, and its searchAfter should be used for next page
+      const lastMessage = messages[messages.length - 1]
+      if (lastMessage.searchAfter !== undefined) {
+        lastSearchAfter = lastMessage.searchAfter
+      } else {
+        // Fallback: use the timestamp if searchAfter is missing
+        const sortedByDate = [...mappedData].sort((a, b) => a.date - b.date)
+        lastSearchAfter = sortedByDate[sortedByDate.length - 1].date
+        console.log(`  - Warning: Last message missing searchAfter, using timestamp as fallback`)
+      }
+    }
     
     console.log(`  - Mapped ${mappedData.length} messages`)
     if (lastSearchAfter) {
-      console.log(`  - Last searchAfter: ${lastSearchAfter}`)
+      const lastMsg = messages[messages.length - 1]
+      console.log(`  - Using searchAfter: ${lastSearchAfter} (from last message's searchAfter field: ${lastMsg.searchAfter})`)
+    } else {
+      console.log(`  - No searchAfter value available (no more pages)`)
     }
     
     return { 

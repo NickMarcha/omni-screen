@@ -352,20 +352,12 @@ export class ChatWebSocket extends EventEmitter {
             return
           }
           
-          // Check for basic JSON structure (starts with { and should end with })
-          const openBraces = (jsonPart.match(/{/g) || []).length
-          const closeBraces = (jsonPart.match(/}/g) || []).length
-          if (openBraces !== closeBraces) {
-            console.error('[ChatWebSocket] UPDATEUSER JSON appears incomplete. Open braces:', openBraces, 'Close braces:', closeBraces)
-            console.error('[ChatWebSocket] JSON part:', jsonPart)
-            console.error('[ChatWebSocket] Full message length:', message.length)
-            console.error('[ChatWebSocket] Full message:', message)
-            return
-          }
-          
+          // Try to parse directly - JSON.parse will throw if invalid
+          // The brace counting was too strict and incorrectly flagged valid JSON
           const userData = JSON.parse(jsonPart) as ChatMessage
           this.emit('userEvent', { type: 'UPDATEUSER', user: userData } as ChatUserEvent)
         } catch (e) {
+          // Only log if it's actually a parse error, not a validation error
           console.error('[ChatWebSocket] Failed to parse UPDATEUSER:', e)
           console.error('[ChatWebSocket] Message length:', message.length)
           console.error('[ChatWebSocket] Full message:', message)

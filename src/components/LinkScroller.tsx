@@ -2089,14 +2089,30 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       // Use cache unless this is a refresh (append=false and offset=0 means refresh)
       const useCache = append || currentOffset > 0
       logger.api(`Fetching mentions for ${uniqueFilterTerms.length} unique terms (${filterTerms.length} original) - cache: ${useCache}`)
-      const fetchPromises = uniqueFilterTerms.map(term => 
-        window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset, useCache)
-      )
+      logger.api(`Terms to fetch: ${uniqueFilterTerms.map((t, i) => `${i + 1}. "${t}"`).join(', ')}`)
+      
+      const fetchPromises = uniqueFilterTerms.map((term, index) => {
+        logger.api(`[${index + 1}/${uniqueFilterTerms.length}] Starting fetch for term: "${term}"`)
+        return window.ipcRenderer.invoke('fetch-mentions', term, SIZE, currentOffset, useCache)
+          .then(result => {
+            logger.api(`[${index + 1}/${uniqueFilterTerms.length}] Completed fetch for "${term}": success=${result.success}, dataLength=${result.data?.length || 0}, cached=${result.cached || false}`)
+            if (!result.success) {
+              logger.error(`[${index + 1}/${uniqueFilterTerms.length}] Fetch failed for "${term}": ${result.error || 'Unknown error'}`)
+            }
+            return result
+          })
+          .catch(error => {
+            logger.error(`[${index + 1}/${uniqueFilterTerms.length}] Fetch exception for "${term}":`, error)
+            return { success: false, error: error instanceof Error ? error.message : 'Unknown error', data: [] }
+          })
+      })
       
       const results = await Promise.all(fetchPromises)
       const fetchTime = Date.now() - startTime
       const cachedCount = results.filter(r => r.cached).length
-      logger.api(`All IPC calls completed in ${fetchTime}ms (${cachedCount}/${results.length} from cache)`)
+      const successCount = results.filter(r => r.success).length
+      const dataCount = results.reduce((sum, r) => sum + (Array.isArray(r.data) ? r.data.length : 0), 0)
+      logger.api(`All IPC calls completed in ${fetchTime}ms - Success: ${successCount}/${results.length}, Cached: ${cachedCount}/${results.length}, Total data: ${dataCount} mentions`)
       
       // Merge results by unique ID (date-nick)
       const mentionsMap = new Map<string, MentionData>()
@@ -2106,7 +2122,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         if (result.success && Array.isArray(result.data)) {
           const termData = result.data as MentionData[]
           const source = result.cached ? 'cache' : 'API'
-          logger.api(`Processing ${termData.length} mentions for term "${term}" (from ${source})`)
+          logger.api(`Processing ${termData.length} mentions for term "${term}" (from ${source}, offset=${currentOffset})`)
+          
+          if (termData.length === 0) {
+            logger.api(`⚠️ Term "${term}" returned 0 mentions (success but empty) - may have reached end`)
+          } else if (append && termData.length < SIZE) {
+            logger.api(`⚠️ Term "${term}" returned only ${termData.length} mentions (expected ${SIZE}) - may have reached end`)
+            // Log date range to verify we're getting older messages
+            const oldest = termData[termData.length - 1]
+            const newest = termData[0]
+            logger.api(`  Date range for "${term}": ${new Date(oldest.date).toISOString()} (oldest) to ${new Date(newest.date).toISOString()} (newest)`)
+          }
           
           termData.forEach(mention => {
             // Use date-nick as unique ID (no hash needed)
@@ -2129,7 +2155,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             }
           })
         } else {
-          logger.error(`Fetch failed for term "${term}":`, result.error || 'Unknown error')
+          const errorMsg = result.error || 'Unknown error'
+          logger.error(`❌ Fetch failed for term "${term}": ${errorMsg}`)
+          logger.api(`Failed mention fetch details - term: "${term}", error: ${errorMsg}, success: ${result.success}`)
         }
       })
       
@@ -2259,12 +2287,22 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       } else {
         // Normal mentions API flow
         logger.api(`Skipping rustlesearch fallback: mergedData.length=${mergedData.length}, append=${append}, usingRustlesearch=${usingRustlesearch}`)
-        // If any fetch returned fewer results than requested, we might have reached the end
-        // But since we're merging multiple fetches, we check if total merged is less than expected
-        const hasMoreResult = mergedData.length >= SIZE
+        
+        // Calculate hasMore based on whether any term returned the full requested size
+        // When loading older messages, if any term returns fewer than SIZE, we've likely reached the end
+        const anyReturnedFullSize = results.some(r => r.success && Array.isArray(r.data) && r.data.length >= SIZE)
+        const hasMoreResult = anyReturnedFullSize && mergedData.length > 0
+        
+        // For offset calculation: when appending, we need to increment by the number of messages
+        // we actually received from the API (not merged unique count, which might be less due to duplicates)
+        // Use the maximum data length from any successful fetch to ensure we don't miss messages
+        const maxDataLength = Math.max(...results.filter(r => r.success && Array.isArray(r.data)).map(r => r.data.length), 0)
+        const newOffset = append ? currentOffset + maxDataLength : mergedData.length
+        
         setHasMore(hasMoreResult)
-        setOffset(currentOffset + mergedData.length)
-        logger.api(`Updated state: offset=${currentOffset + mergedData.length}, hasMore=${hasMoreResult}`)
+        setOffset(newOffset)
+        logger.api(`Updated state: offset=${newOffset} (was ${currentOffset}, maxDataLength=${maxDataLength}, mergedData.length=${mergedData.length}), hasMore=${hasMoreResult}`)
+        logger.api(`Offset calculation: append=${append}, anyReturnedFullSize=${anyReturnedFullSize}, results with data: ${results.filter(r => r.success && Array.isArray(r.data)).map(r => r.data.length).join(', ')}`)
       }
       
       if (mergedData.length > 0) {
@@ -2282,6 +2320,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const existingMap = new Map<string, MentionData>()
           prev.forEach(m => existingMap.set(m.id, m))
           
+          const beforeCount = existingMap.size
           mergedData.forEach(m => {
             if (existingMap.has(m.id)) {
               // Merge matchedTerms
@@ -2297,7 +2336,19 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           })
           
           const combined = Array.from(existingMap.values()).sort((a, b) => b.date - a.date)
-          logger.api(`Appended mentions. Total now: ${combined.length}`)
+          const newCount = existingMap.size - beforeCount
+          logger.api(`Appended mentions: ${newCount} new (${mergedData.length} total merged, ${beforeCount} existing, ${combined.length} total now)`)
+          
+          // Log date range of newly added messages for debugging
+          if (newCount > 0) {
+            const newMessages = combined.filter(m => !prev.some(p => p.id === m.id))
+            if (newMessages.length > 0) {
+              const oldestNew = newMessages[newMessages.length - 1]
+              const newestNew = newMessages[0]
+              logger.api(`New messages date range: ${new Date(oldestNew.date).toISOString()} (oldest) to ${new Date(newestNew.date).toISOString()} (newest)`)
+            }
+          }
+          
           return combined
         })
       } else {
