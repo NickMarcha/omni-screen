@@ -7,7 +7,17 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
 
     env:
       GH_TAG: ${{ github.ref_name }}
@@ -31,4 +41,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
         run: |
-          npx electron-builder --win --publish always
+          npx electron-builder --${{ matrix.platform }} --publish always
