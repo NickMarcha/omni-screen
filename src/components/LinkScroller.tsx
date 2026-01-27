@@ -767,7 +767,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void }) {
+function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down' }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down' }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -819,34 +819,65 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
     }
   }
   
+  // Memoize cards by ID to prevent unnecessary recomputation
+  // Only recompute if the actual card IDs change, not just the array reference
+  const cardsKey = useMemo(() => cards.map(c => c.id).join(','), [cards])
+  
   useEffect(() => {
     // Distribute cards into columns - add each card to the column with the smallest total height
     const newColumns: LinkCard[][] = Array.from({ length: columnCount }, () => [])
     const columnHeights: number[] = Array(columnCount).fill(0)
     
-    cards.forEach((card) => {
-      // Find the column with the smallest height
-      let shortestColumn = 0
-      let minHeight = columnHeights[0]
-      
-      for (let i = 1; i < columnCount; i++) {
-        if (columnHeights[i] < minHeight) {
-          minHeight = columnHeights[i]
-          shortestColumn = i
+    if (stackDirection === 'up') {
+      // For upward stacking: cards should be sorted newest first [newest, ..., oldest]
+      // Process them in normal order and use push to maintain that order
+      // With flex-col, index 0 (newest) renders at top, so newest appears at top
+      // Columns will be even at bottom (where we finish) and uneven at top (where we start)
+      cards.forEach((card) => {
+        // Find the column with the smallest height
+        let shortestColumn = 0
+        let minHeight = columnHeights[0]
+        
+        for (let i = 1; i < columnCount; i++) {
+          if (columnHeights[i] < minHeight) {
+            minHeight = columnHeights[i]
+            shortestColumn = i
+          }
         }
-      }
-      
-      // Add card to shortest column
-      newColumns[shortestColumn].push(card)
-      // Use estimated height based on card type
-      columnHeights[shortestColumn] += estimateCardHeight(card)
-    })
+        
+        // Append to column (add to end) - maintains order: [newest, ..., oldest]
+        // With flex-col rendering, newest (index 0) appears at top
+        newColumns[shortestColumn].push(card)
+        // Use estimated height based on card type
+        columnHeights[shortestColumn] += estimateCardHeight(card)
+      })
+    } else {
+      // For downward stacking: process cards in normal order (newest first)
+      // Add them using push so they appear at the top of columns (near the divider)
+      cards.forEach((card) => {
+        // Find the column with the smallest height
+        let shortestColumn = 0
+        let minHeight = columnHeights[0]
+        
+        for (let i = 1; i < columnCount; i++) {
+          if (columnHeights[i] < minHeight) {
+            minHeight = columnHeights[i]
+            shortestColumn = i
+          }
+        }
+        
+        // Append to column (add to end) so newest cards are at top
+        newColumns[shortestColumn].push(card)
+        // Use estimated height based on card type
+        columnHeights[shortestColumn] += estimateCardHeight(card)
+      })
+    }
     
     setColumns(newColumns)
-  }, [cards, columnCount])
+  }, [cardsKey, columnCount, stackDirection, cards])
   
   return (
-    <div className="flex gap-4">
+    <div className={`flex gap-4 ${stackDirection === 'up' ? 'items-end' : ''}`}>
       {columns.map((columnCards, columnIndex) => (
         <div 
           key={columnIndex} 
@@ -2818,6 +2849,38 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
+  
+  // Memoize streaming and historical cards separately to prevent unnecessary recomputation
+  // This ensures that when only streaming cards change, historical cards masonry doesn't recompute
+  const streamingCards = useMemo(() => {
+    const filtered = linkCards.filter(card => card.isStreaming === true)
+    // Ensure streaming cards are sorted newest first (by date descending)
+    // Lower timestamp = older, higher timestamp = newer
+    // We want newest (higher timestamp) at top, so sort descending
+    // IMPORTANT: dateB - dateA gives descending (newest first)
+    const sorted = [...filtered].sort((a, b) => {
+      // Dates should already be numbers (timestamps), but ensure they are
+      const dateA = typeof a.date === 'number' ? a.date : new Date(a.date).getTime()
+      const dateB = typeof b.date === 'number' ? b.date : new Date(b.date).getTime()
+      // dateB - dateA: if dateB > dateA (newer), result is positive, so b comes before a
+      // This gives descending order: [newest, ..., oldest]
+      const result = dateB - dateA
+      return result
+    })
+    return sorted
+  }, [linkCards])
+  const historicalCards = useMemo(() => {
+    const filtered = linkCards.filter(card => card.isStreaming !== true)
+    // Historical cards should be sorted newest first (by date descending)
+    // Lower timestamp = older, higher timestamp = newer
+    // We want newest (higher timestamp) at top, so sort descending
+    return [...filtered].sort((a, b) => {
+      // Ensure dates are numbers for proper comparison
+      const dateA = typeof a.date === 'number' ? a.date : new Date(a.date).getTime()
+      const dateB = typeof b.date === 'number' ? b.date : new Date(b.date).getTime()
+      return dateB - dateA // Descending: newest first
+    })
+  }, [linkCards])
 
   // Fetch Imgur album data when an Imgur card is highlighted
   useEffect(() => {
@@ -4023,90 +4086,88 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       )}
 
       {/* Link Cards Masonry Layout */}
-      {!loading && linkCards.length > 0 && (() => {
-        // Split cards into streaming (new incoming) and historical (from history/API)
-        const streamingCards = linkCards.filter(card => card.isStreaming === true)
-        const historicalCards = linkCards.filter(card => card.isStreaming !== true)
-        
-        return (
-          <>
-            {/* Streaming messages (new incoming) - above separator */}
-            {streamingCards.length > 0 && (
-              <div className="max-w-7xl mx-auto mb-4">
-                <MasonryGrid 
-                  cards={streamingCards} 
-                  onCardClick={(cardId) => setExpandedCardId(cardId)} 
-                  getEmbedTheme={getEmbedTheme} 
-                  platformSettings={platformSettings} 
-                  emotesMap={emotesMap}
-                  embedReloadKeys={embedReloadKeys}
-                  onContextMenu={handleContextMenu}
-                />
+      {!loading && linkCards.length > 0 && (
+        <>
+          {/* Streaming messages (new incoming) - above separator */}
+          {/* Stack upwards: newest at top, oldest streaming messages near divider */}
+          {streamingCards.length > 0 && (
+            <div className="max-w-7xl mx-auto mb-4">
+              <MasonryGrid 
+                cards={streamingCards} 
+                onCardClick={(cardId) => setExpandedCardId(cardId)} 
+                getEmbedTheme={getEmbedTheme} 
+                platformSettings={platformSettings} 
+                emotesMap={emotesMap}
+                embedReloadKeys={embedReloadKeys}
+                onContextMenu={handleContextMenu}
+                stackDirection="up"
+              />
+            </div>
+          )}
+          
+          {/* Separator with refresh time */}
+          {streamingCards.length > 0 && historicalCards.length > 0 && refreshTimestamp && (
+            <div className="max-w-7xl mx-auto my-6 flex items-center">
+              <div className="flex-1 border-t border-base-content/30"></div>
+              <div className="px-4 text-sm text-base-content/60">
+                Refreshed {new Date(refreshTimestamp).toLocaleTimeString()}
               </div>
+              <div className="flex-1 border-t border-base-content/30"></div>
+            </div>
+          )}
+          
+          {/* Historical messages (from history/API) - below separator */}
+          {/* Stack downwards: newest at top (near divider), oldest at bottom */}
+          {historicalCards.length > 0 && (
+            <div className="max-w-7xl mx-auto">
+              <MasonryGrid 
+                cards={historicalCards} 
+                onCardClick={(cardId) => setExpandedCardId(cardId)} 
+                getEmbedTheme={getEmbedTheme} 
+                platformSettings={platformSettings} 
+                emotesMap={emotesMap}
+                embedReloadKeys={embedReloadKeys}
+                onContextMenu={handleContextMenu}
+                stackDirection="down"
+              />
+            </div>
             )}
-            
-            {/* Separator with refresh time */}
-            {streamingCards.length > 0 && historicalCards.length > 0 && refreshTimestamp && (
-              <div className="max-w-7xl mx-auto my-6 flex items-center">
-                <div className="flex-1 border-t border-base-content/30"></div>
-                <div className="px-4 text-sm text-base-content/60">
-                  Refreshed {new Date(refreshTimestamp).toLocaleTimeString()}
-                </div>
-                <div className="flex-1 border-t border-base-content/30"></div>
-              </div>
-            )}
-            
-            {/* Historical messages (from history/API) - below separator */}
-            {historicalCards.length > 0 && (
-              <div className="max-w-7xl mx-auto">
-                <MasonryGrid 
-                  cards={historicalCards} 
-                  onCardClick={(cardId) => setExpandedCardId(cardId)} 
-                  getEmbedTheme={getEmbedTheme} 
-                  platformSettings={platformSettings} 
-                  emotesMap={emotesMap}
-                  embedReloadKeys={embedReloadKeys}
-                  onContextMenu={handleContextMenu}
-                />
-              </div>
-            )}
-            
-            {/* Load More button */}
-            {hasMore && (
-              <div className="flex justify-center py-8">
-                <button
-                  onClick={handleLoadMore}
-                  disabled={loadingMore}
-                  className="btn btn-primary"
-                >
-                  {loadingMore ? (
-                    <>
-                      <img 
-                        src={loadingSpinner} 
-                        alt="Loading..." 
-                        className="w-4 h-4 object-contain"
-                      />
-                      Loading...
-                    </>
-                  ) : (
-                    'Load More'
-                  )}
-                </button>
-              </div>
-            )}
-            {!hasMore && linkCards.length > 0 && (
-              <div className="text-center py-8">
+        </>
+      )}
+      
+      {/* Load More button */}
+      {!loading && hasMore && (
+        <div className="flex justify-center py-8">
+          <button
+            onClick={handleLoadMore}
+            disabled={loadingMore}
+            className="btn btn-primary"
+          >
+            {loadingMore ? (
+              <>
                 <img 
-                  src={manHoldsCatPng} 
-                  alt="No more links" 
-                  className="mx-auto max-w-xs mb-4"
+                  src={loadingSpinner} 
+                  alt="Loading..." 
+                  className="w-4 h-4 object-contain"
                 />
-                <p className="text-base-content/70">No more links to load</p>
-              </div>
+                Loading...
+              </>
+            ) : (
+              'Load More'
             )}
-          </>
-        )
-      })()}
+          </button>
+        </div>
+      )}
+      {!loading && !hasMore && linkCards.length > 0 && (
+        <div className="text-center py-8">
+          <img 
+            src={manHoldsCatPng} 
+            alt="No more links" 
+            className="mx-auto max-w-xs mb-4"
+          />
+          <p className="text-base-content/70">No more links to load</p>
+        </div>
+      )}
 
       {!loading && !error && linkCards.length === 0 && mentions.length === 0 && (
         <div className="max-w-7xl mx-auto text-center py-12">

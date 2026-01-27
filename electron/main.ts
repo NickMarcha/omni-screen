@@ -2149,6 +2149,18 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       chatWebSocket.on('me', (event) => {
         safeSend('chat-websocket-me', event)
       })
+      
+      chatWebSocket.on('pollStart', (event) => {
+        safeSend('chat-websocket-poll-start', event)
+      })
+      
+      chatWebSocket.on('voteCast', (event) => {
+        safeSend('chat-websocket-vote-cast', event)
+      })
+      
+      chatWebSocket.on('pollStop', (event) => {
+        safeSend('chat-websocket-poll-stop', event)
+      })
     }
     
     if (!chatWebSocket.isConnected()) {

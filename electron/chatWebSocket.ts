@@ -59,7 +59,49 @@ export interface ChatMe {
   data: any // Structure unknown, will be logged
 }
 
-export type ChatWebSocketEvent = ChatHistoryMessage | ChatUserEvent | ChatPaidEvents | ChatPin | ChatNames | ChatMute | ChatMe | { type: 'MSG'; message: ChatMessage }
+export interface ChatPollStart {
+  type: 'POLLSTART'
+  poll: {
+    canvote: boolean
+    myvote: number
+    nick: string
+    weighted: boolean
+    start: string
+    now: string
+    time: number
+    question: string
+    options: string[]
+    totals: number[]
+    totalvotes: number
+  }
+}
+
+export interface ChatVoteCast {
+  type: 'VOTECAST'
+  vote: {
+    vote: string
+    quantity: number
+  }
+}
+
+export interface ChatPollStop {
+  type: 'POLLSTOP'
+  poll: {
+    canvote: boolean
+    myvote: number
+    nick: string
+    weighted: boolean
+    start: string
+    now: string
+    time: number
+    question: string
+    options: string[]
+    totals: number[]
+    totalvotes: number
+  }
+}
+
+export type ChatWebSocketEvent = ChatHistoryMessage | ChatUserEvent | ChatPaidEvents | ChatPin | ChatNames | ChatMute | ChatMe | ChatPollStart | ChatVoteCast | ChatPollStop | { type: 'MSG'; message: ChatMessage }
 
 export class ChatWebSocket extends EventEmitter {
   private ws: WebSocket | null = null
@@ -170,8 +212,34 @@ export class ChatWebSocket extends EventEmitter {
       this.reconnectTimer = null
     }
 
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout)
+      this.connectionTimeout = null
+    }
+
     if (this.ws) {
-      this.ws.close()
+      const readyState = this.ws.readyState
+      
+      // Remove all event listeners to prevent errors during close
+      this.ws.removeAllListeners()
+      
+      // Only attempt to close if WebSocket is OPEN or CONNECTING
+      // If it's already CLOSED or CLOSING, just clean up
+      if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) {
+        try {
+          // For CONNECTING state, terminate immediately without waiting
+          if (readyState === WebSocket.CONNECTING) {
+            this.ws.terminate()
+          } else {
+            this.ws.close()
+          }
+        } catch (error) {
+          // Ignore errors when closing - the WebSocket might already be closing/closed
+          // This can happen in React StrictMode when component unmounts during connection
+          console.log('[ChatWebSocket] Error during close (ignored):', error instanceof Error ? error.message : String(error))
+        }
+      }
+      
       this.ws = null
     }
 
@@ -292,6 +360,27 @@ export class ChatWebSocket extends EventEmitter {
                     this.emit('me', { type: 'ME', data: parsedData } as ChatMe)
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse ME in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('POLLSTART ')) {
+                  try {
+                    const pollData = JSON.parse(msgStr.substring(10))
+                    this.emit('pollStart', { type: 'POLLSTART', poll: pollData } as ChatPollStart)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse POLLSTART in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('VOTECAST ')) {
+                  try {
+                    const voteData = JSON.parse(msgStr.substring(9))
+                    this.emit('voteCast', { type: 'VOTECAST', vote: voteData } as ChatVoteCast)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse VOTECAST in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('POLLSTOP ')) {
+                  try {
+                    const pollData = JSON.parse(msgStr.substring(9))
+                    this.emit('pollStop', { type: 'POLLSTOP', poll: pollData } as ChatPollStop)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse POLLSTOP in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
                   }
                 } else {
                   console.log('[ChatWebSocket] Unsupported message type in HISTORY:', msgStr.substring(0, 50))
@@ -422,6 +511,33 @@ export class ChatWebSocket extends EventEmitter {
           this.emit('me', { type: 'ME', data: parsedData } as ChatMe)
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse ME:', e, 'Message:', message.substring(0, 100))
+          // Continue processing - don't crash
+        }
+      } else if (message.startsWith('POLLSTART ')) {
+        // POLLSTART {...}
+        try {
+          const pollData = JSON.parse(message.substring(10))
+          this.emit('pollStart', { type: 'POLLSTART', poll: pollData } as ChatPollStart)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse POLLSTART:', e, 'Message:', message.substring(0, 100))
+          // Continue processing - don't crash
+        }
+      } else if (message.startsWith('VOTECAST ')) {
+        // VOTECAST {...}
+        try {
+          const voteData = JSON.parse(message.substring(9))
+          this.emit('voteCast', { type: 'VOTECAST', vote: voteData } as ChatVoteCast)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse VOTECAST:', e, 'Message:', message.substring(0, 100))
+          // Continue processing - don't crash
+        }
+      } else if (message.startsWith('POLLSTOP ')) {
+        // POLLSTOP {...}
+        try {
+          const pollData = JSON.parse(message.substring(9))
+          this.emit('pollStop', { type: 'POLLSTOP', poll: pollData } as ChatPollStop)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse POLLSTOP:', e, 'Message:', message.substring(0, 100))
           // Continue processing - don't crash
         }
       } else {
