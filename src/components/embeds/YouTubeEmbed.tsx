@@ -6,9 +6,10 @@ interface YouTubeEmbedProps {
   autoplay?: boolean
   mute?: boolean
   showLink?: boolean
+  fit?: 'aspect' | 'fill'
 }
 
-function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink = true }: YouTubeEmbedProps) {
+function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink = true, fit = 'aspect' }: YouTubeEmbedProps) {
   // Validate embedUrl before using it
   if (!embedUrl || typeof embedUrl !== 'string' || embedUrl.trim() === '') {
     return (
@@ -82,9 +83,11 @@ function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink 
     )
   }
 
+  const isFill = fit === 'fill'
+
   return (
-    <div>
-      <div className="aspect-video w-full mb-4 rounded-lg overflow-hidden bg-base-200">
+    <div className={isFill ? 'w-full h-full' : ''}>
+      <div className={`${isFill ? 'w-full h-full' : 'aspect-video w-full mb-4'} rounded-lg overflow-hidden bg-base-200`}>
         <iframe
           width="100%"
           height="100%"
@@ -97,13 +100,8 @@ function YouTubeEmbed({ url, embedUrl, autoplay = false, mute = false, showLink 
           className="w-full h-full"
         />
       </div>
-      {showLink && (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="link link-primary break-all text-sm"
-        >
+      {!isFill && showLink && (
+        <a href={url} target="_blank" rel="noopener noreferrer" className="link link-primary break-all text-sm">
           {url}
         </a>
       )}

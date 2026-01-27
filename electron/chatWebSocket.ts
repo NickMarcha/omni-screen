@@ -220,8 +220,24 @@ export class ChatWebSocket extends EventEmitter {
     if (this.ws) {
       const readyState = this.ws.readyState
       
-      // Remove all event listeners to prevent errors during close
-      this.ws.removeAllListeners()
+      // IMPORTANT:
+      // If we remove all listeners and then terminate/close, the ws library can emit an 'error'
+      // event (e.g. "WebSocket was closed before the connection was established"). With no
+      // listeners attached, Node treats it as unhandled and can crash the app.
+      // Keep a no-op error handler during intentional shutdown.
+      try {
+        this.ws.on('error', () => {
+          // Swallow errors during intentional shutdown
+        })
+      } catch {
+        // ignore
+      }
+      
+      // Remove other event listeners to prevent callbacks during close
+      this.ws.removeAllListeners('open')
+      this.ws.removeAllListeners('message')
+      this.ws.removeAllListeners('close')
+      this.ws.removeAllListeners('ping')
       
       // Only attempt to close if WebSocket is OPEN or CONNECTING
       // If it's already CLOSED or CLOSING, just clean up
@@ -432,7 +448,8 @@ export class ChatWebSocket extends EventEmitter {
       } else if (message.startsWith('UPDATEUSER ')) {
         // UPDATEUSER {...}
         try {
-          const jsonPart = message.substring(12).trim()
+          // 'UPDATEUSER ' is 11 chars; substring(11) preserves the opening '{'
+          const jsonPart = message.substring(11).trim()
           
           // Check if JSON looks complete (basic validation)
           if (!jsonPart || jsonPart.length === 0) {
@@ -450,7 +467,7 @@ export class ChatWebSocket extends EventEmitter {
           console.error('[ChatWebSocket] Failed to parse UPDATEUSER:', e)
           console.error('[ChatWebSocket] Message length:', message.length)
           console.error('[ChatWebSocket] Full message:', message)
-          console.error('[ChatWebSocket] JSON part (first 200 chars):', message.substring(12, 212))
+          console.error('[ChatWebSocket] JSON part (first 200 chars):', message.substring(11, 211))
           // Continue processing - don't crash
         }
       } else if (message.startsWith('PAIDEVENTS')) {

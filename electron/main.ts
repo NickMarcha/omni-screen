@@ -6,6 +6,7 @@ import { readFileSync, statSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
 import { ChatWebSocket } from './chatWebSocket'
+import { LiveWebSocket } from './liveWebSocket'
 import { mentionCache } from './mentionCache'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -33,6 +34,7 @@ let win: BrowserWindow | null
 
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
+let liveWebSocket: LiveWebSocket | null = null
 
 // Update transparency menu to reflect current opacity
 function updateTransparencyMenu(opacity: number) {
@@ -578,7 +580,10 @@ function createWindow() {
   
   // Modify CSP headers to allow embeds from various platforms
   // These embeds need to be allowed even when loaded from file:// protocol
-  const modifyCSPForEmbeds = (details: Electron.OnHeadersReceivedListenerDetails, callback: (responseHeaders: Record<string, string | string[]>) => void) => {
+  const modifyCSPForEmbeds = (
+    details: Electron.OnHeadersReceivedListenerDetails,
+    callback: (response: Electron.HeadersReceivedResponse) => void
+  ) => {
     const responseHeaders: Record<string, string | string[]> = { ...details.responseHeaders }
     
     // Remove existing CSP headers (case-insensitive)
@@ -590,6 +595,15 @@ function createWindow() {
     cspKeys.forEach(key => {
       delete responseHeaders[key]
     })
+
+    // Also remove frame-blocking headers (case-insensitive)
+    const frameKeys = Object.keys(responseHeaders).filter(key =>
+      key.toLowerCase() === 'x-frame-options' ||
+      key.toLowerCase() === 'frame-options'
+    )
+    frameKeys.forEach(key => {
+      delete responseHeaders[key]
+    })
     
     // Completely remove CSP restrictions for embeds
     // In production with file://, CSP frame-ancestors doesn't support file: scheme
@@ -598,7 +612,7 @@ function createWindow() {
     // Don't set any CSP - let the embeds load without restrictions
     // (We already removed the existing CSP headers above)
     
-    callback(responseHeaders)
+    callback({ responseHeaders })
   }
 
   // Reddit embeds
@@ -646,6 +660,21 @@ function createWindow() {
     },
     (details, callback) => {
       console.log(`[Main Process] Modified CSP for Twitter: ${details.url.substring(0, 80)}`)
+      modifyCSPForEmbeds(details, callback)
+    }
+  )
+
+  // Destiny.gg embeds (e.g. chat embed)
+  session.webRequest.onHeadersReceived(
+    {
+      urls: [
+        'https://www.destiny.gg/*',
+        'https://destiny.gg/*',
+        'https://chat.destiny.gg/*',
+      ]
+    },
+    (details, callback) => {
+      console.log(`[Main Process] Modified CSP for Destiny: ${details.url.substring(0, 80)}`)
       modifyCSPForEmbeds(details, callback)
     }
   )
@@ -1974,6 +2003,7 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
       twitter: 'https://twitter.com/i/flow/login',
       tiktok: 'https://www.tiktok.com/login',
       reddit: 'https://www.reddit.com/login',
+      destiny: 'https://www.destiny.gg/login',
     }
     
     const url = loginUrls[service.toLowerCase()] || 'https://www.google.com'
@@ -2038,6 +2068,14 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
           console.log(`✅ Authentication cookie set: ${cookie.name}`)
           // Notify the main window that login was successful
           win?.webContents.send('twitter-login-success')
+        }
+      }
+
+      // Destiny.gg login (typically sets sid / rememberme)
+      if (!removed && cookie.domain && cookie.domain.includes('destiny.gg')) {
+        if (cookie.name === 'sid' || cookie.name === 'rememberme') {
+          console.log(`✅ Destiny cookie set: ${cookie.name} for ${cookie.domain}`)
+          win?.webContents.send('login-success', 'destiny')
         }
       }
     })
@@ -2194,6 +2232,72 @@ ipcMain.handle('chat-websocket-status', async (_event) => {
   }
 })
 
+// Live (embeds) WebSocket IPC handlers
+ipcMain.handle('live-websocket-connect', async (_event) => {
+  try {
+    if (!liveWebSocket) {
+      liveWebSocket = new LiveWebSocket()
+
+      const safeSend = (channel: string, ...args: any[]) => {
+        try {
+          if (!win) return
+          let isDestroyed = false
+          try {
+            isDestroyed = win.isDestroyed()
+          } catch {
+            return
+          }
+          if (isDestroyed) return
+          if (!win.webContents) return
+          let webContentsDestroyed = false
+          try {
+            webContentsDestroyed = win.webContents.isDestroyed()
+          } catch {
+            return
+          }
+          if (webContentsDestroyed) return
+          win.webContents.send(channel, ...args)
+        } catch {
+          // ignore
+        }
+      }
+
+      liveWebSocket.on('connected', () => safeSend('live-websocket-connected'))
+      liveWebSocket.on('disconnected', (data) => safeSend('live-websocket-disconnected', data))
+      liveWebSocket.on('error', (error) => {
+        const message = error?.message || (error instanceof Error ? error.message : String(error) || 'Unknown error')
+        safeSend('live-websocket-error', { message })
+      })
+      liveWebSocket.on('message', (data) => safeSend('live-websocket-message', data))
+    }
+
+    if (!liveWebSocket.isConnected()) {
+      liveWebSocket.connect()
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('live-websocket-disconnect', async (_event) => {
+  try {
+    if (liveWebSocket) {
+      liveWebSocket.disconnect()
+      liveWebSocket.destroy()
+      liveWebSocket = null
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('live-websocket-status', async (_event) => {
+  return { connected: liveWebSocket?.isConnected() || false }
+})
+
 ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
   try {
     console.log('[Main Process] Fetching LSF video URL for:', lsfUrl)
@@ -2303,6 +2407,10 @@ app.on('before-quit', () => {
   if (chatWebSocket) {
     chatWebSocket.destroy()
     chatWebSocket = null
+  }
+  if (liveWebSocket) {
+    liveWebSocket.destroy()
+    liveWebSocket = null
   }
   fileLogger.close()
 })

@@ -131,14 +131,13 @@ function Menu({ onNavigate }: MenuProps) {
 
         {/* Omni Screen - Disabled */}
         <button
-          className="card bg-base-200 shadow-xl p-8 opacity-50 cursor-not-allowed"
-          disabled
-          title="Coming soon"
+          className="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-shadow cursor-pointer"
+          onClick={() => onNavigate('omni-screen')}
         >
           <div className="card-body items-center text-center">
             <h2 className="card-title text-2xl mb-4">Omni Screen</h2>
             <p className="text-base-content/70">
-              Additional features coming soon
+              Split-screen embeds + live chat
             </p>
           </div>
         </button>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import LinkScroller from './components/LinkScroller'
 import Menu from './components/Menu'
+import OmniScreen from './components/OmniScreen'
 import './App.css'
 
 type Page = 'menu' | 'link-scroller' | 'omni-screen'
@@ -33,16 +34,7 @@ function App() {
   }
 
   if (currentPage === 'omni-screen') {
-    // Placeholder for future Omni Screen features
-    return (
-      <div className="min-h-screen bg-base-100 text-base-content flex flex-col items-center justify-center p-8">
-        <h1 className="text-5xl font-bold text-center mb-8 text-primary">Omni Screen</h1>
-        <p className="text-base-content/70 mb-8">Coming soon...</p>
-        <button className="btn btn-primary" onClick={handleBackToMenu}>
-          Back to Menu
-        </button>
-      </div>
-    )
+    return <OmniScreen onBackToMenu={handleBackToMenu} />
   }
 
   return <Menu onNavigate={handleNavigate} />

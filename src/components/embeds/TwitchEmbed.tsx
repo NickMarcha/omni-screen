@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-interface KickEmbedProps {
+interface TwitchEmbedProps {
   url: string
   autoplay?: boolean
   mute?: boolean
@@ -8,40 +8,40 @@ interface KickEmbedProps {
   fit?: 'aspect' | 'fill'
 }
 
-// Extract username from Kick livestream URL (clips are not supported)
-function parseKickUrl(url: string): { username: string | null } {
+function parseTwitchUrl(url: string): { channel: string | null } {
   try {
     const urlObj = new URL(url)
-    const pathname = urlObj.pathname
-    
-    // Check if it's a clip - these should not be processed
-    if (pathname.includes('/clips/')) {
-      return { username: null }
+
+    // player.twitch.tv/?channel=...
+    if (urlObj.hostname.includes('player.twitch.tv')) {
+      const channel = urlObj.searchParams.get('channel')
+      return { channel: channel || null }
     }
-    
-    // For player.kick.com URLs: player.kick.com/username
-    if (urlObj.hostname.includes('player.kick.com')) {
-      const username = pathname.replace(/^\//, '').split('/')[0]
-      if (username) {
-        return { username }
+
+    // twitch.tv/<channel>
+    const parts = urlObj.pathname.split('/').filter(Boolean)
+    if (parts.length >= 1) {
+      // ignore common non-channel paths (best effort)
+      const first = parts[0].toLowerCase()
+      if (['videos', 'directory', 'p', 'downloads', 'subscriptions'].includes(first)) {
+        return { channel: null }
       }
+      return { channel: parts[0] }
     }
-    
-    // For regular kick.com URLs: kick.com/username
-    const usernameMatch = pathname.match(/^\/([^\/]+)$/)
-    if (usernameMatch) {
-      return {
-        username: usernameMatch[1]
-      }
-    }
-    
-    return { username: null }
+
+    return { channel: null }
   } catch {
-    return { username: null }
+    return { channel: null }
   }
 }
 
-export default function KickEmbed({ url, autoplay = false, mute = false, onError, fit = 'aspect' }: KickEmbedProps) {
+function getTwitchParentParams(): string[] {
+  // Twitch requires explicit parent domains. Our Electron app serves from local HTTP (127.0.0.1 / localhost).
+  // Including both avoids dev/prod mismatches.
+  return ['localhost', '127.0.0.1']
+}
+
+export default function TwitchEmbed({ url, autoplay = true, mute = true, onError, fit = 'aspect' }: TwitchEmbedProps) {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,43 +52,32 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
     }
 
     try {
-      const { username } = parseKickUrl(url)
-      
-      if (!username) {
-        throw new Error('Could not extract username from Kick URL or URL is a clip (clips cannot be embedded)')
+      const { channel } = parseTwitchUrl(url)
+      if (!channel) {
+        throw new Error('Could not extract channel from Twitch URL')
       }
 
-      // Build embed URL with parameters for livestreams only
       const params = new URLSearchParams()
-      if (autoplay) {
-        params.set('autoplay', 'true')
-      }
-      if (mute) {
-        params.set('muted', 'true')
-      }
-      
-      // For livestreams: player.kick.com/username
-      const embedUrl = `https://player.kick.com/${username}${params.toString() ? `?${params.toString()}` : ''}`
-      
-      setEmbedUrl(embedUrl)
+      params.set('channel', channel)
+      params.set('autoplay', autoplay ? 'true' : 'false')
+      params.set('muted', mute ? 'true' : 'false')
+
+      getTwitchParentParams().forEach(parent => params.append('parent', parent))
+
+      setEmbedUrl(`https://player.twitch.tv/?${params.toString()}`)
       setError(null)
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Invalid Kick URL or clip (clips cannot be embedded)'
-      setError(errorMsg)
-      if (onError) onError(errorMsg)
+      const msg = err instanceof Error ? err.message : 'Invalid Twitch URL'
+      setError(msg)
+      if (onError) onError(msg)
     }
   }, [url, autoplay, mute, onError])
 
   if (error) {
     return (
       <div className="bg-base-200 rounded-lg p-3">
-        <p className="text-sm text-base-content/70">Failed to load Kick content</p>
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="link link-primary text-xs break-all"
-        >
+        <p className="text-sm text-base-content/70">Failed to load Twitch content</p>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all">
           {url}
         </a>
       </div>
@@ -108,7 +97,7 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
   return (
     <div className={`${isFill ? '' : 'mb-4'} flex justify-center bg-base-200 rounded-lg overflow-hidden w-full ${isFill ? 'h-full' : ''}`}>
       <div
-        className="kick-embed-container relative w-full"
+        className="twitch-embed-container relative w-full"
         style={
           isFill
             ? {
@@ -133,6 +122,7 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
           frameBorder="0"
           scrolling="no"
           allowFullScreen
+          allow="autoplay; fullscreen"
           style={{
             border: 'none',
             width: '100%',
@@ -143,9 +133,10 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
             overflow: 'hidden',
             backgroundColor: 'rgb(var(--b2))',
           }}
-          title="Kick stream"
+          title="Twitch stream"
         />
       </div>
     </div>
   )
 }
+
