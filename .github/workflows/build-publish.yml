@@ -6,8 +6,24 @@ on:
       - 'v*'
 
 jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      GH_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
+
+    steps:
+      - name: Ensure GitHub release exists
+        run: |
+          gh release view "$GH_TAG" --repo "${{ github.repository }}" || gh release create "$GH_TAG" --repo "${{ github.repository }}" --title "$GH_TAG" --generate-notes
+
   build:
+    needs: create_release
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
         include:
@@ -18,6 +34,8 @@ jobs:
           - os: ubuntu-latest
             platform: linux
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
 
     env:
       GH_TAG: ${{ github.ref_name }}
