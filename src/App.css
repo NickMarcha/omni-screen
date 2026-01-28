@@ -2,3 +2,16 @@
 @plugin "daisyui" {
   themes: all;
 }
+
+/* Prevent page-level scrolling/overscroll. OmniScreen manages its own internal scrolling. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
+}

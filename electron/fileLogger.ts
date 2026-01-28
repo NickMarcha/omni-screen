@@ -7,6 +7,8 @@ class FileLogger {
   private logFilePath: string | null = null
   private logStream: fs.WriteStream | null = null
   private logsDir: string | null = null
+  private sessionTimestamp: string | null = null
+  private extraStreams: Map<string, fs.WriteStream> = new Map()
   private __dirname = path.dirname(fileURLToPath(import.meta.url))
 
   constructor() {
@@ -62,6 +64,7 @@ class FileLogger {
       const logsDir = this.getLogsDirectory()
       
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5) // Format: 2026-01-25T12-30-45
+      this.sessionTimestamp = timestamp
       const filename = `app-${timestamp}.log`
       this.logFilePath = path.join(logsDir, filename)
       
@@ -79,6 +82,92 @@ class FileLogger {
       console.error('Failed to initialize file logger:', error)
       return null
     }
+  }
+
+  private ensureSessionInitialized() {
+    if (!this.logStream || !this.sessionTimestamp) {
+      this.initialize()
+    }
+  }
+
+  private getOrCreateExtraStream(key: string, filename: string): fs.WriteStream | null {
+    this.ensureSessionInitialized()
+    const existing = this.extraStreams.get(key)
+    if (existing) return existing
+
+    try {
+      const logsDir = this.getLogsDirectory()
+      const fullPath = path.join(logsDir, filename)
+      const stream = fs.createWriteStream(fullPath, { flags: 'a' })
+      this.extraStreams.set(key, stream)
+
+      // Write a helpful header once per extra stream
+      try {
+        const header = {
+          startedAt: new Date().toISOString(),
+          appVersion: (() => {
+            try {
+              return app.getVersion()
+            } catch {
+              return 'unknown'
+            }
+          })(),
+          platform: process.platform,
+          arch: process.arch,
+          electron: process.versions.electron,
+          chrome: process.versions.chrome,
+          node: process.versions.node,
+          v8: process.versions.v8,
+        }
+        stream.write(`=== ${key} ===\n${JSON.stringify(header, null, 2)}\n\n`)
+      } catch {
+        // ignore
+      }
+
+      return stream
+    } catch (e) {
+      console.error('[FileLogger] Failed to create extra stream:', key, e)
+      return null
+    }
+  }
+
+  /**
+   * Write websocket discrepancy entries to a dedicated file.
+   * Intended for reverse-engineering / schema drift tracking.
+   */
+  writeWsDiscrepancy(source: 'chat' | 'live' | 'kick' | 'youtube' | 'twitch', kind: string, details: any = {}) {
+    this.ensureSessionInitialized()
+    if (!this.sessionTimestamp) return
+
+    const stream = this.getOrCreateExtraStream('ws-discrepancies', `ws-discrepancies-${this.sessionTimestamp}.log`)
+    if (!stream) return
+
+    const timestamp = new Date().toISOString()
+    const safeStringify = (obj: any) => {
+      try {
+        return JSON.stringify(obj, null, 2)
+      } catch {
+        try {
+          return JSON.stringify(String(obj))
+        } catch {
+          return '"[unserializable]"'
+        }
+      }
+    }
+
+    // Keep entries readable and bounded
+    const boundedDetails = (() => {
+      if (details && typeof details === 'object') {
+        const copy: any = { ...details }
+        if (typeof copy.raw === 'string' && copy.raw.length > 5000) copy.raw = copy.raw.slice(0, 5000) + '…(truncated)'
+        if (typeof copy.preview === 'string' && copy.preview.length > 5000) copy.preview = copy.preview.slice(0, 5000) + '…(truncated)'
+        return copy
+      }
+      return details
+    })()
+
+    const line = `[${timestamp}] [${source.toUpperCase()}] [${kind}] ${safeStringify(boundedDetails)}\n`
+    stream.write(line)
   }
 
   /**
@@ -129,6 +218,16 @@ class FileLogger {
       this.logStream.end()
       this.logStream = null
     }
+
+    // Close extra streams
+    for (const stream of this.extraStreams.values()) {
+      try {
+        stream.end()
+      } catch {
+        // ignore
+      }
+    }
+    this.extraStreams.clear()
   }
 
   /**

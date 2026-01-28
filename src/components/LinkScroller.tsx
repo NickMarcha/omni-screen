@@ -216,6 +216,9 @@ type LightTheme = 'light' | 'cupcake' | 'bumblebee' | 'emerald' | 'corporate' | 
 type DarkTheme = 'dark' | 'synthwave' | 'halloween' | 'forest' | 'aqua' | 'black' | 'luxury' | 'dracula' | 'business' | 'acid' | 'night' | 'coffee' | 'dim' | 'sunset' | 'abyss'
 type EmbedThemeMode = 'follow' | 'light' | 'dark'
 
+// Link opening behavior
+type LinkOpenAction = 'none' | 'clipboard' | 'browser' | 'viewer'
+
 interface ThemeSettings {
   mode: ThemeMode // system, light, or dark
   lightTheme: LightTheme // Selected light theme
@@ -232,6 +235,7 @@ interface Settings {
   bannedTerms: string[] // Changed from string to array
   bannedUsers: string[] // New: list of banned usernames
   platformSettings: Record<string, PlatformDisplayMode> // New: platform display settings (filter/text/embed)
+  linkOpenAction: LinkOpenAction // New: how to open links when clicked
   trustedUsers: string[] // New: list of trusted usernames
   mutedUsers?: MutedUser[] // New: list of muted users with expiration timestamps
   keybinds: Keybind[] // New: customizable keyboard shortcuts
@@ -313,6 +317,9 @@ function loadSettings(): Settings {
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
         platformSettings: platformSettings,
+        linkOpenAction: (parsed.linkOpenAction === 'none' || parsed.linkOpenAction === 'clipboard' || parsed.linkOpenAction === 'browser' || parsed.linkOpenAction === 'viewer')
+          ? parsed.linkOpenAction
+          : 'browser',
         trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
         mutedUsers: mutedUsers,
         keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
@@ -361,6 +368,7 @@ function loadSettings(): Settings {
     bannedTerms: [],
     bannedUsers: [],
     platformSettings: defaultPlatformSettings,
+    linkOpenAction: 'browser',
     trustedUsers: [],
     mutedUsers: [],
     keybinds: defaultKeybinds,
@@ -767,7 +775,7 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down' }: { cards: LinkCard[], onCardClick: (cardId: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down' }) {
+function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down' }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down' }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -875,6 +883,12 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
     
     setColumns(newColumns)
   }, [cardsKey, columnCount, stackDirection, cards])
+
+  const handleAnchorClick = useCallback((e: React.MouseEvent, url: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onOpenLink?.(url)
+  }, [onOpenLink])
   
   return (
     <div className={`flex gap-4 ${stackDirection === 'up' ? 'items-end' : ''}`}>
@@ -950,9 +964,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -962,9 +976,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -974,9 +988,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -986,9 +1000,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -998,9 +1012,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1010,9 +1024,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1022,9 +1036,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1034,9 +1048,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1046,9 +1060,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1058,9 +1072,9 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap)}
+                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink)}
                         </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block">
+                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
                         </a>
                       </div>
@@ -1152,6 +1166,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                             target="_blank"
                             rel="noopener noreferrer"
                             className="link link-primary text-xs break-all"
+                            onClick={(e) => handleAnchorClick(e, card.url)}
                           >
                             {card.url}
                           </a>
@@ -1172,24 +1187,24 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                   <div className="break-words overflow-wrap-anywhere mb-3">
                     <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {card.isYouTube 
-                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink)
                         : card.isReddit
-                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink)
                         : card.isTwitter
-                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink)
                         : card.isStreamable
-                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink)
                         : card.isImgur
-                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink)
                         : card.isWikipedia
-                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink)
                         : card.isBluesky
-                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink)
                         : card.isKick
-                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink)
                         : card.isLSF
-                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap)
-                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap)
+                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink)
+                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink)
                       }
                     </p>
                   </div>
@@ -1204,6 +1219,7 @@ function MasonryGrid({ cards, onCardClick, getEmbedTheme, platformSettings, emot
                           target="_blank"
                           rel="noopener noreferrer"
                           className="ml-2 text-sm font-bold text-primary hover:underline"
+                          onClick={(e) => handleAnchorClick(e, `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=Destinygg`)}
                         >
                           {card.nick}
                         </a>
@@ -1623,7 +1639,7 @@ function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey
   return parts.length > 0 ? parts : [text]
 }
 
-function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string, emotesMap?: Map<string, string>): JSX.Element {
+function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string, emotesMap?: Map<string, string>, onOpenLink?: (url: string) => void): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
@@ -1656,7 +1672,11 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
         target="_blank"
         rel="noopener noreferrer"
         className="link link-primary break-words overflow-wrap-anywhere"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onOpenLink?.(url)
+        }}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
         {displayText}
@@ -1712,6 +1732,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       'Bluesky': 'embed',
       'LSF': 'embed',
     },
+    linkOpenAction: settings.linkOpenAction || 'browser',
     trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
     mutedUsers: Array.isArray(settings.mutedUsers) ? cleanupExpiredMutes(settings.mutedUsers) : [],
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
@@ -1721,7 +1742,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Settings tab state
   const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
   
-  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers, mutedUsers } = settings
+  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, linkOpenAction, trustedUsers, mutedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1796,6 +1817,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
         platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : defaultPlatformSettings,
+        linkOpenAction: settings.linkOpenAction || 'browser',
         trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
         mutedUsers: Array.isArray(settings.mutedUsers) ? settings.mutedUsers : [], // Include all mutes (cleanup happens on save)
         keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
@@ -1809,6 +1831,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     setSettings(newSettings)
     saveSettings(newSettings)
   }
+
+  // Centralized link handling for Link Scroller
+  const handleOpenLink = useCallback(async (url: string) => {
+    const action: LinkOpenAction = linkOpenAction || 'browser'
+    if (action === 'none') return
+    try {
+      await window.ipcRenderer.invoke('link-scroller-handle-link', { url, action })
+    } catch (e) {
+      logger.error('Failed to handle link open action:', e)
+    }
+  }, [linkOpenAction])
 
   // Context menu handlers
   const handleContextMenu = useCallback((e: React.MouseEvent, card: LinkCard) => {
@@ -1896,18 +1929,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     closeContextMenu()
   }, [closeContextMenu])
 
-  const handleOpenLink = useCallback((url: string) => {
-    window.open(url, '_blank', 'noopener,noreferrer')
-    closeContextMenu()
-  }, [closeContextMenu])
-
   const handleOpenAllLinks = useCallback((card: LinkCard) => {
     const urls = extractUrls(card.text)
     urls.forEach(url => {
-      window.open(url, '_blank', 'noopener,noreferrer')
+      // Route through configured link-open behavior (browser/clipboard/viewer/none)
+      handleOpenLink(url)
     })
     closeContextMenu()
-  }, [closeContextMenu])
+  }, [closeContextMenu, handleOpenLink])
 
   const handleCopyMessage = useCallback((card: LinkCard) => {
     navigator.clipboard.writeText(card.text).catch(err => {
@@ -3230,6 +3259,28 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 </div>
               </div>
 
+              {/* Link opening behavior */}
+              <div className="form-control">
+                <label className="label">
+                  <span className="label-text font-semibold">Link click behavior</span>
+                </label>
+                <select
+                  className="select select-bordered w-full"
+                  value={tempSettings.linkOpenAction || 'browser'}
+                  onChange={(e) => setTempSettings({ ...tempSettings, linkOpenAction: e.target.value as LinkOpenAction })}
+                >
+                  <option value="none">Don't open the link</option>
+                  <option value="clipboard">Copy link to clipboard</option>
+                  <option value="browser">Open the link in default browser</option>
+                  <option value="viewer">Open the link in Viewer window</option>
+                </select>
+                <label className="label">
+                  <span className="label-text-alt">
+                    Applies to clicking links in Link Scroller cards.
+                  </span>
+                </label>
+              </div>
+
               {/* Banned terms */}
               <ListManager
                 title="Banned Terms"
@@ -3574,6 +3625,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="link link-primary break-all text-sm"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        handleOpenLink(highlightedCard.url)
+                      }}
                     >
                       {highlightedCard.url}
                     </a>
@@ -3603,6 +3659,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                               target="_blank"
                               rel="noopener noreferrer"
                               className="link link-primary break-all"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                handleOpenLink(item.url)
+                              }}
                             >
                               {item.url}
                             </a>
@@ -3623,6 +3684,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="link link-primary break-all"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    handleOpenLink(highlightedCard.url)
+                  }}
                 >
                   {highlightedCard.url}
                 </a>
@@ -3710,18 +3776,18 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               <div className="mb-3 break-words overflow-wrap-anywhere">
                 <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {highlightedCard.isYouTube 
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap, handleOpenLink)
                     : highlightedCard.isReddit
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap, handleOpenLink)
                     : highlightedCard.isTwitter
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap, handleOpenLink)
                     : highlightedCard.isImgur
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap, handleOpenLink)
                     : highlightedCard.isKick
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link', emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link', emotesMap, handleOpenLink)
                     : highlightedCard.isLSF
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link', emotesMap)
-                    : renderTextWithLinks(highlightedCard.text, undefined, undefined, emotesMap)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link', emotesMap, handleOpenLink)
+                    : renderTextWithLinks(highlightedCard.text, undefined, undefined, emotesMap, handleOpenLink)
                   }
                 </p>
               </div>
@@ -3733,6 +3799,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     target="_blank"
                     rel="noopener noreferrer"
                     className="ml-2 text-sm font-bold text-primary hover:underline"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      handleOpenLink(`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`)
+                    }}
                   >
                     {highlightedCard.nick}
                   </a>
@@ -3961,7 +4032,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     </button>
                     <button
                       className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                      onClick={() => handleOpenLink(urls[0])}
+                      onClick={() => { handleOpenLink(urls[0]); closeContextMenu() }}
                     >
                       Open Link
                     </button>
@@ -3979,7 +4050,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                         </button>
                         <button
                           className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm truncate"
-                          onClick={() => handleOpenLink(url)}
+                          onClick={() => { handleOpenLink(url); closeContextMenu() }}
                           title={url}
                         >
                           Open Link {index + 1}
@@ -4095,6 +4166,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               <MasonryGrid 
                 cards={streamingCards} 
                 onCardClick={(cardId) => setExpandedCardId(cardId)} 
+                onOpenLink={handleOpenLink}
                 getEmbedTheme={getEmbedTheme} 
                 platformSettings={platformSettings} 
                 emotesMap={emotesMap}
@@ -4123,6 +4195,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               <MasonryGrid 
                 cards={historicalCards} 
                 onCardClick={(cardId) => setExpandedCardId(cardId)} 
+                onOpenLink={handleOpenLink}
                 getEmbedTheme={getEmbedTheme} 
                 platformSettings={platformSettings} 
                 emotesMap={emotesMap}
@@ -4205,7 +4278,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">Message</div>
                     <div className="text-sm whitespace-pre-wrap break-words">
-                      {renderTextWithLinks(expandedCard.text, undefined, undefined, emotesMap)}
+                      {renderTextWithLinks(expandedCard.text, undefined, undefined, emotesMap, handleOpenLink)}
                     </div>
                   </div>
                   <div>
@@ -4215,6 +4288,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="link link-primary text-sm break-all"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        handleOpenLink(expandedCard.url)
+                      }}
                     >
                       {expandedCard.url}
                     </a>
@@ -4259,7 +4337,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     <LSFEmbed url={expandedCard.url} autoplay={false} mute={false} />
                   ) : (
                     <div className="bg-base-200 rounded-lg p-6">
-                      <a href={expandedCard.url} target="_blank" rel="noopener noreferrer" className="link link-primary break-all">
+                      <a
+                        href={expandedCard.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="link link-primary break-all"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleOpenLink(expandedCard.url)
+                        }}
+                      >
                         {expandedCard.url}
                       </a>
                     </div>
@@ -4443,7 +4531,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     </button>
                     <button
                       className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                      onClick={() => handleOpenLink(urls[0])}
+                      onClick={() => { handleOpenLink(urls[0]); closeContextMenu() }}
                     >
                       Open Link
                     </button>
@@ -4461,7 +4549,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                         </button>
                         <button
                           className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm truncate"
-                          onClick={() => handleOpenLink(url)}
+                          onClick={() => { handleOpenLink(url); closeContextMenu() }}
                           title={url}
                         >
                           Open Link {index + 1}

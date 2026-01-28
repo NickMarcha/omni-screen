@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'events'
+import { fileLogger } from './fileLogger'
 
 export interface ChatMessage {
   id: number
@@ -101,7 +102,70 @@ export interface ChatPollStop {
   }
 }
 
-export type ChatWebSocketEvent = ChatHistoryMessage | ChatUserEvent | ChatPaidEvents | ChatPin | ChatNames | ChatMute | ChatMe | ChatPollStart | ChatVoteCast | ChatPollStop | { type: 'MSG'; message: ChatMessage }
+// Additional server event message types (not standard chat messages)
+export interface ChatDeathMessage extends ChatMessage {
+  duration: number
+}
+
+export interface ChatDeathEvent {
+  type: 'DEATH'
+  death: ChatDeathMessage
+}
+
+export interface ChatUnbanEvent {
+  type: 'UNBAN'
+  unban: ChatMessage
+}
+
+export interface ChatSubscriptionEvent {
+  type: 'SUBSCRIPTION'
+  subscription: {
+    timestamp: number
+    nick: string
+    data: string
+    user: ChatMessage
+    uuid: string
+    amount: number
+    expirationTimestamp: number
+    tier: number
+    tierLabel: string
+    streak: number
+  }
+}
+
+export interface ChatBroadcastEvent {
+  type: 'BROADCAST'
+  broadcast: {
+    timestamp: number
+    nick: string
+    data: string
+    user: {
+      id: number
+      nick: string
+      roles: string[]
+      features: string[]
+      createdDate: string | null
+    }
+    uuid: string
+  }
+}
+
+export type ChatWebSocketEvent =
+  | ChatHistoryMessage
+  | ChatUserEvent
+  | ChatPaidEvents
+  | ChatPin
+  | ChatNames
+  | ChatMute
+  | ChatMe
+  | ChatPollStart
+  | ChatVoteCast
+  | ChatPollStop
+  | ChatDeathEvent
+  | ChatUnbanEvent
+  | ChatSubscriptionEvent
+  | ChatBroadcastEvent
+  | { type: 'MSG'; message: ChatMessage }
 
 export class ChatWebSocket extends EventEmitter {
   private ws: WebSocket | null = null
@@ -114,6 +178,8 @@ export class ChatWebSocket extends EventEmitter {
   private isIntentionallyClosed = false
   private heartbeatInterval: NodeJS.Timeout | null = null
   private connectionTimeout: NodeJS.Timeout | null = null
+  private typeCounts: Map<string, number> = new Map()
+  private seenTypes: Set<string> = new Set()
 
   constructor(url: string = 'wss://chat.destiny.gg/ws') {
     super()
@@ -131,6 +197,10 @@ export class ChatWebSocket extends EventEmitter {
 
     this.isIntentionallyClosed = false
     console.log(`[ChatWebSocket] Connecting to ${this.url}...`)
+    fileLogger.writeWsDiscrepancy('chat', 'connect_attempt', {
+      url: this.url,
+      reconnectAttempts: this.reconnectAttempts,
+    })
 
     try {
       this.ws = new WebSocket(this.url)
@@ -146,6 +216,9 @@ export class ChatWebSocket extends EventEmitter {
 
       this.ws.on('open', () => {
         console.log('[ChatWebSocket] Connected')
+        fileLogger.writeWsDiscrepancy('chat', 'connected', {
+          url: this.url,
+        })
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         this.reconnectAttempts = 0
@@ -164,6 +237,11 @@ export class ChatWebSocket extends EventEmitter {
         const errorStack = error?.stack || 'No stack trace'
         console.error('[ChatWebSocket] Error:', errorMessage)
         console.error('[ChatWebSocket] Error stack:', errorStack)
+        fileLogger.writeWsDiscrepancy('chat', 'socket_error', {
+          url: this.url,
+          message: errorMessage,
+          stack: errorStack,
+        })
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         // Emit error but don't throw - let reconnection handle it
@@ -176,6 +254,13 @@ export class ChatWebSocket extends EventEmitter {
 
       this.ws.on('close', (code: number, reason: Buffer) => {
         console.log(`[ChatWebSocket] Closed: code=${code}, reason=${reason.toString()}`)
+        fileLogger.writeWsDiscrepancy('chat', 'disconnected', {
+          url: this.url,
+          code,
+          reason: reason.toString(),
+          reconnectAttempts: this.reconnectAttempts,
+          typeCounts: Object.fromEntries(this.typeCounts.entries()),
+        })
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         this.stopHeartbeat()
@@ -195,6 +280,10 @@ export class ChatWebSocket extends EventEmitter {
       })
     } catch (error) {
       console.error('[ChatWebSocket] Failed to create connection:', error)
+      fileLogger.writeWsDiscrepancy('chat', 'connect_exception', {
+        url: this.url,
+        error: error instanceof Error ? error.message : String(error) || 'Unknown error',
+      })
       this.emit('error', error)
       this.handleReconnect()
     }
@@ -301,6 +390,27 @@ export class ChatWebSocket extends EventEmitter {
       console.error('[ChatWebSocket] Failed to convert message data to string:', error)
       return // Exit early if we can't even convert to string
     }
+
+    // Track raw message types by first token (e.g. MSG, HISTORY, JOIN, DEATH, SUBSCRIPTION, ...)
+    const typeToken = message.split(' ', 1)[0] || 'UNKNOWN'
+    const nextCount = (this.typeCounts.get(typeToken) || 0) + 1
+    this.typeCounts.set(typeToken, nextCount)
+    if (!this.seenTypes.has(typeToken)) {
+      this.seenTypes.add(typeToken)
+      // Avoid logging the full HISTORY payload (can be huge)
+      if (typeToken === 'HISTORY') {
+        fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
+          type: typeToken,
+          length: message.length,
+        })
+      } else {
+        fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
+          type: typeToken,
+          length: message.length,
+          preview: message.substring(0, 400),
+        })
+      }
+    }
     
     try {
       // Parse the message type
@@ -398,8 +508,55 @@ export class ChatWebSocket extends EventEmitter {
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse POLLSTOP in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
                   }
+                } else if (msgStr.startsWith('DEATH ')) {
+                  try {
+                    const deathData = JSON.parse(msgStr.substring('DEATH '.length)) as ChatDeathMessage
+                    this.emit('death', { type: 'DEATH', death: deathData } as ChatDeathEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse DEATH in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                    fileLogger.writeWsDiscrepancy('chat', 'death_parse_error', {
+                      preview: msgStr.substring(0, 2000),
+                      error: e instanceof Error ? e.message : String(e),
+                    })
+                  }
+                } else if (msgStr.startsWith('UNBAN ')) {
+                  try {
+                    const unbanData = JSON.parse(msgStr.substring('UNBAN '.length)) as ChatMessage
+                    this.emit('unban', { type: 'UNBAN', unban: unbanData } as ChatUnbanEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse UNBAN in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                    fileLogger.writeWsDiscrepancy('chat', 'unban_parse_error', {
+                      preview: msgStr.substring(0, 2000),
+                      error: e instanceof Error ? e.message : String(e),
+                    })
+                  }
+                } else if (msgStr.startsWith('SUBSCRIPTION ')) {
+                  try {
+                    const subData = JSON.parse(msgStr.substring('SUBSCRIPTION '.length)) as ChatSubscriptionEvent['subscription']
+                    this.emit('subscription', { type: 'SUBSCRIPTION', subscription: subData } as ChatSubscriptionEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse SUBSCRIPTION in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                    fileLogger.writeWsDiscrepancy('chat', 'subscription_parse_error', {
+                      preview: msgStr.substring(0, 2000),
+                      error: e instanceof Error ? e.message : String(e),
+                    })
+                  }
+                } else if (msgStr.startsWith('BROADCAST ')) {
+                  try {
+                    const broadcastData = JSON.parse(msgStr.substring('BROADCAST '.length)) as ChatBroadcastEvent['broadcast']
+                    this.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse BROADCAST in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                    fileLogger.writeWsDiscrepancy('chat', 'broadcast_parse_error', {
+                      preview: msgStr.substring(0, 2000),
+                      error: e instanceof Error ? e.message : String(e),
+                    })
+                  }
                 } else {
                   console.log('[ChatWebSocket] Unsupported message type in HISTORY:', msgStr.substring(0, 50))
+                  fileLogger.writeWsDiscrepancy('chat', 'unsupported_history_item', {
+                    preview: msgStr.substring(0, 400),
+                  })
                 }
               } catch (e) {
                 // Catch any unexpected errors in processing individual history items
@@ -415,6 +572,10 @@ export class ChatWebSocket extends EventEmitter {
             }
           } catch (e) {
             console.error('[ChatWebSocket] Failed to parse HISTORY:', e, 'Raw message:', message.substring(0, 200))
+            fileLogger.writeWsDiscrepancy('chat', 'history_parse_error', {
+              preview: message.substring(0, 2000),
+              error: e instanceof Error ? e.message : String(e),
+            })
             // Don't rethrow - just log and continue
           }
         }
@@ -425,6 +586,10 @@ export class ChatWebSocket extends EventEmitter {
           this.emit('message', { type: 'MSG', message: msgData })
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse MSG:', e, 'Message:', message.substring(0, 100))
+          fileLogger.writeWsDiscrepancy('chat', 'msg_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
           // Continue processing - don't crash
         }
       } else if (message.startsWith('JOIN ')) {
@@ -434,6 +599,10 @@ export class ChatWebSocket extends EventEmitter {
           this.emit('userEvent', { type: 'JOIN', user: userData } as ChatUserEvent)
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse JOIN:', e, 'Message:', message.substring(0, 100))
+          fileLogger.writeWsDiscrepancy('chat', 'join_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
           // Continue processing - don't crash
         }
       } else if (message.startsWith('QUIT ')) {
@@ -443,6 +612,10 @@ export class ChatWebSocket extends EventEmitter {
           this.emit('userEvent', { type: 'QUIT', user: userData } as ChatUserEvent)
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse QUIT:', e, 'Message:', message.substring(0, 100))
+          fileLogger.writeWsDiscrepancy('chat', 'quit_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
           // Continue processing - don't crash
         }
       } else if (message.startsWith('UPDATEUSER ')) {
@@ -468,6 +641,10 @@ export class ChatWebSocket extends EventEmitter {
           console.error('[ChatWebSocket] Message length:', message.length)
           console.error('[ChatWebSocket] Full message:', message)
           console.error('[ChatWebSocket] JSON part (first 200 chars):', message.substring(11, 211))
+          fileLogger.writeWsDiscrepancy('chat', 'updateuser_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
           // Continue processing - don't crash
         }
       } else if (message.startsWith('PAIDEVENTS')) {
@@ -557,15 +734,71 @@ export class ChatWebSocket extends EventEmitter {
           console.error('[ChatWebSocket] Failed to parse POLLSTOP:', e, 'Message:', message.substring(0, 100))
           // Continue processing - don't crash
         }
+      } else if (message.startsWith('DEATH ')) {
+        // DEATH {...}
+        try {
+          const deathData = JSON.parse(message.substring('DEATH '.length)) as ChatDeathMessage
+          this.emit('death', { type: 'DEATH', death: deathData } as ChatDeathEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse DEATH:', e, 'Message:', message.substring(0, 120))
+          fileLogger.writeWsDiscrepancy('chat', 'death_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      } else if (message.startsWith('UNBAN ')) {
+        // UNBAN {...}
+        try {
+          const unbanData = JSON.parse(message.substring('UNBAN '.length)) as ChatMessage
+          this.emit('unban', { type: 'UNBAN', unban: unbanData } as ChatUnbanEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse UNBAN:', e, 'Message:', message.substring(0, 120))
+          fileLogger.writeWsDiscrepancy('chat', 'unban_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      } else if (message.startsWith('SUBSCRIPTION ')) {
+        // SUBSCRIPTION {...}
+        try {
+          const subData = JSON.parse(message.substring('SUBSCRIPTION '.length)) as ChatSubscriptionEvent['subscription']
+          this.emit('subscription', { type: 'SUBSCRIPTION', subscription: subData } as ChatSubscriptionEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse SUBSCRIPTION:', e, 'Message:', message.substring(0, 120))
+          fileLogger.writeWsDiscrepancy('chat', 'subscription_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      } else if (message.startsWith('BROADCAST ')) {
+        // BROADCAST {...}
+        try {
+          const broadcastData = JSON.parse(message.substring('BROADCAST '.length)) as ChatBroadcastEvent['broadcast']
+          this.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse BROADCAST:', e, 'Message:', message.substring(0, 120))
+          fileLogger.writeWsDiscrepancy('chat', 'broadcast_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
       } else {
         console.log('[ChatWebSocket] Unsupported message type:', message.substring(0, 100))
         console.log('[ChatWebSocket] Full unsupported message:', message)
+        fileLogger.writeWsDiscrepancy('chat', 'unsupported_message', {
+          preview: message.substring(0, 2000),
+          length: message.length,
+        })
       }
     } catch (error) {
       // Catch any unexpected errors in message handling
       // This should never happen, but if it does, log it and continue
       console.error('[ChatWebSocket] Unexpected error handling message:', error)
       console.error('[ChatWebSocket] Message that caused error:', message?.substring(0, 200) || 'unknown')
+      fileLogger.writeWsDiscrepancy('chat', 'handler_exception', {
+        preview: message?.substring(0, 2000) || 'unknown',
+        error: error instanceof Error ? error.message : String(error),
+      })
       // Don't rethrow - just log and continue processing
     }
   }
@@ -580,6 +813,10 @@ export class ChatWebSocket extends EventEmitter {
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('[ChatWebSocket] Max reconnection attempts reached')
+      fileLogger.writeWsDiscrepancy('chat', 'max_reconnect_attempts_reached', {
+        url: this.url,
+        maxReconnectAttempts: this.maxReconnectAttempts,
+      })
       this.emit('maxReconnectAttemptsReached')
       return
     }
@@ -588,6 +825,12 @@ export class ChatWebSocket extends EventEmitter {
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay)
     
     console.log(`[ChatWebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`)
+    fileLogger.writeWsDiscrepancy('chat', 'reconnect_scheduled', {
+      url: this.url,
+      attempt: this.reconnectAttempts,
+      maxReconnectAttempts: this.maxReconnectAttempts,
+      delayMs: delay,
+    })
     
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null

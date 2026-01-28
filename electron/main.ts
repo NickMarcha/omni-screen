@@ -8,6 +8,9 @@ import { fileLogger } from './fileLogger'
 import { ChatWebSocket } from './chatWebSocket'
 import { LiveWebSocket } from './liveWebSocket'
 import { mentionCache } from './mentionCache'
+import { KickChatManager } from './kickChatManager'
+import { YouTubeChatManager } from './youtubeChatManager'
+import { TwitchChatManager } from './twitchChatManager'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -31,10 +34,14 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+let viewerWin: BrowserWindow | null = null
 
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
 let liveWebSocket: LiveWebSocket | null = null
+let kickChatManager: KickChatManager | null = null
+let youTubeChatManager: YouTubeChatManager | null = null
+let twitchChatManager: TwitchChatManager | null = null
 
 // Update transparency menu to reflect current opacity
 function updateTransparencyMenu(opacity: number) {
@@ -823,6 +830,66 @@ function createWindow() {
   }
 }
 
+type LinkOpenAction = 'none' | 'clipboard' | 'browser' | 'viewer'
+
+function isHttpUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function getOrCreateViewerWindow(): BrowserWindow {
+  if (viewerWin && !viewerWin.isDestroyed()) {
+    return viewerWin
+  }
+
+  viewerWin = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 600,
+    minHeight: 400,
+    show: false,
+    title: 'Viewer',
+    icon: path.join(process.env.VITE_PUBLIC, 'feelswierdman.png'),
+    webPreferences: {
+      // Keep viewer isolated like a normal browser window
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      // Reuse app session so logins/cookies can persist
+      partition: 'persist:main',
+    }
+  })
+
+  viewerWin.on('closed', () => {
+    viewerWin = null
+  })
+
+  // Behave like a browser: allow in-window navigation for http(s), open other schemes externally
+  viewerWin.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isHttpUrl(navigationUrl)) {
+      event.preventDefault()
+      // For non-http(s) URLs, fall back to OS handler
+      shell.openExternal(navigationUrl).catch(() => {})
+    }
+  })
+
+  // Any "new window" request loads in the same viewer window
+  viewerWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpUrl(url)) {
+      viewerWin?.loadURL(url).catch(() => {})
+    } else {
+      shell.openExternal(url).catch(() => {})
+    }
+    return { action: 'deny' }
+  })
+
+  return viewerWin
+}
+
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
@@ -842,6 +909,49 @@ app.on('activate', () => {
 })
 
 // IPC Handlers
+ipcMain.handle('link-scroller-handle-link', async (_event, payload: { url: string, action: LinkOpenAction }) => {
+  try {
+    const url = payload?.url
+    const action = payload?.action
+
+    if (!url || typeof url !== 'string') {
+      return { success: false, error: 'Invalid url' }
+    }
+
+    if (action === 'none') {
+      return { success: true }
+    }
+
+    if (action === 'clipboard') {
+      clipboard.writeText(url)
+      return { success: true }
+    }
+
+    if (action === 'browser') {
+      await shell.openExternal(url)
+      return { success: true }
+    }
+
+    if (action === 'viewer') {
+      const v = getOrCreateViewerWindow()
+      v.show()
+      v.focus()
+      if (isHttpUrl(url)) {
+        await v.loadURL(url)
+        return { success: true }
+      }
+      await shell.openExternal(url)
+      return { success: true }
+    }
+
+    return { success: false, error: `Unknown action: ${String(action)}` }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Unknown error'
+    console.error(`Error occurred in handler for 'link-scroller-handle-link':`, e)
+    return { success: false, error: msg }
+  }
+})
+
 ipcMain.handle('fetch-mentions', async (_event, username: string, size: number = 150, offset: number = 0, useCache: boolean = true) => {
   try {
     // Check cache first if enabled
@@ -2199,6 +2309,22 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       chatWebSocket.on('pollStop', (event) => {
         safeSend('chat-websocket-poll-stop', event)
       })
+
+      chatWebSocket.on('death', (event) => {
+        safeSend('chat-websocket-death', event)
+      })
+
+      chatWebSocket.on('unban', (event) => {
+        safeSend('chat-websocket-unban', event)
+      })
+
+      chatWebSocket.on('subscription', (event) => {
+        safeSend('chat-websocket-subscription', event)
+      })
+
+      chatWebSocket.on('broadcast', (event) => {
+        safeSend('chat-websocket-broadcast', event)
+      })
     }
     
     if (!chatWebSocket.isConnected()) {
@@ -2296,6 +2422,191 @@ ipcMain.handle('live-websocket-disconnect', async (_event) => {
 
 ipcMain.handle('live-websocket-status', async (_event) => {
   return { connected: liveWebSocket?.isConnected() || false }
+})
+
+// Kick (Pusher) chat IPC handlers
+ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[] }) => {
+  try {
+    const slugs = Array.isArray(payload?.slugs) ? payload.slugs : []
+    if (!kickChatManager) {
+      kickChatManager = new KickChatManager()
+
+      const safeSend = (channel: string, ...args: any[]) => {
+        try {
+          if (!win) return
+          let isDestroyed = false
+          try {
+            isDestroyed = win.isDestroyed()
+          } catch {
+            return
+          }
+          if (isDestroyed) return
+          if (!win.webContents) return
+          let webContentsDestroyed = false
+          try {
+            webContentsDestroyed = win.webContents.isDestroyed()
+          } catch {
+            return
+          }
+          if (webContentsDestroyed) return
+          win.webContents.send(channel, ...args)
+        } catch {
+          // ignore
+        }
+      }
+
+      kickChatManager.on('message', (msg) => safeSend('kick-chat-message', msg))
+    }
+
+    await kickChatManager.setTargets(slugs)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
+})
+
+// Kick history helpers (Cloudflare/cookie priming + retry)
+ipcMain.handle('kick-open-cookie-window', async (_event, payload?: { slug?: string }) => {
+  try {
+    const slug = String(payload?.slug || '').trim()
+    // Prefer the popout chat page so we hit the same path/site behavior as history + chat.
+    const url = slug ? `https://kick.com/popout/${encodeURIComponent(slug)}/chat` : 'https://kick.com/'
+
+    const w = new BrowserWindow({
+      width: 900,
+      height: 720,
+      autoHideMenuBar: true,
+      title: 'Kick (history setup)',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        partition: 'persist:main',
+      },
+    })
+
+    // If Cloudflare challenge appears, user can complete it; cookies will be stored in persist:main.
+    try {
+      w.webContents.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+      )
+    } catch {
+      // ignore
+    }
+
+    // After the user closes the window, re-attempt history fetches.
+    w.on('closed', () => {
+      try {
+        kickChatManager?.refetchHistory().catch(() => {})
+      } catch {
+        // ignore
+      }
+    })
+
+    // Don't await: Kick/Cloudflare pages can keep "loading" forever, but cookies are still written.
+    // We just need the window to open.
+    w.loadURL(url).catch(() => {})
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
+})
+
+ipcMain.handle('kick-chat-refetch-history', async (_event, payload?: { slugs?: string[] }) => {
+  try {
+    const slugs = Array.isArray(payload?.slugs) ? payload?.slugs : []
+    if (!kickChatManager) return { success: false, error: 'KickChatManager not initialized' }
+    await kickChatManager.refetchHistory(slugs)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
+})
+
+// YouTube chat IPC handlers (polls youtubei live_chat endpoint)
+ipcMain.handle(
+  'youtube-chat-set-targets',
+  async (_event, payload: { videoIds: string[]; opts?: { delayMultiplier?: number } }) => {
+  try {
+    const videoIds = Array.isArray(payload?.videoIds) ? payload.videoIds : []
+    const opts = payload?.opts
+
+    if (!youTubeChatManager) {
+      youTubeChatManager = new YouTubeChatManager()
+
+      const safeSend = (channel: string, ...args: any[]) => {
+        try {
+          if (!win) return
+          let isDestroyed = false
+          try {
+            isDestroyed = win.isDestroyed()
+          } catch {
+            return
+          }
+          if (isDestroyed) return
+          if (!win.webContents) return
+          let webContentsDestroyed = false
+          try {
+            webContentsDestroyed = win.webContents.isDestroyed()
+          } catch {
+            return
+          }
+          if (webContentsDestroyed) return
+          win.webContents.send(channel, ...args)
+        } catch {
+          // ignore
+        }
+      }
+
+      youTubeChatManager.on('message', (msg) => safeSend('youtube-chat-message', msg))
+    }
+
+    await youTubeChatManager.setTargets(videoIds, opts)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
+})
+
+// Twitch chat IPC handlers (IRC over WebSocket)
+ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: string[] }) => {
+  try {
+    const channels = Array.isArray(payload?.channels) ? payload.channels : []
+
+    if (!twitchChatManager) {
+      twitchChatManager = new TwitchChatManager()
+
+      const safeSend = (channel: string, ...args: any[]) => {
+        try {
+          if (!win) return
+          let isDestroyed = false
+          try {
+            isDestroyed = win.isDestroyed()
+          } catch {
+            return
+          }
+          if (isDestroyed) return
+          if (!win.webContents) return
+          let webContentsDestroyed = false
+          try {
+            webContentsDestroyed = win.webContents.isDestroyed()
+          } catch {
+            return
+          }
+          if (webContentsDestroyed) return
+          win.webContents.send(channel, ...args)
+        } catch {
+          // ignore
+        }
+      }
+
+      twitchChatManager.on('message', (msg) => safeSend('twitch-chat-message', msg))
+    }
+
+    await twitchChatManager.setTargets(channels)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
 })
 
 ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
