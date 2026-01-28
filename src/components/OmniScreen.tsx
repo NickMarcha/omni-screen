@@ -65,15 +65,15 @@ function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
 }
 
-function getBestGridColumns(opts: { count: number; width: number; height: number }): number {
+function getBestGridColumns(opts: { count: number; width: number; height: number; gapPx?: number; headerHeightPx?: number }): number {
   const { count, width, height } = opts
   if (count <= 1) return 1
   if (width <= 0 || height <= 0) return Math.min(count, 2)
 
   // Tailwind gap-3 = 0.75rem = 12px
-  const gap = 12
+  const gap = Number.isFinite(opts.gapPx) ? Math.max(0, Math.floor(opts.gapPx as number)) : 12
   // Our cards have a small header; approximate so we don't overflow vertically.
-  const headerHeight = 56
+  const headerHeight = Number.isFinite(opts.headerHeightPx) ? Math.max(0, Math.floor(opts.headerHeightPx as number)) : 56
   const aspectW = 16
   const aspectH = 9
 
@@ -148,6 +148,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   const [autoplay, setAutoplay] = useState(true)
   const [mute, setMute] = useState(true)
+  const [cinemaMode, setCinemaMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:cinema-mode')
+    if (saved === '1' || saved === 'true') return true
+    return false
+  })
 
   // ---- Chat pane ----
   const [chatPaneOpen, setChatPaneOpen] = useState(true)
@@ -322,6 +327,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [youTubePollMultiplier])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:cinema-mode', cinemaMode ? '1' : '0')
+    } catch {
+      // ignore
+    }
+  }, [cinemaMode])
 
   const commitCombinedMaxMessages = useCallback(
     (raw?: string) => {
@@ -664,6 +677,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )
       }
 
+      if (cinemaMode) {
+        // Edge-to-edge embeds: no card chrome, no header, no padding, no gaps.
+        return (
+          <div key={item.key} className="w-full h-full min-h-0 min-w-0 overflow-hidden">
+            {content}
+          </div>
+        )
+      }
+
       return (
         <div
           key={item.key}
@@ -694,7 +716,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         </div>
       )
     },
-    [autoplay, bannedEmbeds, mute, toggleEmbed],
+    [autoplay, bannedEmbeds, cinemaMode, mute, toggleEmbed],
   )
 
   const embedsList = useMemo(() => {
@@ -784,8 +806,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       count: selectedEmbeds.length,
       width: gridHostSize.width,
       height: gridHostSize.height,
+      gapPx: cinemaMode ? 0 : 12,
+      headerHeightPx: cinemaMode ? 0 : 56,
     })
-  }, [gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
+  }, [cinemaMode, gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
 
   return (
     // Full-height layout; only the bottom embed bar is always visible.
@@ -997,7 +1021,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )}
 
         {/* Center column: embeds grid + bottom dock (width stops at chat pane) */}
-        <div className="flex-1 min-w-0 min-h-0 p-3 relative flex flex-col overflow-visible">
+        <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'}`}>
           {/* 50% transparent background behind embeds */}
           <div
             className="absolute inset-0 opacity-50 pointer-events-none bg-center bg-no-repeat bg-cover"
@@ -1018,7 +1042,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 const rows = Math.max(1, Math.ceil(selectedEmbeds.length / Math.max(1, gridCols)))
                 return (
                   <div
-                    className="grid gap-3 h-full min-h-0"
+                    className={`grid h-full min-h-0 ${cinemaMode ? 'gap-0' : 'gap-3'}`}
                     style={{
                       gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
                       gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
@@ -1032,7 +1056,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           </div>
 
           {/* Bottom embeds dock (inside center column) */}
-          <div className="relative z-20 mt-3 bg-base-200 border border-base-300 rounded-lg px-2 py-2 flex items-center gap-2">
+          <div
+            className={[
+              'relative z-20 flex items-center gap-2',
+              cinemaMode ? 'mt-0 bg-base-200 border-t border-base-300 rounded-none px-2 py-2' : 'mt-3 bg-base-200 border border-base-300 rounded-lg px-2 py-2',
+            ].join(' ')}
+          >
             {/* Scrollable embeds list */}
             <div className="flex-1 min-w-0">
               <div
@@ -1094,6 +1123,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
             {/* Fixed controls (right side) */}
             <div className="flex-none flex items-center gap-2">
+              <button
+                type="button"
+                className={`btn btn-sm ${cinemaMode ? 'btn-primary' : 'btn-ghost btn-outline'}`}
+                title="Cinema mode"
+                onClick={() => setCinemaMode((v) => !v)}
+              >
+                📽️
+              </button>
               <div className="dropdown dropdown-top dropdown-hover dropdown-end">
                 <button type="button" tabIndex={0} className="btn btn-sm btn-ghost btn-outline" title="Settings">
                   ⚙
@@ -1121,6 +1158,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <label className="flex items-center justify-between gap-2 text-sm">
                       <span>Mute</span>
                       <input type="checkbox" className="toggle toggle-sm" checked={mute} onChange={(e) => setMute(e.target.checked)} />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-sm">
+                      <span>Cinema mode</span>
+                      <input type="checkbox" className="toggle toggle-sm" checked={cinemaMode} onChange={(e) => setCinemaMode(e.target.checked)} />
                     </label>
                   </div>
                 </div>
