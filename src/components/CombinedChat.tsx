@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 
 interface DggChatMessage {
@@ -35,6 +35,10 @@ interface KickChatMessage {
   }
 }
 
+type YouTubeMessageRun =
+  | { text: string }
+  | { emojiId: string; imageUrl: string; shortcut?: string }
+
 interface YouTubeChatMessage {
   platform: 'youtube'
   videoId: string
@@ -42,6 +46,7 @@ interface YouTubeChatMessage {
   timestampUsec?: string
   authorName?: string
   message: string
+  runs?: YouTubeMessageRun[]
 }
 
 interface TwitchChatMessage {
@@ -392,6 +397,33 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
   }
   if (last < text.length) parts.push(text.slice(last))
   return parts.length ? parts : [text]
+}
+
+function renderYouTubeContent(msg: YouTubeChatMessage): ReactNode {
+  const runs = msg.runs
+  if (!runs || runs.length === 0) return msg.message ?? ''
+
+  const parts: (string | JSX.Element)[] = []
+  runs.forEach((run, i) => {
+    if ('text' in run && run.text) {
+      parts.push(run.text)
+      return
+    }
+    if ('emojiId' in run && run.imageUrl) {
+      parts.push(
+        <img
+          key={`yt-emote-${i}-${run.emojiId}`}
+          src={run.imageUrl}
+          alt={run.shortcut ?? `:${run.emojiId}:`}
+          title={run.shortcut ?? undefined}
+          loading="lazy"
+          className="inline-block align-middle mx-0.5"
+          style={{ height: 18, width: 'auto', verticalAlign: 'middle' }}
+        />,
+      )
+    }
+  })
+  return parts.length ? <>{parts}</> : (msg.message ?? '')
 }
 
 export default function CombinedChat({
@@ -745,7 +777,9 @@ export default function CombinedChat({
                   ? renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)
                   : m.source === 'kick'
                     ? renderKickContent(m.raw)
-                    : m.content ?? ''}
+                    : m.source === 'youtube'
+                      ? renderYouTubeContent(m.raw)
+                      : m.content ?? ''}
               </span>
             </div>
           )

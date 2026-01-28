@@ -2,6 +2,11 @@ import { EventEmitter } from 'events'
 import { session } from 'electron'
 import { fileLogger } from './fileLogger'
 
+/** One segment of a YouTube message: either plain text or an emoji with optional image URL. */
+export type YouTubeMessageRun =
+  | { text: string }
+  | { emojiId: string; imageUrl: string; shortcut?: string }
+
 export type YouTubeChatMessage = {
   platform: 'youtube'
   videoId: string
@@ -9,6 +14,8 @@ export type YouTubeChatMessage = {
   timestampUsec?: string
   authorName?: string
   message: string
+  /** When present, message content as runs (text + emoji with image URLs) for rendering emotes. */
+  runs?: YouTubeMessageRun[]
 }
 
 type PollState = {
@@ -125,6 +132,41 @@ function runsToText(runs: any[]): string {
   return out
 }
 
+/** YouTube emoji image URL when API doesn't provide thumbnails (yt3.ggpht.com pattern). */
+function emojiIdToImageUrl(emojiId: string): string {
+  const id = String(emojiId).trim()
+  if (!id) return ''
+  return `https://yt3.ggpht.com/${id}=s48-c`
+}
+
+function runsToRuns(runs: any[]): YouTubeMessageRun[] {
+  if (!Array.isArray(runs)) return []
+  const out: YouTubeMessageRun[] = []
+  for (const r of runs) {
+    if (typeof r?.text === 'string') {
+      out.push({ text: r.text })
+      continue
+    }
+    const emoji = r?.emoji
+    if (emoji && typeof emoji?.emojiId === 'string') {
+      const shortcuts = Array.isArray(emoji?.shortcuts) ? emoji.shortcuts : []
+      const shortcut = typeof shortcuts[0] === 'string' ? shortcuts[0] : undefined
+      let imageUrl = ''
+      const thumb = emoji?.image?.thumbnails?.[0]
+      if (thumb && typeof thumb?.url === 'string') {
+        imageUrl = thumb.url
+      } else {
+        imageUrl = emojiIdToImageUrl(emoji.emojiId)
+      }
+      if (imageUrl) out.push({ emojiId: emoji.emojiId, imageUrl, shortcut })
+      else if (shortcut) out.push({ text: shortcut })
+      else out.push({ text: `:${emoji.emojiId}:` })
+      continue
+    }
+  }
+  return out
+}
+
 function extractMessagesFromActions(videoId: string, actions: any[]): YouTubeChatMessage[] {
   const out: YouTubeChatMessage[] = []
   if (!Array.isArray(actions)) return out
@@ -158,6 +200,8 @@ function extractMessagesFromActions(videoId: string, actions: any[]): YouTubeCha
     const message = runsToText(messageRuns)
     if (!message) continue
 
+    const runs = runsToRuns(messageRuns)
+    const hasEmoji = runs.some((x) => 'emojiId' in x && x.imageUrl)
     out.push({
       platform: 'youtube',
       videoId,
@@ -165,6 +209,7 @@ function extractMessagesFromActions(videoId: string, actions: any[]): YouTubeCha
       timestampUsec: typeof r?.timestampUsec === 'string' ? r.timestampUsec : undefined,
       authorName,
       message,
+      runs: hasEmoji ? runs : undefined,
     })
   }
 
