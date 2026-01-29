@@ -297,6 +297,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const saved = Number(localStorage.getItem('omni-screen:youtube-poll-multiplier'))
     return Number.isFinite(saved) && saved > 0 ? saved : 1
   })
+  const [combinedHighlightTerm, setCombinedHighlightTerm] = useState<string>(() => {
+    return localStorage.getItem('omni-screen:combined-highlight-term') ?? ''
+  })
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
@@ -581,10 +584,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
+      localStorage.setItem('omni-screen:combined-highlight-term', combinedHighlightTerm)
     } catch {
       // ignore
     }
-  }, [combinedShowLabels, combinedShowTimestamps, combinedSortMode])
+  }, [combinedShowLabels, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm])
 
   useEffect(() => {
     try {
@@ -1414,6 +1418,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               />
                             </label>
 
+                            <label className="flex flex-col gap-1 text-sm">
+                              <span>Highlight term</span>
+                              <input
+                                type="text"
+                                className="input input-sm w-full"
+                                placeholder="e.g. username"
+                                value={combinedHighlightTerm}
+                                onChange={(e) => setCombinedHighlightTerm(e.target.value)}
+                              />
+                            </label>
+
                             <div className="flex items-center justify-between gap-2 text-sm">
                               <span>Order</span>
                               <div className="join">
@@ -1513,6 +1528,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}
                       sortMode={combinedSortMode}
+                      highlightTerm={combinedHighlightTerm || undefined}
                       onCountChange={setCombinedMsgCount}
                     />
                   )}
@@ -2082,6 +2098,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               />
                             </label>
 
+                            <label className="flex flex-col gap-1 text-sm">
+                              <span>Highlight term</span>
+                              <input
+                                type="text"
+                                className="input input-sm w-full"
+                                placeholder="e.g. username"
+                                value={combinedHighlightTerm}
+                                onChange={(e) => setCombinedHighlightTerm(e.target.value)}
+                              />
+                            </label>
+
                             <div className="flex items-center justify-between gap-2 text-sm">
                               <span>Order</span>
                               <div className="join">
@@ -2181,6 +2208,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}
                       sortMode={combinedSortMode}
+                      highlightTerm={combinedHighlightTerm || undefined}
                       onCountChange={setCombinedMsgCount}
                     />
                   )}

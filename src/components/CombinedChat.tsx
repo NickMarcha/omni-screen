@@ -433,6 +433,7 @@ export default function CombinedChat({
   showTimestamps,
   showSourceLabels,
   sortMode,
+  highlightTerm,
   onCountChange,
 }: {
   enableDgg: boolean
@@ -441,6 +442,8 @@ export default function CombinedChat({
   showTimestamps: boolean
   showSourceLabels: boolean
   sortMode: 'timestamp' | 'arrival'
+  /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
+  highlightTerm?: string
   onCountChange?: (count: number) => void
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
@@ -752,8 +755,14 @@ export default function CombinedChat({
               ? omniColorForKey(colorKey)
               : omniColorForKey(colorKey, { displayName: embedDisplayNameByKey[colorKey] })
           const badgeText = textColorOn(accent)
+          const term = highlightTerm?.trim() ?? ''
+          const isHighlighted =
+            term.length > 0 && (m.content?.toLowerCase().includes(term.toLowerCase()) ?? false)
           return (
-            <div key={`${m.source}-${m.tsMs}-${m.nick}-${idx}`} className="text-sm leading-snug">
+            <div
+              key={`${m.source}-${m.tsMs}-${m.nick}-${idx}`}
+              className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
+            >
               {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
               {showSourceLabels ? (
                 <span
