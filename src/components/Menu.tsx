@@ -132,7 +132,7 @@ function Menu({ onNavigate }: MenuProps) {
   }, [])
 
   return (
-    <div className="min-h-screen bg-base-100 text-base-content flex flex-col items-center justify-center p-8">
+    <div className="min-h-full flex-1 bg-base-100 text-base-content flex flex-col items-center justify-center p-8">
       <h1 className="text-5xl font-bold text-center mb-2 text-primary flex items-center justify-center gap-3">
         <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
         Omni Screen

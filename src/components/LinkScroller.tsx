@@ -3929,7 +3929,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     } else {
       // No cards available, can't render highlight mode
       return (
-        <div className="min-h-screen bg-base-200 flex items-center justify-center">
+        <div className="min-h-full flex-1 bg-base-200 flex items-center justify-center">
           <div className="text-center">
             <p className="text-lg text-base-content/70 mb-4">No cards to display</p>
             <button
@@ -3947,7 +3947,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     if (highlightedCard) {
     return (
       <>
-      <div className={`h-screen flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}>
+      <div className={`h-full min-h-0 flex overflow-hidden ${highlightedCard.isTrusted ? 'bg-base-300' : 'bg-base-200'}`}>
         {/* Left side - Content only (70%) */}
         <div className="w-[70%] overflow-y-auto p-6 border-r border-base-300">
           <div className="max-w-4xl mx-auto">
@@ -4553,7 +4553,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     // (This should rarely happen, but prevents getting stuck)
     return (
       <>
-        <div className="min-h-screen bg-base-200 p-4 flex items-center justify-center">
+        <div className="min-h-full flex-1 bg-base-200 p-4 flex items-center justify-center">
           <div className="text-center">
             <p className="text-base-content/70 mb-4">No card selected</p>
             <button
@@ -4578,7 +4578,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Overview Mode
   return (
     <>
-      <div ref={scrollContainerRef} className="h-screen overflow-y-auto bg-base-200 p-4">
+      <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto bg-base-200 p-4">
       {loading && mentions.length === 0 && (
         <div className="flex justify-center items-center py-8">
           <img 

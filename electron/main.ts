@@ -423,6 +423,8 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     icon: path.join(process.env.VITE_PUBLIC, 'feelswierdman.png'),
+    frame: false,
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       // Use persistent session partition to save cookies between restarts
@@ -919,7 +921,43 @@ app.on('activate', () => {
   }
 })
 
-// IPC Handlers
+// IPC Handlers (frameless window controls)
+ipcMain.handle('window-minimize', () => {
+  const w = BrowserWindow.getFocusedWindow()
+  if (w) w.minimize()
+})
+ipcMain.handle('window-maximize', () => {
+  const w = BrowserWindow.getFocusedWindow()
+  if (w) {
+    if (w.isMaximized()) w.unmaximize()
+    else w.maximize()
+  }
+})
+ipcMain.handle('window-close', () => {
+  const w = BrowserWindow.getFocusedWindow()
+  if (w) w.close()
+})
+ipcMain.handle('window-is-maximized', () => {
+  const w = BrowserWindow.getFocusedWindow()
+  return w ? w.isMaximized() : false
+})
+
+ipcMain.handle('menu-popup', (_event, payload: { menuLabel: string; clientX: number; clientY: number }) => {
+  const w = BrowserWindow.getFocusedWindow()
+  if (!w) return
+  const { menuLabel, clientX, clientY } = payload || {}
+  const bounds = w.getBounds()
+  const screenX = Math.round(bounds.x + (typeof clientX === 'number' ? clientX : 0))
+  const screenY = Math.round(bounds.y + (typeof clientY === 'number' ? clientY : 0))
+  const appMenu = Menu.getApplicationMenu()
+  if (!appMenu) return
+  const label = typeof menuLabel === 'string' ? menuLabel.trim() : ''
+  const item = appMenu.items.find((i) => i.label && i.label.toLowerCase() === label.toLowerCase())
+  if (item && item.submenu) {
+    ;(item.submenu as Electron.Menu).popup({ window: w, x: screenX, y: screenY })
+  }
+})
+
 ipcMain.handle('link-scroller-handle-link', async (_event, payload: { url: string, action: LinkOpenAction }) => {
   try {
     const url = payload?.url

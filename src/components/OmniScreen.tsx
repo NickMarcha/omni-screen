@@ -927,7 +927,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   return (
     // Full-height layout; only the bottom embed bar is always visible.
-    <div className="h-screen bg-base-100 text-base-content flex flex-col overflow-hidden">
+    <div className="h-full min-h-0 bg-base-100 text-base-content flex flex-col overflow-hidden">
       {/* Main layout */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left pane */}

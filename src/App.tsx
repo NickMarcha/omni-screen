@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import LinkScroller from './components/LinkScroller'
 import Menu from './components/Menu'
 import OmniScreen from './components/OmniScreen'
+import TitleBar from './components/TitleBar'
 import { applyThemeToDocument, getAppPreferences } from './utils/appPreferences'
 import './App.css'
 
@@ -32,16 +33,21 @@ function App() {
     setCurrentPage('menu')
   }
 
-  // Render based on current page
-  if (currentPage === 'link-scroller') {
-    return <LinkScroller onBackToMenu={handleBackToMenu} />
-  }
+  const pageContent =
+    currentPage === 'link-scroller' ? (
+      <LinkScroller onBackToMenu={handleBackToMenu} />
+    ) : currentPage === 'omni-screen' ? (
+      <OmniScreen onBackToMenu={handleBackToMenu} />
+    ) : (
+      <Menu onNavigate={handleNavigate} />
+    )
 
-  if (currentPage === 'omni-screen') {
-    return <OmniScreen onBackToMenu={handleBackToMenu} />
-  }
-
-  return <Menu onNavigate={handleNavigate} />
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-base-100 text-base-content">
+      <TitleBar />
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden">{pageContent}</main>
+    </div>
+  )
 }
 
 export default App
