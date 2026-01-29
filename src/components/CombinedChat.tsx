@@ -782,13 +782,18 @@ export default function CombinedChat({
                 {m.nick}
               </span>
               <span className="whitespace-pre-wrap break-words">
-                {m.source === 'dgg'
-                  ? renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)
-                  : m.source === 'kick'
-                    ? renderKickContent(m.raw)
-                    : m.source === 'youtube'
-                      ? renderYouTubeContent(m.raw)
-                      : m.content ?? ''}
+                {m.source === 'dgg' ? (
+                  <span
+                    className="msg-chat"
+                    style={{ position: 'relative', display: 'inline', overflow: 'visible' }}
+                  >
+                    {renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)}
+                  </span>
+                ) : m.source === 'kick'
+                  ? renderKickContent(m.raw)
+                  : m.source === 'youtube'
+                    ? renderYouTubeContent(m.raw)
+                    : m.content ?? ''}
               </span>
             </div>
           )
