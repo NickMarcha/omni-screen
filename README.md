@@ -2,11 +2,19 @@
 
 A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
 
+## 🎬 OmniScreen Demo
+
+<video src="./docs/OmniScreen.mp4" controls width="640"></video>
+
+*Main feature: split-screen with DGG chat, live embeds (YouTube/Kick/Twitch), and combined chat from all platforms.*
+
+*([Open video directly](./docs/OmniScreen.mp4) if it doesn’t play above.)*
+
 ## 🎬 Link Scroller Demo
 
 ![Link Scroller Demo](./docs/LinkScroller.webp)
 
-*Video showcasing the Link Scroller feature in action*
+*Link Scroller: browse links shared in DGG chat mentions.*
 
 ## 📥 Download
 
@@ -28,9 +36,21 @@ Omni Screen is a downloadable desktop application built for the Destiny.gg commu
 
 ## ✨ Current Features
 
+### OmniScreen (main feature)
+
+Split-screen view with Destiny.gg chat, live stream embeds, and a unified chat feed.
+
+#### Key Features:
+- **Split-screen layout**: DGG chat alongside embedded streams (YouTube, Kick, Twitch)
+- **Live embeds**: Add streams by pasting links or from the DGG live list; dock with grouped streamers
+- **Combined chat**: Single feed aggregating chat from DGG, YouTube, Kick, and Twitch
+- **Embed chat toggles**: Show/hide chat per platform in the combined view
+- **Highlight term**: Option to highlight messages containing a term (e.g. your username) in combined chat
+- **Pinned streamers**: Group embeds by streamer (e.g. Destiny on YouTube + Kick) with one dock button per streamer
+
 ### Link Scroller
 
-The primary feature of Omni Screen, allowing you to browse through links shared in Destiny.gg chat mentions.
+Browse links shared in Destiny.gg chat mentions.
 
 #### Key Features:
 - **Mentions API Integration**: Retrieve and display links from messages that mention specific users
@@ -67,16 +87,7 @@ For detailed feature documentation, see [IMPLEMENTED-FEATURES.md](./IMPLEMENTED-
 
 ## 🚀 Planned Features
 
-### Split-Screen View
-- **DGG Chat & Embeds**: View Destiny.gg chat alongside embedded content (YouTube, Kick, Twitch) in a split-screen layout
-- **Embed Chat Integration**: Display chat from embedded streams (YouTube, Kick, Twitch) alongside the main DGG chat in split-screen mode
-
-### Unified Chat Experience
-- **Combined Chat Feed**: Aggregate chat messages from multiple sources:
-  - Destiny.gg website
-  - Destiny's YouTube streams
-  - Destiny's Kick streams
-- View all chat activity in one unified interface
+*Additional features and improvements are in the pipeline; see [IMPLEMENTED-FEATURES.md](./IMPLEMENTED-FEATURES.md) for full details on what’s available today.*
 
 ## 🛠️ Technical Details
 

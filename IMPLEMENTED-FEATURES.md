@@ -2,9 +2,51 @@
 
 This document outlines all features that have been implemented in the Omni Screen application, along with the current technical structure.
 
+## OmniScreen Feature (main feature)
+
+OmniScreen is the main feature: a split-screen view with Destiny.gg chat, live stream embeds (YouTube, Kick, Twitch), and a unified combined chat feed from all platforms.
+
+### Core Functionality
+
+#### Split-screen layout
+- **Left/center**: Resizable chat pane (DGG embedded chat or combined chat)
+- **Center**: Embed grid + dock of live streams
+- **Resizable**: Drag the divider to resize chat vs content area
+- **Chat mode toggle**: Switch between embedded DGG chat (BrowserView) and combined chat (aggregated feed)
+
+#### Live embeds
+- **Sources**: Embeds come from the DGG live WebSocket (`dggApi:embeds`, `dggApi:streamInfo`) and/or manual paste (Add link)
+- **Dock**: Bottom dock lists available streams; click to show in grid. Each dock button can represent a single stream or a grouped streamer (YouTube + Kick + Twitch)
+- **Add link**: Paste a YouTube/Kick/Twitch URL to add an embed (optional “live only” check via `url-is-live` IPC)
+- **Pinned streamers**: Configure streamers (nickname + YouTube channel ID, Kick slug, Twitch login). Embeds for that streamer are grouped under one dock button. Hover shows all platforms with video/chat toggles and embed stats (viewers, embed count)
+- **Polling**: Pinned streamers’ YouTube/Kick/Twitch channels can be polled for live status; when live, embeds are added automatically
+- **YouTube “live only”**: Add by YouTube channel URL only if the channel is currently live (uses `youtube-live-or-latest` + DGG embed list heuristic)
+
+#### Combined chat
+- **Unified feed**: Single scrollable list of messages from DGG, YouTube, Kick, and Twitch (for enabled chats)
+- **Per-embed chat toggles**: Enable/disable each platform’s chat in the combined view via dock hover or settings
+- **Settings**: Max messages, show timestamps, source labels, sort by timestamp or arrival, YouTube poll delay multiplier
+- **Highlight term**: Optional text filter; messages whose **text** contains the term (case-insensitive) get a light blue background (e.g. your username)
+- **Components**: `CombinedChat.tsx` consumes messages from main process (IPC events for DGG, YouTube, Kick, Twitch chat)
+
+#### DGG integration
+- **Chat WebSocket**: `electron/chatWebSocket.ts` — connects to `wss://chat.destiny.gg/ws`, parses MSG, JOIN, QUIT, HISTORY, PIN, MUTE, UNMUTE, etc. Forwards to renderer via IPC (`chat-websocket-message`, `chat-websocket-unmute`, etc.)
+- **Live WebSocket**: `electron/liveWebSocket.ts` — connects to `wss://live.destiny.gg/`, receives `dggApi:embeds`, `dggApi:streamInfo`, `dggApi:bannedEmbeds`, etc. Drives the embed list and dock
+- **Destiny embed slot**: Optional BrowserView that loads the DGG website chat embed when “embedded” chat mode is selected; can be detached, reloaded, or hidden
+
+### OmniScreen technical notes
+
+- **Main UI**: `src/components/OmniScreen.tsx` — chat pane, embed grid, dock, pinned streamers modal, combined chat settings
+- **Combined chat**: `src/components/CombinedChat.tsx` — receives `highlightTerm`, `showTimestamps`, `showSourceLabels`, `sortMode`, etc.; renders message list with platform badges and optional highlight
+- **IPC / main**: Chat and live WebSockets registered in `electron/main.ts`; handlers for `youtube-chat-set-targets`, `kick-chat-*`, `twitch-chat-*`, `url-is-live`, `youtube-live-or-latest`; DGG embed view in `electron/destinyEmbedView.ts`
+- **YouTube chat**: `electron/youtubeChatManager.ts` — polls YouTube live chat API using continuation token from live_chat or watch page; fallback to watch page when live_chat page doesn’t include continuation
+- **Persistence**: Combined chat settings (including highlight term, YT poll multiplier) and pinned streamers saved to localStorage
+
+---
+
 ## Link Scroller Feature
 
-The Link Scroller is the primary feature of the application, allowing users to browse through links shared in Destiny.gg chat mentions.
+The Link Scroller allows users to browse through links shared in Destiny.gg chat mentions.
 
 ### Core Functionality
 
@@ -298,8 +340,17 @@ Accessible via floating cog button (bottom-right) with three tabs:
 
 ### React Components Structure
 
-#### Main Component
-- **`src/components/LinkScroller.tsx`**: Main component (~1600 lines)
+#### OmniScreen / Combined Chat
+- **`src/components/OmniScreen.tsx`**: Main OmniScreen UI
+  - Split-screen layout (chat pane + embed grid), dock, pinned streamers modal
+  - Combined chat settings (highlight term, timestamps, labels, sort, YT poll multiplier)
+  - Subscribes to DGG/YouTube/Kick/Twitch chat via IPC; passes messages to CombinedChat
+- **`src/components/CombinedChat.tsx`**: Combined chat feed
+  - Receives messages from OmniScreen (DGG, YouTube, Kick, Twitch)
+  - Renders unified list with platform badges, timestamps, optional highlight term (light blue background on matching message text)
+
+#### Link Scroller
+- **`src/components/LinkScroller.tsx`**: Link Scroller component
   - State management for mentions, settings, highlight view
   - Link processing and filtering logic
   - Render logic for both overview and highlight modes
@@ -414,26 +465,41 @@ Accessible via floating cog button (bottom-right) with three tabs:
 ```
 omni-screen/
 ├── electron/
-│   ├── main.ts              # Main process, IPC handlers
+│   ├── main.ts              # Main process, IPC handlers, chat/live WebSockets
 │   ├── preload.ts           # IPC bridge to renderer
-│   └── update.ts            # Auto-update logic
+│   ├── update.ts            # Auto-update logic
+│   ├── chatWebSocket.ts     # DGG chat WebSocket (MSG, JOIN, UNMUTE, etc.)
+│   ├── liveWebSocket.ts     # DGG live WebSocket (embeds, streamInfo)
+│   ├── youtubeChatManager.ts # YouTube live chat polling
+│   ├── kickChatManager.ts   # Kick chat (Pusher)
+│   ├── twitchChatManager.ts # Twitch IRC chat
+│   ├── destinyEmbedView.ts  # DGG website embed (BrowserView)
+│   ├── youtubeLiveOrLatest.ts # YouTube channel/video live detection
+│   ├── urlIsLive.ts         # URL live check (YouTube/Kick/Twitch)
+│   ├── mentionCache.ts     # Mention cache for Link Scroller
+│   └── fileLogger.ts       # Session log files
 ├── src/
 │   ├── components/
-│   │   ├── LinkScroller.tsx        # Main component
-│   │   ├── ListManager.tsx         # List management UI
+│   │   ├── OmniScreen.tsx         # Main OmniScreen (split-screen, dock, combined chat)
+│   │   ├── CombinedChat.tsx       # Combined chat feed (DGG + YT + Kick + Twitch)
+│   │   ├── LinkScroller.tsx        # Link Scroller (mentions → link cards)
+│   │   ├── ListManager.tsx        # List management UI
 │   │   └── embeds/
 │   │       ├── TwitterEmbed.tsx
 │   │       ├── YouTubeEmbed.tsx
+│   │       ├── KickEmbed.tsx
+│   │       ├── TwitchEmbed.tsx
 │   │       ├── TikTokEmbed.tsx
 │   │       ├── RedditEmbed.tsx
 │   │       ├── ImageEmbed.tsx
-│   │       └── VideoEmbed.tsx
+│   │       ├── VideoEmbed.tsx
+│   │       └── ... (Bluesky, Streamable, Wikipedia, LSF)
 │   ├── assets/
 │   │   └── icons/
-│   │       └── third-party/         # Platform icons
+│   │       └── third-party/       # Platform icons
 │   ├── utils/
-│   │   └── embedHandlers.ts        # Embed utilities
-│   └── main.tsx                    # React entry point
+│   │   └── embedHandlers.ts       # Embed utilities
+│   └── main.tsx                   # React entry point (OmniScreen vs LinkScroller)
 └── package.json
 ```
 
@@ -471,8 +537,6 @@ omni-screen/
 
 ## Future Enhancements (Not Yet Implemented)
 
-- Split-screen mode for multiple feeds
-- Unified chat integration
 - Search functionality
 - Bookmarking/favorites
 - Export functionality
