@@ -16,6 +16,11 @@ class FileLogger {
     // This allows APP_ROOT to be set first in main.ts before fileLogger is used
   }
 
+  /** Public path for "Open Log Directory" menu / IPC. */
+  getLogsDirectoryPath(): string {
+    return this.getLogsDirectory()
+  }
+
   private getLogsDirectory(): string {
     if (this.logsDir) {
       return this.logsDir

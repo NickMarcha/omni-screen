@@ -1,11 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 
 const MENU_LABELS = ['File', 'Edit', 'View', 'Window', 'Help'] as const
 
 /** Custom title bar for frameless window: menu, drag region, minimize / maximize / close. */
 export default function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
-  const menuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
   useEffect(() => {
     const checkMaximized = () => {
@@ -31,21 +30,15 @@ export default function TitleBar() {
   }
 
   const openMenu = (label: string) => {
-    const el = menuButtonRefs.current[label]
-    if (!el || !window.ipcRenderer) return
-    const rect = el.getBoundingClientRect()
-    window.ipcRenderer.invoke('menu-popup', {
-      menuLabel: label,
-      clientX: rect.left,
-      clientY: rect.bottom,
-    })
+    if (!window.ipcRenderer) return
+    window.ipcRenderer.invoke('menu-popup', { menuLabel: label })
   }
 
   if (typeof window !== 'undefined' && !window.ipcRenderer) return null
 
   return (
     <header
-      className="flex items-center justify-between h-8 flex-shrink-0 bg-base-200 border-b border-base-content/10 select-none"
+      className="flex items-center justify-between h-8 flex-shrink-0 bg-base-200 border-b border-base-content/10 select-none relative z-[1]"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div
@@ -62,7 +55,6 @@ export default function TitleBar() {
           {MENU_LABELS.map((label) => (
             <button
               key={label}
-              ref={(el) => { menuButtonRefs.current[label] = el }}
               type="button"
               className="h-full px-2.5 text-sm text-base-content/80 hover:bg-base-content/10 rounded transition-colors"
               onClick={() => openMenu(label)}

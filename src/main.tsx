@@ -53,6 +53,17 @@ window.ipcRenderer.on('main-process-message', (_event, message) => {
   console.log(message)
 })
 
+// Reset all user settings (from File menu) – clear localStorage and reload
+window.ipcRenderer.on('settings-reset-request', () => {
+  try {
+    localStorage.removeItem('omni-screen-settings')
+    window.location.reload()
+  } catch (e) {
+    console.error('Failed to reset settings:', e)
+    window.location.reload()
+  }
+})
+
 // Intercept console methods in renderer to send to main process for file logging
 // This must be done before other console overrides
 const originalConsoleLog = console.log

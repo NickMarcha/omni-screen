@@ -45,7 +45,8 @@ function App() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-base-100 text-base-content">
       <TitleBar />
-      <main className="flex-1 min-h-0 flex flex-col overflow-hidden">{pageContent}</main>
+      {/* pt-1 gives a small gap so DevTools or first row of content isn't covered by the title bar */}
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden pt-1 relative z-0">{pageContent}</main>
     </div>
   )
 }

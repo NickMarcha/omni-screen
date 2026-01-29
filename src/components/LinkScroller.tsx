@@ -167,31 +167,56 @@ function containsBannedTerms(text: string, bannedTerms: string[] | undefined): b
   return bannedTerms.some(term => term.trim() && lowerText.includes(term.trim().toLowerCase()))
 }
 
+// Normalize filter term: strip leading @ (IRC-style "@nick" and "nick" are equivalent)
+function normalizeFilterTerm(term: string): string {
+  return term.trim().replace(/^@/, '')
+}
+
 // Check if filter term appears in text/nick as a whole word (whitespace or start/end of string; used only for filter terms, not banned terms)
+// Accepts both "term" and "@term" in the haystack (IRC mention style)
 function filterTermMatchesAsWord(haystack: string, term: string): boolean {
-  const t = term.trim()
+  const t = normalizeFilterTerm(term)
   if (!t) return false
   const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   try {
-    const re = new RegExp('\\b' + escaped + '\\b', 'i')
+    const re = new RegExp('(\\b' + escaped + '\\b|\\b@' + escaped + '\\b)', 'i')
     return re.test(haystack)
   } catch {
-    return haystack.toLowerCase().includes(t.toLowerCase())
+    const lower = haystack.toLowerCase()
+    return lower.includes(t.toLowerCase()) || lower.includes('@' + t.toLowerCase())
   }
 }
 
-// Check if user is banned
-function isBannedUser(nick: string, bannedUsers: string[] | undefined): boolean {
-  if (!bannedUsers || bannedUsers.length === 0) return false
-  const lowerNick = nick.toLowerCase()
-  return bannedUsers.some(user => user.trim() && lowerNick === user.trim().toLowerCase())
+// Banned/trusted users are stored as "platform:nick" (e.g. "dgg:mrMouton", "kick:countrycaptain")
+function parsePlatformUser(entry: string): { platform: string; nick: string } | null {
+  const idx = entry.indexOf(':')
+  if (idx <= 0) return null
+  return { platform: entry.slice(0, idx), nick: entry.slice(idx + 1).trim() }
+}
+function formatPlatformUser(platform: string, nick: string): string {
+  return `${platform}:${nick}`
 }
 
-// Check if user is trusted
-function isTrustedUser(nick: string, trustedUsers: string[] | undefined): boolean {
+// Check if user is banned on the given platform
+function isBannedUser(nick: string, platform: string, bannedUsers: string[] | undefined): boolean {
+  if (!bannedUsers || bannedUsers.length === 0) return false
+  const lowerNick = nick.toLowerCase()
+  return bannedUsers.some(entry => {
+    const parsed = parsePlatformUser(entry)
+    if (!parsed) return false
+    return parsed.platform === platform && parsed.nick.toLowerCase() === lowerNick
+  })
+}
+
+// Check if user is trusted on the given platform
+function isTrustedUser(nick: string, platform: string, trustedUsers: string[] | undefined): boolean {
   if (!trustedUsers || trustedUsers.length === 0) return false
   const lowerNick = nick.toLowerCase()
-  return trustedUsers.some(user => user.trim() && lowerNick === user.trim().toLowerCase())
+  return trustedUsers.some(entry => {
+    const parsed = parsePlatformUser(entry)
+    if (!parsed) return false
+    return parsed.platform === platform && parsed.nick.toLowerCase() === lowerNick
+  })
 }
 
 // Muted user interface
@@ -292,10 +317,12 @@ interface Settings {
     dgg?: { enabled: boolean }
     kick?: { enabled: boolean; channelSlug?: string }
   }
-  // Footer display: platform label and color
+  // Footer display: platform label, color, and date/time
   footerDisplay?: {
     showPlatformLabel?: boolean
     platformColorStyle?: 'tint' | 'subtle' | 'none'
+    /** 'timestamp' = time only, 'datetimestamp' = date + time, 'none' = hide */
+    timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none'
   }
 }
 
@@ -372,14 +399,18 @@ function loadSettings(): Settings {
         showNSFL: parsed.showNSFL ?? false,
         showNonLinks: parsed.showNonLinks ?? false,
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
-        bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
+        bannedUsers: Array.isArray(parsed.bannedUsers)
+          ? parsed.bannedUsers.map((u: string) => (String(u).includes(':') ? String(u) : `dgg:${String(u).trim()}`))
+          : [],
         bannedLinks: Array.isArray(parsed.bannedLinks) ? parsed.bannedLinks : [],
         bannedMessages: Array.isArray(parsed.bannedMessages) ? parsed.bannedMessages : [],
         platformSettings: platformSettings,
         linkOpenAction: (parsed.linkOpenAction === 'none' || parsed.linkOpenAction === 'clipboard' || parsed.linkOpenAction === 'browser' || parsed.linkOpenAction === 'viewer')
           ? parsed.linkOpenAction
           : 'browser',
-        trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
+        trustedUsers: Array.isArray(parsed.trustedUsers)
+          ? parsed.trustedUsers.map((u: string) => (String(u).includes(':') ? String(u) : `dgg:${String(u).trim()}`))
+          : [],
         mutedUsers: mutedUsers,
         keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
         theme: parsed.theme && typeof parsed.theme === 'object' ? {
@@ -394,8 +425,9 @@ function loadSettings(): Settings {
         } : { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
         footerDisplay: parsed.footerDisplay && typeof parsed.footerDisplay === 'object' ? {
           showPlatformLabel: parsed.footerDisplay.showPlatformLabel !== false,
-          platformColorStyle: (parsed.footerDisplay.platformColorStyle === 'tint' || parsed.footerDisplay.platformColorStyle === 'subtle' || parsed.footerDisplay.platformColorStyle === 'none') ? parsed.footerDisplay.platformColorStyle : 'tint'
-        } : { showPlatformLabel: true, platformColorStyle: 'tint' as const },
+          platformColorStyle: (parsed.footerDisplay.platformColorStyle === 'tint' || parsed.footerDisplay.platformColorStyle === 'subtle' || parsed.footerDisplay.platformColorStyle === 'none') ? parsed.footerDisplay.platformColorStyle : 'tint',
+          timestampDisplay: (parsed.footerDisplay.timestampDisplay === 'timestamp' || parsed.footerDisplay.timestampDisplay === 'datetimestamp' || parsed.footerDisplay.timestampDisplay === 'none') ? parsed.footerDisplay.timestampDisplay : 'datetimestamp'
+        } : { showPlatformLabel: true, platformColorStyle: 'tint' as const, timestampDisplay: 'datetimestamp' as const },
       }
       return migrated
     }
@@ -443,7 +475,7 @@ function loadSettings(): Settings {
     keybinds: defaultKeybinds,
     theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
     channels: { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
-    footerDisplay: { showPlatformLabel: true, platformColorStyle: 'tint' },
+    footerDisplay: { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
   }
     logger.settings('Using default settings')
   return defaults
@@ -861,7 +893,7 @@ function getPlatformFooterColor(platform: string | undefined, style: 'tint' | 's
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down', footerDisplay }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down', footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none' } }) {
+function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down', footerDisplay }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down', footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' } }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -1354,9 +1386,13 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                           {card.nick}
                         </a>
                       </div>
-                      <div className="text-xs text-base-content/50">
-                        {new Date(card.date).toLocaleString()}
-                      </div>
+                      {footerDisplay?.timestampDisplay !== 'none' && (
+                        <div className="text-xs text-base-content/50">
+                          {footerDisplay?.timestampDisplay === 'timestamp'
+                            ? new Date(card.date).toLocaleTimeString()
+                            : new Date(card.date).toLocaleString()}
+                        </div>
+                      )}
                     </div>
                     {/* Only show expand button if there's an embed to expand */}
                     {hasEmbed ? (
@@ -1974,7 +2010,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
     theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
     channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
-    footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint' },
+    footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
   }))
   
   // Settings tab state
@@ -2064,7 +2100,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
         theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
         channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
-        footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint' },
+        footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
       })
     }
   }, [settingsOpen, settings])
@@ -2086,19 +2122,26 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [linkOpenAction])
 
-  // Context menu handlers
+  // Context menu handlers – clamp position so menu stays on screen
+  const CONTEXT_MENU_APPROX_WIDTH = 220
+  const CONTEXT_MENU_APPROX_HEIGHT = 420
   const handleContextMenu = useCallback((e: React.MouseEvent, card: LinkCard) => {
     e.preventDefault()
     e.stopPropagation()
     
-    // Ensure menu stays within viewport
-    const x = Math.min(e.clientX, window.innerWidth - 220) // 220px is approximate menu width
-    const y = Math.min(e.clientY, window.innerHeight - 100) // Leave some space at bottom
+    let x = e.clientX
+    let y = e.clientY
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    if (x + CONTEXT_MENU_APPROX_WIDTH > vw) x = vw - CONTEXT_MENU_APPROX_WIDTH
+    if (y + CONTEXT_MENU_APPROX_HEIGHT > vh) y = vh - CONTEXT_MENU_APPROX_HEIGHT
+    if (x < 0) x = 0
+    if (y < 0) y = 0
     
     setContextMenu({
       visible: true,
-      x: Math.max(0, x),
-      y: Math.max(0, y),
+      x,
+      y,
       card
     })
     
@@ -2119,26 +2162,31 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   }, [contextMenu.visible, closeContextMenu])
 
   // Context menu actions
-  const handleBanUser = useCallback((nick: string) => {
+  const handleBanUser = useCallback((nick: string, platform: string) => {
+    const entry = formatPlatformUser(platform, nick)
     const newBannedUsers = [...(settings.bannedUsers || [])]
-    if (!newBannedUsers.includes(nick)) {
-      newBannedUsers.push(nick)
+    if (!newBannedUsers.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+      newBannedUsers.push(entry)
       updateSettings({ ...settings, bannedUsers: newBannedUsers })
     }
     closeContextMenu()
   }, [settings, updateSettings, closeContextMenu])
 
-  const handleTrustUser = useCallback((nick: string) => {
+  const handleTrustUser = useCallback((nick: string, platform: string) => {
+    const entry = formatPlatformUser(platform, nick)
     const newTrustedUsers = [...(settings.trustedUsers || [])]
-    if (!newTrustedUsers.includes(nick)) {
-      newTrustedUsers.push(nick)
+    if (!newTrustedUsers.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+      newTrustedUsers.push(entry)
       updateSettings({ ...settings, trustedUsers: newTrustedUsers })
     }
     closeContextMenu()
   }, [settings, updateSettings, closeContextMenu])
 
-  const handleUntrustUser = useCallback((nick: string) => {
-    const newTrustedUsers = (settings.trustedUsers || []).filter(user => user !== nick)
+  const handleUntrustUser = useCallback((nick: string, platform: string) => {
+    const newTrustedUsers = (settings.trustedUsers || []).filter(entry => {
+      const p = parsePlatformUser(entry)
+      return !p || p.platform !== platform || p.nick.toLowerCase() !== nick.toLowerCase()
+    })
     updateSettings({ ...settings, trustedUsers: newTrustedUsers })
     closeContextMenu()
   }, [settings, updateSettings, closeContextMenu])
@@ -2315,8 +2363,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       return
     }
     
-    // Deduplicate filter terms to avoid duplicate API calls
-    const uniqueFilterTerms = Array.from(new Set(filterTerms.map(term => term.trim()).filter(term => term.length > 0)))
+    // Deduplicate and normalize filter terms (strip leading @ so "@nick" and "nick" are equivalent)
+    const uniqueFilterTerms = Array.from(new Set(
+      filterTerms.map(term => normalizeFilterTerm(term)).filter(term => term.length > 0)
+    ))
     
     logger.api('fetchMentions called', {
       originalFilterTerms: filterTerms,
@@ -2327,15 +2377,70 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       timestamp: new Date().toISOString()
     })
     
+    // Empty filter: use Rustlesearch only (channel history), skip mentions API
     if (uniqueFilterTerms.length === 0) {
-      logger.api('No filter terms provided, skipping fetch')
+      fetchInProgressRef.current = true
       if (!append) {
-        setMentions([])
+        setLoading(true)
+        setError(null)
+      } else {
+        setLoadingMore(true)
+      }
+      try {
+        logger.api('No filter terms: fetching channel history via Rustlesearch only')
+        const rustleResult = await window.ipcRenderer.invoke('fetch-rustlesearch', [], append ? rustlesearchSearchAfter : undefined, SIZE)
+        if (rustleResult.success && Array.isArray(rustleResult.data)) {
+          const rustleData = rustleResult.data as MentionData[]
+          const platform = 'dgg'
+          const channel = 'Destinygg'
+          const mergedData = rustleData.map(m => ({
+            ...m,
+            id: messageId(platform, channel, m.date, m.nick),
+            matchedTerms: [] as string[],
+            isStreaming: false,
+            platform,
+            channel
+          })).sort((a, b) => b.date - a.date)
+          if (append) {
+            setMentions(prev => {
+              const byId = new Map(prev.map(m => [m.id, m]))
+              mergedData.forEach(m => { if (!byId.has(m.id)) byId.set(m.id, m) })
+              return Array.from(byId.values()).sort((a, b) => b.date - a.date)
+            })
+            if (rustleResult.searchAfter) setRustlesearchSearchAfter(rustleResult.searchAfter)
+            else setRustlesearchSearchAfter(undefined)
+            setHasMore(rustleResult.hasMore ?? false)
+          } else {
+            // Preserve Kick messages that may have arrived from kick-chat-refetch-history during refresh
+            setMentions(prev => {
+              const kickOnly = prev.filter(m => m.platform === 'kick')
+              const combined = [...mergedData, ...kickOnly].sort((a, b) => b.date - a.date)
+              if (kickOnly.length > 0) logger.api(`Preserved ${kickOnly.length} Kick message(s) when setting Rustlesearch results`)
+              return combined
+            })
+            setUsingRustlesearch(true)
+            if (rustleResult.searchAfter) setRustlesearchSearchAfter(rustleResult.searchAfter)
+            else setRustlesearchSearchAfter(undefined)
+            setHasMore(rustleResult.hasMore ?? false)
+          }
+        } else if (!append) {
+          setMentions([])
+          setError(rustleResult.error || 'Failed to load channel history')
+        }
+      } catch (err) {
+        logger.error('Rustlesearch channel-only fetch failed:', err)
+        if (!append) {
+          setMentions([])
+          setError(err instanceof Error ? err.message : 'Failed to load channel history')
+        }
+      } finally {
+        fetchInProgressRef.current = false
         setLoading(false)
+        setLoadingMore(false)
       }
       return
     }
-    
+
     // Mark fetch as in progress
     fetchInProgressRef.current = true
     
@@ -2351,8 +2456,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     try {
       const startTime = Date.now()
       
-      // Fetch mentions for each filter term in parallel
-      // Use cache unless this is a refresh (append=false and offset=0 means refresh)
+      // Fetch mentions API only when we have filter terms (exclude when empty)
       const useCache = append || currentOffset > 0
       logger.api(`Fetching mentions for ${uniqueFilterTerms.length} unique terms (${filterTerms.length} original) - cache: ${useCache}`)
       logger.api(`Terms to fetch: ${uniqueFilterTerms.map((t, i) => `${i + 1}. "${t}"`).join(', ')}`)
@@ -2403,7 +2507,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const platform = 'dgg'
           const channel = 'Destinygg'
           termData.forEach(mention => {
-            const matchesAsWord = filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)
+            const matchesAsWord = filterTermMatchesAsWord(mention.text, term)
             if (!matchesAsWord) return
             const uniqueId = messageId(platform, channel, mention.date, mention.nick)
             if (mentionsMap.has(uniqueId)) {
@@ -2679,26 +2783,30 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [usingRustlesearch, rustlesearchSearchAfter])
 
-  // Reset state when filter changes
+  // Reset state when filter changes (empty = channel-only via Rustlesearch; has terms = wait for WebSocket then mentions API)
   useEffect(() => {
+    setOffset(0)
+    setHasMore(true)
+    setUsingRustlesearch(false)
+    setRustlesearchSearchAfter(undefined)
+    setMentions([])
+    setRefreshTimestamp(null)
     if (filter && filter.length > 0) {
-      setOffset(0)
-      setHasMore(true)
-      setUsingRustlesearch(false)
-      setRustlesearchSearchAfter(undefined)
-      setWebsocketHistoryReceived(false) // Reset to wait for new WebSocket history
-      setMentions([]) // Clear mentions to start fresh
-      setRefreshTimestamp(null) // Reset refresh timestamp
+      setWebsocketHistoryReceived(false)
       logger.api('Filter changed, resetting state and waiting for WebSocket history')
+    } else {
+      logger.api('Filter empty, will fetch channel history via Rustlesearch only')
     }
   }, [filter])
 
-  // Fetch mentions API after WebSocket history has been received
+  // Fetch: with filter terms wait for WebSocket history then use mentions API; with no terms use Rustlesearch only
   useEffect(() => {
-    if (filter && filter.length > 0 && websocketHistoryReceived) {
-      logger.api('WebSocket history received, now fetching mentions API')
-      fetchMentions(filter, 0, false, dggEnabled)
-    }
+    if (!dggEnabled) return
+    const hasTerms = filter && filter.length > 0
+    if (hasTerms && !websocketHistoryReceived) return
+    if (hasTerms) logger.api('WebSocket history received, now fetching mentions API')
+    else logger.api('No filter terms, fetching channel history via Rustlesearch')
+    fetchMentions(filter || [], 0, false, dggEnabled)
   }, [filter, fetchMentions, websocketHistoryReceived, dggEnabled])
 
   // WebSocket connection for streaming messages
@@ -2723,7 +2831,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
     window.ipcRenderer.invoke('chat-websocket-connect').catch((err) => {
       logger.error('Failed to connect chat WebSocket:', err)
-      // If connection fails immediately, proceed with mentions API
       if (!websocketHistoryReceived && filter && filter.length > 0) {
         logger.api('WebSocket connection failed - proceeding with mentions API fetch')
         setWebsocketHistoryReceived(true)
@@ -2750,20 +2857,18 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           channel
         }
 
-        // Check if message matches any filter terms (whole-word: whitespace or start/end of string)
-        const lowerText = mention.text.toLowerCase()
-        const lowerNick = mention.nick.toLowerCase()
+        // When no filter terms, show all; otherwise only if message matches a term (whole-word)
         const matchingTerms: string[] = []
-        
-        filter.forEach(term => {
-          if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) {
-            matchingTerms.push(term)
-          }
-        })
-
-        // Only add if it matches at least one filter term
-        if (matchingTerms.length > 0) {
-          mention.matchedTerms = matchingTerms
+        if (filter && filter.length > 0) {
+          filter.forEach(term => {
+            if (filterTermMatchesAsWord(mention.text, term)) {
+              matchingTerms.push(term)
+            }
+          })
+        }
+        const shouldAdd = filter && filter.length > 0 ? matchingTerms.length > 0 : true
+        if (shouldAdd) {
+          mention.matchedTerms = filter && filter.length > 0 ? matchingTerms : []
           
           // Prepend to mentions (newest first)
           setMentions(prev => {
@@ -2802,16 +2907,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             channel
           }
 
-          // Check if message matches any filter terms (whole-word)
           const matchingTerms: string[] = []
-          filter.forEach(term => {
-            if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) {
-              matchingTerms.push(term)
-            }
-          })
-
-          if (matchingTerms.length > 0) {
-            mention.matchedTerms = matchingTerms
+          if (filter && filter.length > 0) {
+            filter.forEach(term => {
+              if (filterTermMatchesAsWord(mention.text, term)) {
+                matchingTerms.push(term)
+              }
+            })
+          }
+          const shouldAdd = filter && filter.length > 0 ? matchingTerms.length > 0 : true
+          if (shouldAdd) {
+            mention.matchedTerms = filter && filter.length > 0 ? matchingTerms : []
             filteredMentions.push(mention)
           }
         })
@@ -2933,11 +3039,15 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         kickEmotes: Array.isArray(msg.emotes) ? msg.emotes : undefined
       }
       const matchingTerms: string[] = []
-      filter.forEach(term => {
-        if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) matchingTerms.push(term)
-      })
-      if (matchingTerms.length === 0) return
-      mention.matchedTerms = matchingTerms
+      if (filter && filter.length > 0) {
+        filter.forEach(term => {
+          if (filterTermMatchesAsWord(mention.text, term)) matchingTerms.push(term)
+        })
+        if (matchingTerms.length === 0) return
+        mention.matchedTerms = matchingTerms
+      } else {
+        mention.matchedTerms = []
+      }
       setMentions(prev => {
         const exists = prev.some(m => m.id === mention.id)
         if (exists) return prev
@@ -2989,6 +3099,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     const newCache = new Map<string, LinkCard>()
     
     mentions.forEach((mention) => {
+      // When filter terms are set, only show mentions that matched at least one term
+      if (filter && filter.length > 0 && (!mention.matchedTerms || mention.matchedTerms.length === 0)) {
+        return
+      }
+
       // Filter out NSFW if toggle is off
       if (!showNSFW && containsNSFW(mention.text)) {
         return // Skip this mention entirely
@@ -3005,7 +3120,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
 
       // Filter out banned users
-      if (isBannedUser(mention.nick, bannedUsers)) {
+      if (isBannedUser(mention.nick, mention.platform ?? 'dgg', bannedUsers)) {
         return
       }
 
@@ -3069,7 +3184,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const uniqueId = `${mention.id}-${urlIndex}-${urlHash}-${url.slice(-20)}`
           
           // Check if user is trusted
-          const isTrusted = isTrustedUser(mention.nick, trustedUsers)
+          const isTrusted = isTrustedUser(mention.nick, mention.platform ?? 'dgg', trustedUsers)
           
           // Check if we have a cached card with the same data
           const cachedCard = cardCacheRef.current.get(uniqueId)
@@ -3123,7 +3238,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         // If no URLs and showNonLinks is enabled, create a card for the message
         // Use mention.id (date-nick) for stable ID
         const uniqueId = `${mention.id}-no-link`
-        const isTrusted = isTrustedUser(mention.nick, trustedUsers)
+        const isTrusted = isTrustedUser(mention.nick, mention.platform ?? 'dgg', trustedUsers)
         
         const cardData = {
           id: uniqueId,
@@ -3164,7 +3279,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     cardCacheRef.current = newCache
     
     return cards
-  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, trustedUsers, mutedUsers])
+  }, [mentions, filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, trustedUsers, mutedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -3364,9 +3479,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     setHasMore(true)
     setHighlightedCardId(null)
     
+    // Refetch Kick history when Kick is enabled so refresh includes latest Kick messages
+    if (settings.channels?.kick?.enabled) {
+      const slug = (settings.channels?.kick?.channelSlug || '').trim()
+      if (slug) {
+        window.ipcRenderer.invoke('kick-chat-refetch-history', { slugs: [slug] }).catch(() => {})
+      }
+    }
+    
     logger.api(`State reset, calling fetchMentions with filter="${filter}", offset=0`)
     fetchMentions(filter, 0, false, dggEnabled)
-  }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId])
+  }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId, settings])
 
   // Helper function to navigate in overview modal
   const navigateOverviewModal = useCallback((direction: 'next' | 'prev') => {
@@ -3592,16 +3715,77 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 helpText="Messages containing these terms will be filtered out"
               />
 
-              {/* Banned users */}
-              <ListManager
-                title="Banned Users"
-                items={tempSettings.bannedUsers}
-                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedUsers: items })}
-                placeholder="Enter username"
-                helpText="Messages from these users will be filtered out"
-              />
+              {/* Banned users (platform-specific: platform:nick) */}
+              <div>
+                <label className="label">
+                  <span className="label-text font-semibold">Banned Users</span>
+                </label>
+                <p className="text-xs text-base-content/70 mb-2">Messages from these users will be filtered out. Bans are per platform (d.gg vs Kick).</p>
+                <div className="flex gap-2 mb-2 flex-wrap">
+                  <select
+                    className="select select-bordered select-sm w-24"
+                    id="banned-user-platform"
+                    defaultValue="dgg"
+                  >
+                    <option value="dgg">d.gg</option>
+                    <option value="kick">Kick</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm flex-1 min-w-[120px]"
+                    placeholder="Username"
+                    id="banned-user-nick"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        const nick = (e.target as HTMLInputElement).value.trim()
+                        const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                        if (nick) {
+                          const entry = formatPlatformUser(platform, nick)
+                          const current = tempSettings.bannedUsers || []
+                          if (!current.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+                            setTempSettings({ ...tempSettings, bannedUsers: [...current, entry] })
+                            ;(e.target as HTMLInputElement).value = ''
+                          }
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      const nick = (document.getElementById('banned-user-nick') as HTMLInputElement)?.value?.trim()
+                      const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                      if (nick) {
+                        const entry = formatPlatformUser(platform, nick)
+                        const current = tempSettings.bannedUsers || []
+                        if (!current.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+                          setTempSettings({ ...tempSettings, bannedUsers: [...current, entry] })
+                          ;(document.getElementById('banned-user-nick') as HTMLInputElement).value = ''
+                        }
+                      }
+                    }}
+                  >
+                    Add
+                  </button>
+                </div>
+                {(tempSettings.bannedUsers?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {(tempSettings.bannedUsers || []).map((entry, index) => {
+                      const p = parsePlatformUser(entry)
+                      return p ? (
+                        <div key={index} className="badge badge-secondary badge-lg gap-2">
+                          <span>{p.nick} ({p.platform})</span>
+                          <button type="button" className="btn btn-xs btn-circle btn-ghost" onClick={() => setTempSettings({ ...tempSettings, bannedUsers: (tempSettings.bannedUsers || []).filter((_, i) => i !== index) })}>×</button>
+                        </div>
+                      ) : null
+                    })}
+                  </div>
+                )}
+              </div>
 
-              {/* Trusted users */}
+              {/* Trusted users (platform-specific: platform:nick) */}
               <div>
                 <label className="label">
                   <span className="label-text font-semibold flex items-center gap-2">
@@ -3609,13 +3793,65 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     <img src={bennyLovePng} alt="" className="w-12 h-12 object-contain" />
                   </span>
                 </label>
-                <ListManager
-                  title=""
-                  items={tempSettings.trustedUsers}
-                  onItemsChange={(items) => setTempSettings({ ...tempSettings, trustedUsers: items })}
-                  placeholder="Enter username"
-                  helpText="Cards from these users will have a golden outline"
-                />
+                <p className="text-xs text-base-content/70 mb-2">Cards from these users will have a golden outline. Trust is per platform (d.gg vs Kick).</p>
+                <div className="flex gap-2 mb-2 flex-wrap">
+                  <select className="select select-bordered select-sm w-24" id="trusted-user-platform" defaultValue="dgg">
+                    <option value="dgg">d.gg</option>
+                    <option value="kick">Kick</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm flex-1 min-w-[120px]"
+                    placeholder="Username"
+                    id="trusted-user-nick"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        const nick = (e.target as HTMLInputElement).value.trim()
+                        const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                        if (nick) {
+                          const entry = formatPlatformUser(platform, nick)
+                          const current = tempSettings.trustedUsers || []
+                          if (!current.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+                            setTempSettings({ ...tempSettings, trustedUsers: [...current, entry] })
+                            ;(e.target as HTMLInputElement).value = ''
+                          }
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      const nick = (document.getElementById('trusted-user-nick') as HTMLInputElement)?.value?.trim()
+                      const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                      if (nick) {
+                        const entry = formatPlatformUser(platform, nick)
+                        const current = tempSettings.trustedUsers || []
+                        if (!current.some(e => parsePlatformUser(e)?.platform === platform && parsePlatformUser(e)?.nick.toLowerCase() === nick.toLowerCase())) {
+                          setTempSettings({ ...tempSettings, trustedUsers: [...current, entry] })
+                          ;(document.getElementById('trusted-user-nick') as HTMLInputElement).value = ''
+                        }
+                      }
+                    }}
+                  >
+                    Add
+                  </button>
+                </div>
+                {(tempSettings.trustedUsers?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {(tempSettings.trustedUsers || []).map((entry, index) => {
+                      const p = parsePlatformUser(entry)
+                      return p ? (
+                        <div key={index} className="badge badge-secondary badge-lg gap-2">
+                          <span>{p.nick} ({p.platform})</span>
+                          <button type="button" className="btn btn-xs btn-circle btn-ghost" onClick={() => setTempSettings({ ...tempSettings, trustedUsers: (tempSettings.trustedUsers || []).filter((_, i) => i !== index) })}>×</button>
+                        </div>
+                      ) : null
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Muted users */}
@@ -3794,6 +4030,34 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     ))}
                   </div>
                   <span className="label-text-alt">Light tint = colored border/background by platform; subtle = muted; none = no color.</span>
+                </div>
+                <div className="form-control gap-1 mt-4">
+                  <span className="label-text">Date/time in footer</span>
+                  <div className="flex flex-wrap gap-4">
+                    {(['timestamp', 'datetimestamp', 'none'] as const).map((mode) => (
+                      <label key={mode} className="label cursor-pointer gap-2">
+                        <input
+                          type="radio"
+                          name="footer-timestamp-display"
+                          className="radio radio-primary radio-sm"
+                          checked={(tempSettings.footerDisplay?.timestampDisplay ?? 'datetimestamp') === mode}
+                          onChange={() => setTempSettings({
+                            ...tempSettings,
+                            footerDisplay: {
+                              ...tempSettings.footerDisplay,
+                              showPlatformLabel: tempSettings.footerDisplay?.showPlatformLabel !== false,
+                              platformColorStyle: tempSettings.footerDisplay?.platformColorStyle ?? 'tint',
+                              timestampDisplay: mode,
+                            },
+                          })}
+                        />
+                        <span className="label-text">
+                          {mode === 'timestamp' ? 'Time only' : mode === 'datetimestamp' ? 'Date + time' : 'None'}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <span className="label-text-alt">Show time only (e.g. 6:39 PM), date + time, or hide the timestamp in the card footer.</span>
                 </div>
               </div>
             </div>
@@ -4234,9 +4498,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     {highlightedCard.nick}
                   </a>
                 </div>
-                <div className="text-xs text-base-content/50">
-                  {new Date(highlightedCard.date).toLocaleString()}
-                </div>
+                {footerDisplay?.timestampDisplay !== 'none' && (
+                  <div className="text-xs text-base-content/50">
+                    {footerDisplay?.timestampDisplay === 'timestamp'
+                      ? new Date(highlightedCard.date).toLocaleTimeString()
+                      : new Date(highlightedCard.date).toLocaleString()}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -4403,25 +4671,25 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Username
             </button>
-            {!isBannedUser(contextMenu.card.nick, bannedUsers) && (
+            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', bannedUsers) && (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleBanUser(contextMenu.card!.nick)}
+                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Ban User
               </button>
             )}
-            {!isTrustedUser(contextMenu.card.nick, trustedUsers) ? (
+            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', trustedUsers) ? (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleTrustUser(contextMenu.card!.nick)}
+                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Trust User
               </button>
             ) : (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleUntrustUser(contextMenu.card!.nick)}
+                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Untrust User
               </button>
@@ -4744,10 +5012,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       {expandedCard.url}
                     </a>
                   </div>
-                  {expandedCard.date && (
+                  {expandedCard.date && footerDisplay?.timestampDisplay !== 'none' && (
                     <div>
                       <div className="text-xs text-base-content/50 mb-1">Time</div>
-                      <div className="text-sm">{new Date(expandedCard.date).toLocaleString()}</div>
+                      <div className="text-sm">
+                        {footerDisplay?.timestampDisplay === 'timestamp'
+                          ? new Date(expandedCard.date).toLocaleTimeString()
+                          : new Date(expandedCard.date).toLocaleString()}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -4908,25 +5180,25 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Username
             </button>
-            {!isBannedUser(contextMenu.card.nick, bannedUsers) && (
+            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', bannedUsers) && (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleBanUser(contextMenu.card!.nick)}
+                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Ban User
               </button>
             )}
-            {!isTrustedUser(contextMenu.card.nick, trustedUsers) ? (
+            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', trustedUsers) ? (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleTrustUser(contextMenu.card!.nick)}
+                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Trust User
               </button>
             ) : (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleUntrustUser(contextMenu.card!.nick)}
+                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
               >
                 Untrust User
               </button>

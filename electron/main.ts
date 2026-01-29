@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
@@ -233,6 +233,68 @@ function createApplicationMenu() {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'Open Log Directory',
+          click: () => {
+            try {
+              const logsDir = fileLogger.getLogsDirectoryPath()
+              shell.openPath(logsDir).then((err) => {
+                if (err) shell.openExternal('file:///' + logsDir.replace(/\\/g, '/'))
+              })
+            } catch (e) {
+              console.error('[Main] Open log directory failed:', e)
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Wipe Cache',
+          click: async () => {
+            const w = BrowserWindow.getFocusedWindow()
+            const { response } = await dialog.showMessageBox(w ?? undefined, {
+              type: 'warning',
+              title: 'Wipe Cache',
+              message: 'Clear all app caches?',
+              detail: 'This clears mention cache and browser cache. The app may reload. Continue?',
+              buttons: ['Cancel', 'Wipe Cache'],
+              defaultId: 0,
+              cancelId: 0
+            })
+            if (response !== 1) return
+            try {
+              mentionCache.clearAll()
+              const ses = win?.webContents?.session
+              if (ses) {
+                await ses.clearStorageData({ storages: ['cache'] })
+                await ses.clearCache()
+              }
+              if (w && !w.isDestroyed()) w.reload()
+            } catch (e) {
+              console.error('[Main] Wipe cache failed:', e)
+            }
+          }
+        },
+        {
+          label: 'Reset All User Settings',
+          click: async () => {
+            const w = BrowserWindow.getFocusedWindow()
+            const { response } = await dialog.showMessageBox(w ?? undefined, {
+              type: 'warning',
+              title: 'Reset All User Settings',
+              message: 'Reset all user settings to defaults?',
+              detail: 'This will clear saved settings (theme, keybinds, filters, etc.) and reload the app. This cannot be undone.',
+              buttons: ['Cancel', 'Reset Settings'],
+              defaultId: 0,
+              cancelId: 0
+            })
+            if (response !== 1) return
+            const target = w ?? win
+            if (target && !target.isDestroyed()) {
+              target.webContents.send('settings-reset-request')
+            }
+          }
+        },
+        { type: 'separator' },
         { role: 'quit', label: 'Quit' }
       ]
     },
@@ -942,19 +1004,17 @@ ipcMain.handle('window-is-maximized', () => {
   return w ? w.isMaximized() : false
 })
 
-ipcMain.handle('menu-popup', (_event, payload: { menuLabel: string; clientX: number; clientY: number }) => {
+ipcMain.handle('menu-popup', (_event, payload: { menuLabel: string }) => {
   const w = BrowserWindow.getFocusedWindow()
-  if (!w) return
-  const { menuLabel, clientX, clientY } = payload || {}
-  const bounds = w.getBounds()
-  const screenX = Math.round(bounds.x + (typeof clientX === 'number' ? clientX : 0))
-  const screenY = Math.round(bounds.y + (typeof clientY === 'number' ? clientY : 0))
+  if (!w || w.isDestroyed()) return
+  const { menuLabel } = payload || {}
   const appMenu = Menu.getApplicationMenu()
   if (!appMenu) return
   const label = typeof menuLabel === 'string' ? menuLabel.trim() : ''
   const item = appMenu.items.find((i) => i.label && i.label.toLowerCase() === label.toLowerCase())
   if (item && item.submenu) {
-    ;(item.submenu as Electron.Menu).popup({ window: w, x: screenX, y: screenY })
+    // Omit x,y so the menu opens at the current cursor position (where the user just clicked)
+    ;(item.submenu as Electron.Menu).popup({ window: w })
   }
 })
 
@@ -1120,13 +1180,13 @@ ipcMain.handle('get-cache-stats', async () => {
 // Note: username parameter exists but won't be used for now
 ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searchAfter?: number, size: number = 150) => {
   try {
-    // Join filter terms with | separator
-    const textParam = filterTerms.join('|')
-    
-    // Build URL with parameters
+    const terms = Array.isArray(filterTerms) ? filterTerms : []
+    const textParam = terms.map((t) => String(t).trim()).filter(Boolean).join('|')
+
+    // Build URL: channel=Destinygg always; text= only when we have filter terms (empty = channel history)
     const url = new URL('https://api-v2.rustlesearch.dev/anon/search')
-    url.searchParams.set('text', textParam)
     url.searchParams.set('channel', 'Destinygg')
+    if (textParam) url.searchParams.set('text', textParam)
     if (searchAfter) {
       url.searchParams.set('search_after', searchAfter.toString()) // API uses underscore, not camelCase
     }
@@ -1136,7 +1196,7 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
     // url.searchParams.set('start_date', oneYearAgo.toISOString().split('T')[0])
     // url.searchParams.set('end_date', today.toISOString().split('T')[0])
     
-    console.log(`[Main Process] Fetching rustlesearch for terms: ${filterTerms.join(', ')}`)
+    console.log(`[Main Process] Fetching rustlesearch for terms: ${terms.length ? terms.join(', ') : '(channel only)'}`)
     console.log(`  - URL: ${url.toString()}`)
     console.log(`  - SearchAfter: ${searchAfter || 'none'}, Size: ${size}`)
     
@@ -1196,7 +1256,7 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
         text: msg.text || '',
         nick: msg.username || '',
         flairs: '', // rustlesearch doesn't provide flairs
-        matchedTerms: filterTerms // All terms matched since we searched for them
+        matchedTerms: terms // All terms matched since we searched for them (empty when channel-only)
       }
     })
     
@@ -1235,7 +1295,7 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
     }
   } catch (error) {
     console.error('[Main Process] Error fetching rustlesearch:', error)
-    console.error(`  - Filter terms: ${filterTerms.join(', ')}`)
+    console.error(`  - Filter terms: ${(filterTerms || []).join(', ') || '(channel only)'}`)
     if (error instanceof Error) {
       console.error(`  - Error message: ${error.message}`)
       console.error(`  - Error stack: ${error.stack}`)

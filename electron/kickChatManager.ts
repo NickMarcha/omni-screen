@@ -740,6 +740,8 @@ export class KickChatManager extends EventEmitter {
           this.slugToInfo.set(slug, info)
           this.chatroomToSlug.set(info.chatroomId, slug)
         }
+        // Clear seen set for this chatroom so refetched history is re-emitted to the renderer
+        if (info.chatroomId) this.seenIdsByChatroom.delete(info.chatroomId)
         await this.fetchHistoryForSlug(slug, info.chatroomId)
       } catch (e) {
         fileLogger.writeWsDiscrepancy('kick', 'history_refetch_failed', { slug, error: e instanceof Error ? e.message : String(e) })
