@@ -12,7 +12,7 @@ import { KickChatManager } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
 import * as destinyEmbedView from './destinyEmbedView'
-import { getYouTubeLiveOrLatest } from './youtubeLiveOrLatest'
+import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeLiveOrLatest'
 import { checkUrlIsLive } from './urlIsLive'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -269,6 +269,13 @@ function createApplicationMenu() {
             } catch (e) {
               console.error('[Main] Open log directory failed:', e)
             }
+          }
+        },
+        {
+          label: 'Copy config',
+          click: () => {
+            const w = BrowserWindow.getFocusedWindow() ?? win
+            if (w && !w.isDestroyed()) w.webContents.send('config-copy-request')
           }
         },
         { type: 'separator' },
@@ -2222,18 +2229,22 @@ ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
 })
 
 // YouTube: resolve channel to live stream or latest video (no API key; scrape + RSS)
-ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, options?: { streamerNickname?: string }) => {
-  const inputPreview = (channelIdOrUrl || '').slice(0, 60)
+// useDggFallback: when true (default), if scrape fails or video not in DGG list, substitute DGG's current YT video (for + Link add). When false (pinned streamer poll), never substitute so each channel resolves to its own stream.
+ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, options?: { streamerNickname?: string; useDggFallback?: boolean }) => {
+  const raw = (channelIdOrUrl || '').trim()
+  const channelIdOrUrlNormalized = normalizeYouTubeChannelInput(raw)
+  const inputPreview = (channelIdOrUrlNormalized || raw).slice(0, 60)
   const streamerNickname = options?.streamerNickname
+  const useDggFallback = options?.useDggFallback !== false
   try {
-    const result = await getYouTubeLiveOrLatest(channelIdOrUrl)
+    const result = await getYouTubeLiveOrLatest(channelIdOrUrlNormalized)
     if ('error' in result) {
       fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, error: result.error })
       return result
     }
     let isLive = result.isLive
     let videoId = result.videoId
-    if (!isLive || !videoId || !currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId))) {
+    if (useDggFallback && (!isLive || !videoId || !currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId)))) {
       const dggVideoId = getDggYouTubeVideoIdForStreamer(streamerNickname)
       if (dggVideoId) {
         videoId = dggVideoId
@@ -2945,6 +2956,11 @@ console.debug = (...args: any[]) => {
 // IPC handler for renderer process to send logs
 ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any[] = []) => {
   fileLogger.writeLog(level, 'renderer', message, args)
+})
+
+// Copy config to clipboard (renderer sends JSON string from localStorage)
+ipcMain.handle('copy-config-to-clipboard', (_event, payload: string) => {
+  clipboard.writeText(payload)
 })
 
 // Global error handlers: log to files only (no console)

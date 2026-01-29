@@ -25,6 +25,30 @@ function App() {
     }
   }, [])
 
+  // File → Copy config: gather localStorage and copy to clipboard
+  useEffect(() => {
+    const handler = () => {
+      try {
+        const config: Record<string, string> = {}
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && key.startsWith('omni-screen')) {
+            const value = localStorage.getItem(key)
+            if (value != null) config[key] = value
+          }
+        }
+        const json = JSON.stringify(config, null, 2)
+        window.ipcRenderer?.invoke('copy-config-to-clipboard', json)
+      } catch (e) {
+        console.error('[App] Copy config failed:', e)
+      }
+    }
+    window.ipcRenderer?.on('config-copy-request', handler)
+    return () => {
+      window.ipcRenderer?.off('config-copy-request', handler)
+    }
+  }, [])
+
   const handleNavigate = (page: 'link-scroller' | 'omni-screen') => {
     setCurrentPage(page)
   }

@@ -771,11 +771,12 @@ export default function CombinedChat({
                 >
                   {m.source === 'dgg'
                     ? 'DGG'
-                    : m.source === 'kick'
-                      ? `K:${m.slug}`
-                      : m.source === 'youtube'
-                        ? `Y:${m.videoId}`
-                        : `T:${m.channel}`}
+                    : (embedDisplayNameByKey[colorKey]?.trim() ||
+                        (m.source === 'kick'
+                          ? `K:${m.slug}`
+                          : m.source === 'youtube'
+                            ? `Y:${m.videoId}`
+                            : `T:${m.channel}`))}
                 </span>
               ) : null}
               <span className="font-semibold mr-2" style={{ color: accent }}>

@@ -1,7 +1,9 @@
 /**
  * Check if a given embed URL points to a currently live stream (YouTube video, Kick channel, Twitch channel).
- * Used so "+ Link" only accepts live content.
+ * Used so "+ Link" only accepts live content (Kick/Twitch). YouTube uses the same isVideoLive as the resolver.
  */
+
+import { isVideoLive as isYouTubeVideoLive } from './youtubeLiveOrLatest'
 
 function isLikelyYouTubeId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{8,20}$/.test(id)
@@ -44,18 +46,6 @@ async function fetchText(url: string): Promise<string> {
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.text()
-}
-
-/** Check if a YouTube video ID is currently live (watch page has isLive or LIVE indicator). */
-async function isYouTubeVideoLive(videoId: string): Promise<boolean> {
-  const url = `https://www.youtube.com/watch?v=${videoId}`
-  const html = await fetchText(url)
-  // ytInitialPlayerResponse often contains "isLive": true
-  if (/\b"isLive"\s*:\s*true\b/.test(html)) return true
-  // Alternative: playabilityStatus.status === "OK" with LIVE badge (video_available_playback)
-  if (/\b"status"\s*:\s*"LIVE"\b/.test(html)) return true
-  if (/\b"liveBroadcastDetails"\b/.test(html) && /"isLive"\s*:\s*true/.test(html)) return true
-  return false
 }
 
 /** Check if a Kick channel slug is currently live (channel API returns livestream). */

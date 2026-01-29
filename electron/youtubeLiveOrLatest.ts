@@ -4,8 +4,9 @@
  * 2) Else use channel RSS feed for latest published video.
  */
 
-const WATCHING_MARKER = '{"text":" watching"}'
-const WATCH_URL_PREFIX = '{"url":"/watch?v='
+import fs from 'fs'
+import path from 'path'
+import { fileLogger } from './fileLogger'
 
 function extractChannelIdFromUrl(input: string): string | null {
   const s = input.trim()
@@ -89,47 +90,116 @@ function isBareChannelSlug(input: string): boolean {
   return /^[\w-]+$/i.test(s)
 }
 
-/** Scrape channel ID from any YouTube channel page HTML (ytInitialData, meta, canonical, or RSS link). */
+/** Write channel page HTML to logs dir for debugging when resolution fails. Returns the file path. */
+function writeDebugHtml(fetchedUrl: string, html: string): string | null {
+  try {
+    const logsDir = fileLogger.getLogsDirectoryPath()
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const slug = fetchedUrl.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9@_-]/g, '_').slice(0, 60)
+    const filename = `youtube-debug-${timestamp}-${slug}.html`
+    const filePath = path.join(logsDir, filename)
+    fs.writeFileSync(filePath, html, 'utf8')
+    return filePath
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extract channel ID from the channel page HTML.
+ * Prefer the RSS link in the source (feeds/videos.xml?channel_id=UC...) — that's the channel's own RSS.
+ */
 function scrapeChannelIdFromPage(html: string): string | null {
+  // First: RSS feed URL in page source (what you get when you "extract the rss from the source")
+  const rssMatch = html.match(/feeds\/videos\.xml\?channel_id=(UC[\w-]{22})/)
+  if (rssMatch) return rssMatch[1]
+  const channelIdParam = html.match(/channel_id=(UC[\w-]{22})/)
+  if (channelIdParam) return channelIdParam[1]
+  // Fallbacks: ytInitialData / canonical / etc.
   const m = html.match(/"channelId"\s*:\s*"(UC[\w-]{22})"/)
   if (m) return m[1]
   const m2 = html.match(/"(?:externalId|browseId)"\s*:\s*"(UC[\w-]{22})"/)
   if (m2) return m2[1]
   const m3 = html.match(/youtube\.com\/channel\/(UC[\w-]{22})/)
   if (m3) return m3[1]
-  // RSS feed URL in page source: feeds/videos.xml?channel_id=UC...
-  const m4 = html.match(/channel_id=(UC[\w-]{22})/)
-  if (m4) return m4[1]
-  const m5 = html.match(/feeds\/videos\.xml\?channel_id=(UC[\w-]{22})/)
-  if (m5) return m5[1]
   return null
 }
 
-async function resolveChannelId(input: string): Promise<string | null> {
+/** Result of channel resolution: success with ID, or failure with a reason you can inspect. */
+type ResolveResult = { channelId: string } | { error: string; detail?: string }
+
+async function resolveChannelId(input: string): Promise<ResolveResult> {
   const fromUrl = extractChannelIdFromUrl(input)
-  if (fromUrl) return fromUrl
+  if (fromUrl) return { channelId: fromUrl }
   if (isHandleUrl(input)) {
     const url = buildHandleUrl(input)
-    const { text: html, url: finalUrl } = await fetchTextWithUrl(url)
-    const fromRedirect = extractChannelIdFromChannelUrl(finalUrl)
-    if (fromRedirect) return fromRedirect
-    return scrapeChannelIdFromPage(html)
+    try {
+      const { text: html } = await fetchTextWithUrl(url)
+      const channelId = scrapeChannelIdFromPage(html)
+      if (channelId) return { channelId }
+      const debugPath = writeDebugHtml(url, html)
+      return {
+        error: 'Could not find channel ID in page source (no feeds/videos.xml?channel_id=... in HTML).',
+        detail: debugPath ? `Fetched: ${url}. HTML saved to: ${debugPath}` : `Fetched: ${url}`,
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { error: `Fetch failed: ${msg}`, detail: `URL: ${url}` }
+    }
   }
   if (isYouTubeChannelPageUrl(input)) {
     const url = buildChannelPageUrl(input)
+    const pathSegment = (() => {
+      try {
+        const u = new URL(url)
+        return (u.pathname || '').replace(/^\/+/, '').split('/')[0] ?? ''
+      } catch {
+        return ''
+      }
+    })()
+    if (pathSegment && !pathSegment.startsWith('@')) {
+      const handleUrl = buildHandleUrl(pathSegment)
+      try {
+        const { text: html } = await fetchTextWithUrl(handleUrl)
+        const channelId = scrapeChannelIdFromPage(html)
+        if (channelId) return { channelId }
+        const debugPath = writeDebugHtml(handleUrl, html)
+        return {
+          error: 'Could not find channel ID in page source (no feeds/videos.xml?channel_id=... in HTML).',
+          detail: debugPath ? `Fetched: ${handleUrl}. HTML saved to: ${debugPath}` : `Fetched: ${handleUrl}`,
+        }
+      } catch {
+        // fall through to custom URL
+      }
+    }
     const { text: html, url: finalUrl } = await fetchTextWithUrl(url)
     const fromRedirect = extractChannelIdFromChannelUrl(finalUrl)
-    if (fromRedirect) return fromRedirect
-    return scrapeChannelIdFromPage(html)
+    if (fromRedirect) return { channelId: fromRedirect }
+    const scraped = scrapeChannelIdFromPage(html)
+    if (scraped) return { channelId: scraped }
+    const debugPath = writeDebugHtml(url, html)
+    return {
+      error: 'Could not find channel ID on page.',
+      detail: debugPath ? `Final URL: ${finalUrl}. HTML saved to: ${debugPath}` : `Final URL: ${finalUrl}`,
+    }
   }
   if (isBareChannelSlug(input)) {
-    const url = buildChannelPageUrl(input)
-    const { text: html, url: finalUrl } = await fetchTextWithUrl(url)
-    const fromRedirect = extractChannelIdFromChannelUrl(finalUrl)
-    if (fromRedirect) return fromRedirect
-    return scrapeChannelIdFromPage(html)
+    const handleUrl = buildHandleUrl(input)
+    try {
+      const { text: html } = await fetchTextWithUrl(handleUrl)
+      const channelId = scrapeChannelIdFromPage(html)
+      if (channelId) return { channelId }
+      const debugPath = writeDebugHtml(handleUrl, html)
+      return {
+        error: 'Could not find channel ID in page source (no feeds/videos.xml?channel_id=... in HTML).',
+        detail: debugPath ? `Fetched: ${handleUrl}. HTML saved to: ${debugPath}` : `Fetched: ${handleUrl}`,
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { error: `Fetch failed: ${msg}`, detail: `URL: ${handleUrl}` }
+    }
   }
-  return null
+  return { error: 'Unrecognized input format.' }
 }
 
 const FETCH_HEADERS = {
@@ -164,32 +234,43 @@ function extractChannelIdFromChannelUrl(finalUrl: string): string | null {
   }
 }
 
-function extractVideoIdFromWatching(html: string): string | null {
-  const idx = html.indexOf(WATCHING_MARKER)
-  if (idx === -1) return null
-  const slice = html.slice(idx)
-  const prefixIdx = slice.indexOf(WATCH_URL_PREFIX)
-  if (prefixIdx === -1) return null
-  const start = prefixIdx + WATCH_URL_PREFIX.length
-  const id = slice.slice(start, start + 11)
-  if (/^[\w-]{11}$/.test(id)) return id
-  return null
-}
-
-/** Check if a video's watch page indicates it is live (isLive in embedded JSON). */
-async function isVideoLive(videoId: string): Promise<boolean> {
+/** Check if a video's watch page indicates it is live (isLive in embedded JSON). Exported for url-is-live. */
+export async function isVideoLive(videoId: string): Promise<boolean> {
   const url = `https://www.youtube.com/watch?v=${videoId}`
   const html = await fetchText(url)
   if (/\b"isLive"\s*:\s*true\b/.test(html)) return true
+  if (/\b"isLive"\s*:\s*true/.test(html)) return true
   if (/\b"isLiveContent"\s*:\s*true\b/.test(html)) return true
   if (/\b"status"\s*:\s*"LIVE"\b/.test(html)) return true
+  if (/\b"status"\s*:\s*"LIVE"/.test(html)) return true
   if (/\b"liveBroadcastDetails"\b/.test(html) && /"isLive"\s*:\s*true/.test(html)) return true
   if (/"liveBroadcastDetails"\s*:\s*\{[^}]*"isLive"\s*:\s*true/.test(html)) return true
+  if (/liveBroadcastDetails[\s\S]{0,200}isLive[\s\S]{0,50}true/.test(html)) return true
   return false
 }
 
-async function getLatestFromRss(channelId: string): Promise<string | null> {
-  const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`
+/** Parse video IDs from RSS/Atom XML (shared by channel and playlist feeds). */
+function parseVideoIdsFromRssXml(xml: string, maxCount: number): string[] {
+  const ids: string[] = []
+  const ytRegex = /<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g
+  let m: RegExpExecArray | null
+  while ((m = ytRegex.exec(xml)) !== null && ids.length < maxCount) {
+    if (!ids.includes(m[1])) ids.push(m[1])
+  }
+  if (ids.length > 0) return ids
+  const idMatch = xml.match(/<id>\s*yt:video:([a-zA-Z0-9_-]{11})\s*<\/id>/)
+  if (idMatch) return [idMatch[1]]
+  const linkMatch = xml.match(/watch\?v=([a-zA-Z0-9_-]{11})/)
+  return linkMatch ? [linkMatch[1]] : []
+}
+
+/** Parse channel ID from YouTube RSS/Atom feed XML (feed or first entry). */
+function parseChannelIdFromRssXml(xml: string): string | null {
+  const m = xml.match(/<yt:channelId>(UC[\w-]{22})<\/yt:channelId>/)
+  return m ? m[1] : null
+}
+
+async function fetchRssXml(url: string): Promise<string> {
   const res = await fetch(url, {
     headers: {
       ...FETCH_HEADERS,
@@ -198,16 +279,19 @@ async function getLatestFromRss(channelId: string): Promise<string | null> {
     },
   })
   if (!res.ok) throw new Error(`RSS HTTP ${res.status}`)
-  const xml = await res.text()
-  // Primary: <yt:videoId>VIDEO_ID</yt:videoId> (first entry = latest)
-  const ytMatch = xml.match(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/)
-  if (ytMatch) return ytMatch[1]
-  // <id>yt:video:VIDEO_ID</id>
-  const idMatch = xml.match(/<id>\s*yt:video:([a-zA-Z0-9_-]{11})\s*<\/id>/)
-  if (idMatch) return idMatch[1]
-  // Any watch?v=VIDEO_ID (RSS or HTML error page)
-  const linkMatch = xml.match(/watch\?v=([a-zA-Z0-9_-]{11})/)
-  return linkMatch ? linkMatch[1] : null
+  return res.text()
+}
+
+/**
+ * Build the Live streams RSS URL from a channel ID (no HTML scraping).
+ * YouTube convention: channel UC + 22 chars → live playlist UULV + same 22 chars.
+ * So channel_id=UC554eY5jNUfDq3yDOJYirOQ → playlist_id=UULV554eY5jNUfDq3yDOJYirOQ.
+ * This matches the URL you get from the channel's "Live" tab / general RSS context.
+ */
+function buildLivePlaylistRssUrl(channelId: string): string {
+  const suffix = channelId.startsWith('UC') && channelId.length === 24 ? channelId.slice(2) : channelId
+  const playlistId = `UULV${suffix}`
+  return `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`
 }
 
 export interface YouTubeLiveOrLatestResult {
@@ -220,47 +304,82 @@ export interface YouTubeLiveOrLatestError {
   error: string
 }
 
+/**
+ * Normalize input so we never resolve the wrong channel.
+ * - youtube.com/destiny (custom URL) can point to a different channel than @destiny (handle).
+ * - Rewrite any single-segment path to @handle so we always get the handle's channel.
+ * No shortcuts: we do not fall back to the custom URL.
+ * Exported so main process can normalize at IPC boundary.
+ */
+export function normalizeYouTubeChannelInput(input: string): string {
+  const s = (input || '').trim()
+  if (!s) return s
+  if (/^UC[\w-]{22}$/i.test(s)) return s
+  try {
+    const u = new URL(s.startsWith('http') ? s : `https://www.youtube.com/${s}`)
+    const host = (u.hostname || '').toLowerCase()
+    if (host !== 'www.youtube.com' && host !== 'youtube.com') return s
+    const path = (u.pathname || '').replace(/^\/+/, '')
+    const segment = path.split('/')[0] ?? ''
+    if (!segment || segment.startsWith('@') || segment === 'channel' || segment === 'watch' || segment === 'embed' || segment === 'shorts' || segment === 'live') return s
+    return `https://www.youtube.com/@${segment}`
+  } catch {
+    if (/^[\w-]+$/i.test(s) && !s.includes('@')) return `https://www.youtube.com/@${s}`
+    return s
+  }
+}
+
+/**
+ * Exact flow (your manual steps, no shortcuts):
+ * 1. Normalize input so /destiny -> @destiny (we never use custom URL for resolution).
+ * 2. Resolve to channel ID by fetching the channel page and getting channel_id from the page.
+ * 3. Build general RSS URL from that: feeds/videos.xml?channel_id=UC...
+ * 4. Build live playlist URL from that: feeds/videos.xml?playlist_id=UULV... (extracted from above).
+ * 5. Fetch that live playlist RSS; first entry = current live stream.
+ */
 export async function getYouTubeLiveOrLatest(
   channelIdOrUrl: string
 ): Promise<YouTubeLiveOrLatestResult | YouTubeLiveOrLatestError> {
-  const channelId = await resolveChannelId(channelIdOrUrl)
-  if (!channelId) {
-    return {
-      error:
-        'Invalid channel. Use channel ID (UC...), youtube.com/channel/UC..., youtube.com/@Handle, or full channel URL (e.g. youtube.com/destiny).',
-    }
+  const normalized = normalizeYouTubeChannelInput(channelIdOrUrl)
+  const resolved = await resolveChannelId(normalized)
+  if ('error' in resolved) {
+    const msg = resolved.detail
+      ? `${resolved.error} (${resolved.detail})`
+      : resolved.error
+    return { error: msg }
   }
+  const channelId = resolved.channelId
 
   try {
-    const channelUrl = `https://www.youtube.com/channel/${channelId}`
-    const html = await fetchText(channelUrl)
-    let videoId = extractVideoIdFromWatching(html)
-    if (videoId) {
-      return {
-        isLive: true,
-        iframeUrl: `https://www.youtube.com/embed/${videoId}`,
-        videoId,
-      }
+    // Step 2: Build Live RSS URL from channel ID (same as "extracted from above url": UULV + rest of channel ID)
+    const liveRssUrl = buildLivePlaylistRssUrl(channelId)
+
+    // Step 3: Fetch that Live RSS; if entries exist, first is the current live stream
+    const xml = await fetchRssXml(liveRssUrl)
+    const videoIds = parseVideoIdsFromRssXml(xml, 1)
+    if (videoIds.length === 0) {
+      return { error: 'Channel is not currently live' }
     }
-    let latestId: string | null = null
-    try {
-      latestId = await getLatestFromRss(channelId)
-    } catch {
-      // RSS may be blocked (403) or fail; fall back to channel page scrape
+
+    // Step 4: Only return this video if the feed is for the channel we requested.
+    const feedChannelId = parseChannelIdFromRssXml(xml)
+    if (feedChannelId != null && feedChannelId !== channelId) {
+      return { error: 'Channel is not currently live' }
     }
-    if (!latestId) {
-      const fromPage = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/)
-      if (fromPage) latestId = fromPage[1]
+
+    const videoId = videoIds[0]
+    // Step 5: The Live feed can include the most recent past stream when the channel is offline.
+    // Verify the video is actually live; if not, do not return it.
+    const actuallyLive = await isVideoLive(videoId)
+    if (!actuallyLive) {
+      return { error: 'Channel is not currently live' }
     }
-    if (latestId) {
-      const live = await isVideoLive(latestId)
-      return {
-        isLive: live,
-        iframeUrl: `https://www.youtube.com/embed/${latestId}`,
-        videoId: latestId,
-      }
+
+    return {
+      isLive: true,
+      iframeUrl: `https://www.youtube.com/embed/${videoId}`,
+      videoId,
     }
-    return { error: `No live stream or videos found for this channel (resolved id: ${channelId})` }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     return { error: msg }
