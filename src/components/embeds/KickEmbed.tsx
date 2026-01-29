@@ -153,7 +153,7 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
                 backgroundColor: 'rgb(var(--b2))',
               } as any
             }
-            allowpopups="true"
+            allowpopups={true}
             partition="persist:main"
             ref={(el: any) => {
               if (!el) return

@@ -1527,8 +1527,8 @@ function KeybindsTab({ keybinds, onKeybindsChange }: { keybinds: Keybind[]; onKe
   )
 }
 
-// Theme Tab Component
-function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThemeChange: (theme: ThemeSettings) => void }) {
+// Theme Tab Component (reserved for settings UI; exported so TS noUnusedLocals doesn't flag it)
+export function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThemeChange: (theme: ThemeSettings) => void }) {
   const lightThemes: LightTheme[] = [
     'light', 'cupcake', 'bumblebee', 'emerald', 'corporate', 'retro', 'cyberpunk', 
     'valentine', 'garden', 'lofi', 'pastel', 'fantasy', 'wireframe', 'cmyk', 

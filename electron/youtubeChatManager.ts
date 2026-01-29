@@ -332,8 +332,14 @@ export class YouTubeChatManager extends EventEmitter {
       }
     }
 
-    const continuation = ytInitial ? findFirstContinuation(ytInitial) : null
+    let continuation = ytInitial ? findFirstContinuation(ytInitial) : null
     if (typeof continuation === 'string') state.continuation = continuation
+
+    // Fallback: regex for continuation in HTML (live_chat page may not embed ytInitialData in initial response)
+    if (!state.continuation) {
+      const contMatch = /"(?:continuation|token)"\s*:\s*"([^"]{20,})"/.exec(html)
+      if (contMatch) state.continuation = contMatch[1]
+    }
 
     // Fallbacks if ytcfg parsing failed
     if (!state.apiKey) {
@@ -345,6 +351,61 @@ export class YouTubeChatManager extends EventEmitter {
       if (m) {
         const ctx = safeJsonParse(m[1])
         if (ctx) state.context = ctx
+      }
+    }
+
+    // Fallback: fetch watch page; it often has live chat continuation in ytInitialData
+    if (!state.continuation || !state.context) {
+      const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
+      fileLogger.writeWsDiscrepancy('youtube', 'init_fallback_watch', { videoId, url: watchUrl })
+      try {
+        const watchHtml = await fetchText(watchUrl, {
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        })
+        if (!state.apiKey || !state.context) {
+          const watchCfgIdx = watchHtml.indexOf(ytcfgMarker)
+          if (watchCfgIdx >= 0) {
+            const parsed = extractBalancedJsonObject(watchHtml, watchCfgIdx + ytcfgMarker.length)
+            if (parsed?.json) {
+              const cfg = parsed.json
+              if (!state.apiKey && typeof cfg?.INNERTUBE_API_KEY === 'string') state.apiKey = cfg.INNERTUBE_API_KEY
+              if (!state.context && cfg?.INNERTUBE_CONTEXT && typeof cfg.INNERTUBE_CONTEXT === 'object')
+                state.context = cfg.INNERTUBE_CONTEXT
+            }
+          }
+          if (!state.context) {
+            const ctxM = /"INNERTUBE_CONTEXT":(\{[\s\S]*?\})\s*,\s*"INNERTUBE_CONTEXT_CLIENT_NAME"/.exec(watchHtml)
+            if (ctxM) {
+              const ctx = safeJsonParse(ctxM[1])
+              if (ctx) state.context = ctx
+            }
+          }
+        }
+        if (!state.continuation) {
+          for (const m of ['var ytInitialData = ', 'window["ytInitialData"] = ', 'ytInitialData = ']) {
+            const idx = watchHtml.indexOf(m)
+            if (idx < 0) continue
+            const parsed = extractBalancedJsonObject(watchHtml, idx + m.length)
+            if (parsed) {
+              continuation = findFirstContinuation(parsed.json)
+              if (typeof continuation === 'string') {
+                state.continuation = continuation
+                break
+              }
+            }
+          }
+          if (!state.continuation) {
+            const contMatch = /"(?:continuation|token)"\s*:\s*"([^"]{20,})"/.exec(watchHtml)
+            if (contMatch) state.continuation = contMatch[1]
+          }
+        }
+      } catch (fallbackErr) {
+        fileLogger.writeWsDiscrepancy('youtube', 'init_fallback_watch_error', {
+          videoId,
+          error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+        })
       }
     }
 

@@ -40,6 +40,15 @@ interface BannedEmbed {
   reason?: string
 }
 
+/** Pinned streamer: up to 3 platforms (YouTube channel, Kick, Twitch); optional nickname. */
+export interface PinnedStreamer {
+  id: string
+  nickname: string
+  youtubeChannelId?: string
+  kickSlug?: string
+  twitchLogin?: string
+}
+
 function makeEmbedKey(platform: string, id: string) {
   const p = String(platform || '').toLowerCase()
   const rawId = String(id || '')
@@ -82,6 +91,27 @@ function parseEmbedKey(key: string): { platform: string; id: string } | null {
   const id = k.slice(idx + 1)
   if (!platform || !id) return null
   return { platform, id }
+}
+
+/** Find pinned streamer that owns this embed key (match by kick slug, twitch login, or YouTube videoId→streamer map). */
+function findStreamerForKey(
+  key: string,
+  streamers: PinnedStreamer[],
+  youtubeVideoToStreamerId?: Map<string, string>
+): PinnedStreamer | null {
+  const parsed = parseEmbedKey(key)
+  if (!parsed) return null
+  const { platform, id } = parsed
+  const idLower = id.toLowerCase()
+  for (const s of streamers) {
+    if (platform === 'kick' && s.kickSlug && s.kickSlug.toLowerCase() === idLower) return s
+    if (platform === 'twitch' && s.twitchLogin && s.twitchLogin.toLowerCase() === idLower) return s
+    if (platform === 'youtube' && youtubeVideoToStreamerId) {
+      const streamerId = youtubeVideoToStreamerId.get(key) ?? youtubeVideoToStreamerId.get(`youtube:${id}`) ?? youtubeVideoToStreamerId.get(`youtube:${idLower}`)
+      if (streamerId === s.id) return s
+    }
+  }
+  return null
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -282,13 +312,40 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const destinyEmbedSlotRef = useRef<HTMLDivElement | null>(null)
   const destinyEmbedResizeObserverRef = useRef<ResizeObserver | null>(null)
   const destinyEmbedResizeHandlerRef = useRef<(() => void) | null>(null)
-  const destinyEmbedResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const destinyEmbedResizeTimeoutRef = useRef<number | null>(null)
   const destinyEmbedRafRef = useRef<number | null>(null)
-  const destinyEmbedLayoutTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const destinyEmbedLayoutTimeoutsRef = useRef<number[]>([])
   const manualEmbedsRef = useRef<Map<string, LiveEmbed>>(manualEmbeds)
   manualEmbedsRef.current = manualEmbeds
   const [ytChannelLoading, setYtChannelLoading] = useState(false)
   const [ytChannelError, setYtChannelError] = useState<string | null>(null)
+  const [pasteLinkError, setPasteLinkError] = useState<string | null>(null)
+
+  // ---- Pinned streamers (group embeds by streamer; nickname; poll options in modal) ----
+  const [pinnedStreamers, setPinnedStreamers] = useState<PinnedStreamer[]>(() => {
+    try {
+      const raw = localStorage.getItem('omni-screen:pinned-streamers')
+      if (!raw) return []
+      const arr = JSON.parse(raw)
+      if (!Array.isArray(arr)) return []
+      return arr.filter(
+        (x: any) => x && typeof x.id === 'string' && typeof x.nickname === 'string'
+      ) as PinnedStreamer[]
+    } catch {
+      return []
+    }
+  })
+  const [pinnedStreamersModalOpen, setPinnedStreamersModalOpen] = useState(false)
+  const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
+  const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string>>(() => new Map())
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:pinned-streamers', JSON.stringify(pinnedStreamers))
+    } catch {
+      // ignore
+    }
+  }, [pinnedStreamers])
 
   const dggUtilitiesEnabled = (() => {
     try {
@@ -446,8 +503,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   // Persist selection
   // Merge DGG websocket embeds with manual (pasted link) embeds for the dock and grid
   const combinedAvailableEmbeds = useMemo(() => {
-    const m = new Map<string, LiveEmbed>(availableEmbeds)
-    manualEmbeds.forEach((v, k) => m.set(k, v))
+    const m = new Map<string, LiveEmbed>(manualEmbeds)
+    availableEmbeds.forEach((v, k) => m.set(k, v))
     return m
   }, [availableEmbeds, manualEmbeds])
 
@@ -740,6 +797,143 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: uniq }).catch(() => {})
   }, [chatMode, chatPaneOpen, selectedEmbedChatKeys])
 
+  // Poll pinned streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping.
+  useEffect(() => {
+    const withYt = pinnedStreamers.filter((s) => s.youtubeChannelId?.trim())
+    if (withYt.length === 0) {
+      setYoutubeVideoToStreamerId((prev) => (prev.size === 0 ? prev : new Map()))
+      return
+    }
+    const baseMs = 60_000
+    const intervalMs = Math.max(15_000, Math.round(baseMs * youTubePollMultiplier))
+    let cancelled = false
+    const run = async () => {
+      const nextMap = new Map<string, string>()
+      const newEmbeds = new Map<string, LiveEmbed>()
+      for (const s of withYt) {
+        if (cancelled) return
+        const channelId = (s.youtubeChannelId || '').trim()
+        if (!channelId) continue
+        try {
+          const r = await window.ipcRenderer.invoke('youtube-live-or-latest', channelId, { streamerNickname: s.nickname }) as { isLive?: boolean; videoId?: string; error?: string }
+          if (cancelled) return
+          if (r?.isLive && r?.videoId) {
+            const key = makeEmbedKey('youtube', r.videoId)
+            nextMap.set(key, s.id)
+            newEmbeds.set(key, {
+              platform: 'youtube',
+              id: r.videoId,
+              mediaItem: { metadata: { displayName: s.nickname || r.videoId, title: s.nickname || r.videoId } },
+            })
+          }
+        } catch {
+          // ignore per-streamer errors
+        }
+      }
+      if (cancelled) return
+      setYoutubeVideoToStreamerId((prev) => {
+        if (prev.size === nextMap.size && [...prev.entries()].every(([k, v]) => nextMap.get(k) === v)) return prev
+        return nextMap
+      })
+      if (newEmbeds.size > 0) {
+        setManualEmbeds((prev) => {
+          const next = new Map(prev)
+          newEmbeds.forEach((embed, key) => next.set(key, embed))
+          return next
+        })
+      }
+    }
+    run()
+    const t = setInterval(run, intervalMs)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [pinnedStreamers, youTubePollMultiplier])
+
+  // Poll pinned streamers' Kick channels: add live embeds when live (grouped by findStreamerForKey).
+  useEffect(() => {
+    const withKick = pinnedStreamers.filter((s) => s.kickSlug?.trim())
+    if (withKick.length === 0) return
+    const intervalMs = 60_000
+    let cancelled = false
+    const run = async () => {
+      const newEmbeds = new Map<string, LiveEmbed>()
+      for (const s of withKick) {
+        if (cancelled) return
+        const slug = (s.kickSlug || '').trim().toLowerCase()
+        if (!slug) continue
+        try {
+          const r = await window.ipcRenderer.invoke('url-is-live', `https://kick.com/${slug}`) as { live?: boolean; error?: string }
+          if (cancelled) return
+          if (r?.live) {
+            const key = makeEmbedKey('kick', slug)
+            newEmbeds.set(key, {
+              platform: 'kick',
+              id: slug,
+              mediaItem: { metadata: { displayName: s.nickname || slug, title: s.nickname || slug } },
+            })
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (cancelled || newEmbeds.size === 0) return
+      setManualEmbeds((prev) => {
+        const next = new Map(prev)
+        newEmbeds.forEach((embed, key) => next.set(key, embed))
+        return next
+      })
+    }
+    run()
+    const t = setInterval(run, intervalMs)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [pinnedStreamers])
+
+  // Poll pinned streamers' Twitch channels: add live embeds when live (grouped by findStreamerForKey).
+  useEffect(() => {
+    const withTwitch = pinnedStreamers.filter((s) => s.twitchLogin?.trim())
+    if (withTwitch.length === 0) return
+    const intervalMs = 60_000
+    let cancelled = false
+    const run = async () => {
+      const newEmbeds = new Map<string, LiveEmbed>()
+      for (const s of withTwitch) {
+        if (cancelled) return
+        const login = (s.twitchLogin || '').trim().toLowerCase()
+        if (!login) continue
+        try {
+          const r = await window.ipcRenderer.invoke('url-is-live', `https://twitch.tv/${login}`) as { live?: boolean; error?: string }
+          if (cancelled) return
+          if (r?.live) {
+            const key = makeEmbedKey('twitch', login)
+            newEmbeds.set(key, {
+              platform: 'twitch',
+              id: login,
+              mediaItem: { metadata: { displayName: s.nickname || login, title: s.nickname || login } },
+            })
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (cancelled || newEmbeds.size === 0) return
+      setManualEmbeds((prev) => {
+        const next = new Map(prev)
+        newEmbeds.forEach((embed, key) => next.set(key, embed))
+        return next
+      })
+    }
+    run()
+    const t = setInterval(run, intervalMs)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [pinnedStreamers])
 
   const selectedEmbeds = useMemo(() => {
     const arr: { key: string; embed: LiveEmbed }[] = []
@@ -752,10 +946,24 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return arr
   }, [combinedAvailableEmbeds, selectedEmbedKeys])
 
-  const addEmbedFromUrl = useCallback((url: string) => {
+  const addEmbedFromUrl = useCallback(async (url: string): Promise<boolean> => {
+    setPasteLinkError(null)
     const parsed = parseEmbedUrl(url)
-    if (!parsed) return false
+    if (!parsed) {
+      setPasteLinkError('Unsupported URL. Use YouTube, Kick, or Twitch link.')
+      return false
+    }
     const key = makeEmbedKey(parsed.platform, parsed.id)
+    try {
+      const result = await window.ipcRenderer.invoke('url-is-live', url) as { live?: boolean; error?: string }
+      if (!result.live) {
+        setPasteLinkError(result.error || 'Not live. Only live streams can be added.')
+        return false
+      }
+    } catch {
+      setPasteLinkError('Could not check if stream is live.')
+      return false
+    }
     setManualEmbeds((prev) => {
       const next = new Map(prev)
       if (next.has(key)) return prev
@@ -787,41 +995,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return next
     })
   }, [])
-
-  const toggleEmbedMaster = useCallback(
-    (key: string) => {
-      const videoOn = selectedEmbedKeys.has(key)
-      const chatOn = selectedEmbedChatKeys.has(key)
-
-      if (videoOn || chatOn) {
-        // Master OFF: disable both
-        setSelectedEmbedKeys((prev) => {
-          const next = new Set(prev)
-          next.delete(key)
-          return next
-        })
-        setSelectedEmbedChatKeys((prev) => {
-          const next = new Set(prev)
-          next.delete(key)
-          return next
-        })
-        return
-      }
-
-      // Master ON: enable video only (chat stays off until explicitly enabled)
-      setSelectedEmbedKeys((prev) => {
-        const next = new Set(prev)
-        next.add(key)
-        return next
-      })
-      setSelectedEmbedChatKeys((prev) => {
-        const next = new Set(prev)
-        next.delete(key)
-        return next
-      })
-    },
-    [selectedEmbedChatKeys, selectedEmbedKeys],
-  )
 
   const embedDisplayNameByKey = useMemo(() => {
     const out: Record<string, string> = {}
@@ -953,26 +1126,65 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     [autoplay, bannedEmbeds, cinemaMode, mute, toggleEmbed],
   )
 
-  const embedsList = useMemo(() => {
-    const items = Array.from(combinedAvailableEmbeds.entries()).map(([key, embed]) => ({ key, embed }))
-    items.sort((a, b) => {
-      // Sort by number of embeds (count) first; fall back to viewers if count is missing.
-      const av = Number(a.embed.count ?? a.embed.mediaItem?.metadata?.viewers ?? 0) || 0
-      const bv = Number(b.embed.count ?? b.embed.mediaItem?.metadata?.viewers ?? 0) || 0
+  /** Dock item: either a grouped streamer (multiple keys) or a single embed. */
+  type DockItem =
+    | { type: 'group'; streamer: PinnedStreamer; keys: string[] }
+    | { type: 'single'; key: string }
+
+  const dockItems = useMemo((): DockItem[] => {
+    const allKeys = Array.from(combinedAvailableEmbeds.keys())
+    const streamerToKeys = new Map<string, string[]>()
+    for (const s of pinnedStreamers) {
+      streamerToKeys.set(s.id, [])
+    }
+    const ungrouped: string[] = []
+    for (const key of allKeys) {
+      const streamer = findStreamerForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      if (streamer) {
+        const arr = streamerToKeys.get(streamer.id)!
+        arr.push(key)
+      } else {
+        ungrouped.push(key)
+      }
+    }
+    const result: DockItem[] = []
+    for (const s of pinnedStreamers) {
+      const keys = streamerToKeys.get(s.id)!.filter((k) => combinedAvailableEmbeds.has(k))
+      if (keys.length > 0) result.push({ type: 'group', streamer: s, keys })
+    }
+    for (const key of ungrouped) {
+      result.push({ type: 'single', key })
+    }
+    // Sort: groups first (by nickname), then singles (by viewers)
+    result.sort((a, b) => {
+      if (a.type === 'group' && b.type === 'single') return -1
+      if (a.type === 'single' && b.type === 'group') return 1
+      if (a.type === 'group' && b.type === 'group') return (a.streamer.nickname || '').localeCompare(b.streamer.nickname || '')
+      const aKey = a.type === 'single' ? a.key : a.keys[0]
+      const bKey = b.type === 'single' ? b.key : b.keys[0]
+      const aEmb = combinedAvailableEmbeds.get(aKey)
+      const bEmb = combinedAvailableEmbeds.get(bKey)
+      const av = Number(aEmb?.count ?? aEmb?.mediaItem?.metadata?.viewers ?? 0) || 0
+      const bv = Number(bEmb?.count ?? bEmb?.mediaItem?.metadata?.viewers ?? 0) || 0
       return bv - av
     })
-    return items
-  }, [combinedAvailableEmbeds])
+    return result
+  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId])
 
   const dockRef = useRef<HTMLDivElement | null>(null)
   const dockButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const dockCloseTimerRef = useRef<number | null>(null)
-  const [dockHoverKey, setDockHoverKey] = useState<string | null>(null)
+  /** Dock item id: "group:"+streamer.id or "single:"+key */
+  const [dockHoverItemId, setDockHoverItemId] = useState<string | null>(null)
   const [dockHoverPinned, setDockHoverPinned] = useState(false)
   const [dockHoverRect, setDockHoverRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
 
-  const updateDockHoverRect = useCallback((key: string) => {
-    const el = dockButtonRefs.current.get(key)
+  const getDockItemId = useCallback((item: DockItem) => {
+    return item.type === 'group' ? `group:${item.streamer.id}` : `single:${item.key}`
+  }, [])
+
+  const updateDockHoverRect = useCallback((itemId: string) => {
+    const el = dockButtonRefs.current.get(itemId)
     if (!el) return
     const r = el.getBoundingClientRect()
     setDockHoverRect({ left: r.left, top: r.top, width: r.width, height: r.height })
@@ -986,10 +1198,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [])
 
   const openDockHover = useCallback(
-    (key: string) => {
+    (itemId: string) => {
       clearDockCloseTimer()
-      setDockHoverKey(key)
-      updateDockHoverRect(key)
+      setDockHoverItemId(itemId)
+      updateDockHoverRect(itemId)
     },
     [clearDockCloseTimer, updateDockHoverRect],
   )
@@ -998,42 +1210,62 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     clearDockCloseTimer()
     dockCloseTimerRef.current = window.setTimeout(() => {
       if (dockHoverPinned) return
-      setDockHoverKey(null)
+      setDockHoverItemId(null)
     }, 120)
   }, [clearDockCloseTimer, dockHoverPinned])
 
-  // Keep the hover popup positioned correctly as the dock scrolls.
   useEffect(() => {
-    if (!dockHoverKey) return
+    if (!dockHoverItemId) return
     const el = dockRef.current
-    const onUpdate = () => updateDockHoverRect(dockHoverKey)
+    const onUpdate = () => updateDockHoverRect(dockHoverItemId)
     window.addEventListener('resize', onUpdate)
     el?.addEventListener('scroll', onUpdate, { passive: true } as any)
     return () => {
       window.removeEventListener('resize', onUpdate)
       el?.removeEventListener('scroll', onUpdate as any)
     }
-  }, [dockHoverKey, updateDockHoverRect])
+  }, [dockHoverItemId, updateDockHoverRect])
 
   useLayoutEffect(() => {
-    if (!dockHoverKey) return
-    updateDockHoverRect(dockHoverKey)
-  }, [dockHoverKey, embedsList.length, updateDockHoverRect])
+    if (!dockHoverItemId) return
+    updateDockHoverRect(dockHoverItemId)
+  }, [dockHoverItemId, dockItems.length, updateDockHoverRect])
 
   const onDockWheel = useCallback((e: React.WheelEvent) => {
     const el = dockRef.current
     if (!el) return
-    // If user scrolls vertically over the dock, convert to horizontal scrolling.
     if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       el.scrollLeft += e.deltaY
       e.preventDefault()
     }
   }, [])
 
-  const hoveredDockItem = useMemo(() => {
-    if (!dockHoverKey) return null
-    return embedsList.find((x) => x.key === dockHoverKey) || null
-  }, [dockHoverKey, embedsList])
+  const hoveredDockItem = useMemo((): DockItem | null => {
+    if (!dockHoverItemId) return null
+    return dockItems.find((it) => getDockItemId(it) === dockHoverItemId) ?? null
+  }, [dockHoverItemId, dockItems, getDockItemId])
+
+  const toggleDockItemMaster = useCallback(
+    (item: DockItem) => {
+      const keys = item.type === 'group' ? item.keys : [item.key]
+      const anyOn = keys.some((k) => selectedEmbedKeys.has(k) || selectedEmbedChatKeys.has(k))
+      if (anyOn) {
+        setSelectedEmbedKeys((prev) => {
+          const next = new Set(prev)
+          keys.forEach((k) => next.delete(k))
+          return next
+        })
+        setSelectedEmbedChatKeys((prev) => {
+          const next = new Set(prev)
+          keys.forEach((k) => next.delete(k))
+          return next
+        })
+      } else {
+        setSelectedEmbedKeys((prev) => new Set(prev).add(keys[0]))
+      }
+    },
+    [selectedEmbedKeys, selectedEmbedChatKeys],
+  )
 
   const gridCols = useMemo(() => {
     return getBestGridColumns({
@@ -1346,37 +1578,35 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 style={{ overscrollBehaviorX: 'contain' as any }}
               >
                 <div className="flex items-center gap-1">
-                  {embedsList.length === 0 ? (
+                  {dockItems.length === 0 ? (
                     <div className="text-xs text-base-content/60 px-2 py-1">No embeds. Paste a link or wait for DGG list.</div>
                   ) : (
-                    embedsList.map(({ key, embed }, idx) => {
-                      const banned = bannedEmbeds.get(key)
-                      const videoOn = selectedEmbedKeys.has(key)
-                      const chatOn = selectedEmbedChatKeys.has(key)
-
-                      const label = embed.id
-                      const platform = (embed.platform || '').toLowerCase()
-                      const title =
-                        embed.mediaItem?.metadata?.title ||
-                        embed.mediaItem?.metadata?.displayName ||
-                        `${embed.platform}/${embed.id}`
-                      const accent = omniColorForKey(key, { displayName: embed.mediaItem?.metadata?.displayName })
+                    dockItems.map((item, idx) => {
+                      const itemId = getDockItemId(item)
+                      const keys = item.type === 'group' ? item.keys : [item.key]
+                      const firstKey = keys[0]
+                      const firstEmbed = combinedAvailableEmbeds.get(firstKey)
+                      const anyBanned = keys.some((k) => bannedEmbeds.get(k))
+                      const videoOn = keys.some((k) => selectedEmbedKeys.has(k))
+                      const chatOn = keys.some((k) => selectedEmbedChatKeys.has(k))
+                      const label = item.type === 'group' ? (item.streamer.nickname || firstEmbed?.id || firstKey) : (firstEmbed?.id ?? firstKey)
+                      const accent = omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName })
                       const active = videoOn || chatOn
                       const activeText = textColorOn(accent)
 
                       return (
-                        <div key={key} className="flex items-center">
+                        <div key={itemId} className="flex items-center">
                           <button
                             type="button"
                             ref={(el) => {
                               const map = dockButtonRefs.current
-                              if (el) map.set(key, el)
-                              else map.delete(key)
+                              if (el) map.set(itemId, el)
+                              else map.delete(itemId)
                             }}
-                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${banned ? 'btn-disabled' : 'btn-outline'}`}
-                            title={`${platform}: ${title}`}
-                            onClick={() => toggleEmbedMaster(key)}
-                            onMouseEnter={() => openDockHover(key)}
+                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'}`}
+                            title={item.type === 'group' ? `${label} (${keys.length} platforms)` : `${(firstEmbed?.platform || '').toLowerCase()}: ${firstEmbed?.mediaItem?.metadata?.title || firstKey}`}
+                            onClick={() => toggleDockItemMaster(item)}
+                            onMouseEnter={() => openDockHover(itemId)}
                             onMouseLeave={scheduleCloseDockHover}
                             style={
                               active
@@ -1387,7 +1617,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             {label}
                           </button>
 
-                          {idx < embedsList.length - 1 ? <span className="px-1 text-base-content/40">|</span> : null}
+                          {idx < dockItems.length - 1 ? <span className="px-1 text-base-content/40">|</span> : null}
                         </div>
                       )
                     })
@@ -1406,15 +1636,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   <div className="flex flex-col gap-2">
                     <input
                       type="text"
-                      placeholder="Paste YouTube/Kick/Twitch link"
+                      placeholder="Paste YouTube/Kick/Twitch link (live only)"
                       className="input input-sm input-bordered w-full"
                       id="omni-paste-embed-url"
-                      onKeyDown={(e) => {
+                      onKeyDown={async (e) => {
                         if (e.key !== 'Enter') return
                         const el = document.getElementById('omni-paste-embed-url') as HTMLInputElement | null
                         const url = el?.value?.trim()
-                        if (url && addEmbedFromUrl(url)) {
-                          el.value = ''
+                        if (url && (await addEmbedFromUrl(url))) {
+                          if (el) el.value = ''
+                          setPasteLinkError(null)
                           ;(document.activeElement as HTMLElement)?.blur?.()
                         }
                       }}
@@ -1422,21 +1653,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <button
                       type="button"
                       className="btn btn-sm btn-primary"
-                      title="Add embed from pasted link"
-                      onClick={() => {
+                      title="Add embed from pasted link (live streams only)"
+                      onClick={async () => {
                         const el = document.getElementById('omni-paste-embed-url') as HTMLInputElement | null
                         const url = el?.value?.trim()
-                        if (url && addEmbedFromUrl(url)) el.value = ''
+                        if (url && (await addEmbedFromUrl(url)) && el) el.value = ''
                       }}
                     >
                       Add
                     </button>
+                    {pasteLinkError ? <div className="text-xs text-error">{pasteLinkError}</div> : null}
                   </div>
                   <div className="border-t border-base-300 pt-2 mt-1 flex flex-col gap-2">
-                    <div className="text-xs font-semibold text-base-content/70">YouTube channel (live or latest)</div>
+                    <div className="text-xs font-semibold text-base-content/70">YouTube channel (live only)</div>
                     <input
                       type="text"
-                      placeholder="Channel ID, youtube.com/channel/UC..., or @Handle"
+                      placeholder="Channel ID, full URL (e.g. youtube.com/destiny), or @Handle"
                       className="input input-sm input-bordered w-full"
                       id="omni-youtube-channel-input"
                       disabled={ytChannelLoading}
@@ -1449,12 +1681,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         setYtChannelLoading(true)
                         window.ipcRenderer
                           .invoke('youtube-live-or-latest', v)
-                          .then((r: { error?: string; videoId?: string }) => {
+                          .then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => {
                             if (r?.error) {
                               setYtChannelError(r.error)
                               return
                             }
-                            if (r?.videoId && addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) {
+                            if (!r?.isLive) {
+                              setYtChannelError('Channel is not live. Only live streams can be added.')
+                              return
+                            }
+                            if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`))) {
                               el!.value = ''
                               setYtChannelError(null)
                             }
@@ -1465,7 +1701,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   <button
                     type="button"
                     className="btn btn-sm btn-ghost btn-outline"
-                    title="Resolve channel to live stream or latest video, then add embed"
+                    title="Add embed only if channel is live"
                     disabled={ytChannelLoading}
                     onClick={() => {
                       const el = document.getElementById('omni-youtube-channel-input') as HTMLInputElement | null
@@ -1475,12 +1711,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       setYtChannelLoading(true)
                       window.ipcRenderer
                         .invoke('youtube-live-or-latest', v)
-                        .then((r: { error?: string; videoId?: string }) => {
+                        .then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => {
                           if (r?.error) {
                             setYtChannelError(r.error)
                             return
                           }
-                          if (r?.videoId && addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) {
+                          if (!r?.isLive) {
+                            setYtChannelError('Channel is not live. Only live streams can be added.')
+                            return
+                          }
+                          if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`))) {
                             el!.value = ''
                             setYtChannelError(null)
                           }
@@ -1488,9 +1728,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         .finally(() => setYtChannelLoading(false))
                     }}
                   >
-                    {ytChannelLoading ? '…' : 'Add live/latest'}
+                    {ytChannelLoading ? '…' : 'Add (live only)'}
                   </button>
                   {ytChannelError ? <div className="text-xs text-error">{ytChannelError}</div> : null}
+                    <div className="border-t border-base-300 pt-2 mt-1">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost btn-outline w-full"
+                        title="Manage pinned streamers (group embeds by streamer)"
+                        onClick={() => {
+                          setPinnedStreamersModalOpen(true)
+                          ;(document.activeElement as HTMLElement)?.blur?.()
+                        }}
+                      >
+                        Manage pinned streamers
+                      </button>
+                    </div>
                 </div>
               </div>
               </div>
@@ -1564,20 +1817,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           </div>
 
           {/* Dock hover popup (rendered outside scroll container so it won't be clipped) */}
-          {dockHoverKey && hoveredDockItem && dockHoverRect ? (() => {
-            const { key, embed } = hoveredDockItem
-            const banned = bannedEmbeds.get(key)
-            const videoOn = selectedEmbedKeys.has(key)
-            const chatOn = selectedEmbedChatKeys.has(key)
-            const platform = (embed.platform || '').toLowerCase()
-            const title =
-              embed.mediaItem?.metadata?.title ||
-              embed.mediaItem?.metadata?.displayName ||
-              `${embed.platform}/${embed.id}`
-            const accent = omniColorForKey(key, { displayName: embed.mediaItem?.metadata?.displayName })
-            const popupW = 240
+          {dockHoverItemId && hoveredDockItem && dockHoverRect ? (() => {
+            const popupW = 260
             const left = Math.max(8, Math.min(window.innerWidth - popupW - 8, dockHoverRect.left + dockHoverRect.width / 2 - popupW / 2))
             const top = Math.max(8, dockHoverRect.top - 8)
+            const isGroup = hoveredDockItem.type === 'group'
+            const keys = isGroup ? hoveredDockItem.keys : [hoveredDockItem.key]
+            const streamer = isGroup ? hoveredDockItem.streamer : null
+            const firstKey = keys[0]
+            const firstEmbed = combinedAvailableEmbeds.get(firstKey)
+            const accent = omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName })
             return (
               <div
                 className="fixed z-[200] p-3 shadow bg-base-100 rounded-box border border-base-300"
@@ -1588,48 +1837,109 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 }}
                 onMouseLeave={() => {
                   setDockHoverPinned(false)
-                  setDockHoverKey(null)
+                  setDockHoverItemId(null)
                 }}
               >
-                <div className="text-xs text-base-content/60 mb-2">
-                  <div className="font-semibold" style={{ color: accent }}>
-                    {platform}
-                  </div>
-                  <div className="truncate" title={title}>
-                    {title}
-                  </div>
-                  <div>
-                    {typeof embed.count === 'number' ? `${embed.count} embeds` : null}
-                    {typeof embed.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : null}
-                    {banned ? ` • banned` : null}
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <label className="flex items-center justify-between gap-2 text-sm">
-                    <span>Video</span>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
-                      checked={videoOn}
-                      disabled={Boolean(banned)}
-                      onChange={() => toggleEmbed(key)}
-                    />
-                  </label>
-                  <label className="flex items-center justify-between gap-2 text-sm">
-                    <span>Chat</span>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
-                      checked={chatOn}
-                      disabled={Boolean(banned)}
-                      onChange={() => toggleEmbedChat(key)}
-                    />
-                  </label>
-                  <div className="text-xs text-base-content/60">
-                    Hover to adjust toggles. Click the name to toggle (master).
-                  </div>
-                </div>
+                {isGroup && streamer ? (
+                  <>
+                    <div className="text-xs text-base-content/60 mb-2">
+                      <div className="font-semibold" style={{ color: accent }}>
+                        {streamer.nickname || 'Streamer'}
+                      </div>
+                      <div className="text-base-content/50">{keys.length} platform{keys.length !== 1 ? 's' : ''}</div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {keys.map((key) => {
+                        const embed = combinedAvailableEmbeds.get(key)
+                        const banned = bannedEmbeds.get(key)
+                        const videoOn = selectedEmbedKeys.has(key)
+                        const chatOn = selectedEmbedChatKeys.has(key)
+                        const platform = (embed?.platform || '').toLowerCase()
+                        const title = embed?.mediaItem?.metadata?.title || embed?.mediaItem?.metadata?.displayName || key
+                        return (
+                          <div key={key} className="border border-base-300 rounded p-2 flex flex-col gap-1">
+                            <div className="text-xs font-medium" style={{ color: omniColorForKey(key) }}>{platform}</div>
+                            <div className="truncate text-xs text-base-content/60" title={title}>{title}</div>
+                            <div className="text-xs text-base-content/50">
+                              {typeof embed?.count === 'number' ? `${embed.count} embeds` : '—'}
+                              {typeof embed?.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : ' • — viewers'}
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs">Video</span>
+                              <input
+                                type="checkbox"
+                                className="toggle toggle-sm"
+                                checked={videoOn}
+                                disabled={Boolean(banned)}
+                                onChange={() => toggleEmbed(key)}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs">Chat</span>
+                              <input
+                                type="checkbox"
+                                className="toggle toggle-sm"
+                                checked={chatOn}
+                                disabled={Boolean(banned)}
+                                onChange={() => toggleEmbedChat(key)}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                      <div className="text-xs text-base-content/50">Click dock button to toggle all.</div>
+                    </div>
+                  </>
+                ) : (
+                  (() => {
+                    const key = hoveredDockItem.type === 'single' ? hoveredDockItem.key : firstKey
+                    const embed = combinedAvailableEmbeds.get(key)!
+                    const banned = bannedEmbeds.get(key)
+                    const videoOn = selectedEmbedKeys.has(key)
+                    const chatOn = selectedEmbedChatKeys.has(key)
+                    const platform = (embed?.platform || '').toLowerCase()
+                    const title =
+                      embed?.mediaItem?.metadata?.title ||
+                      embed?.mediaItem?.metadata?.displayName ||
+                      `${embed?.platform}/${embed?.id}`
+                    return (
+                      <>
+                        <div className="text-xs text-base-content/60 mb-2">
+                          <div className="font-semibold" style={{ color: accent }}>{platform}</div>
+                          <div className="truncate" title={title}>{title}</div>
+                          <div>
+                            {typeof embed?.count === 'number' ? `${embed.count} embeds` : null}
+                            {typeof embed?.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : null}
+                            {banned ? ` • banned` : null}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <label className="flex items-center justify-between gap-2 text-sm">
+                            <span>Video</span>
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-sm"
+                              checked={videoOn}
+                              disabled={Boolean(banned)}
+                              onChange={() => toggleEmbed(key)}
+                            />
+                          </label>
+                          <label className="flex items-center justify-between gap-2 text-sm">
+                            <span>Chat</span>
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-sm"
+                              checked={chatOn}
+                              disabled={Boolean(banned)}
+                              onChange={() => toggleEmbedChat(key)}
+                            />
+                          </label>
+                          <div className="text-xs text-base-content/60">Hover to adjust. Click name to toggle (master).</div>
+                        </div>
+                      </>
+                    )
+                  })()
+                )}
               </div>
             )
           })() : null}
@@ -1881,6 +2191,216 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )}
       </div>
 
+      {/* Pinned streamers modal */}
+      {pinnedStreamersModalOpen && (
+        <div className="modal modal-open z-[100]">
+          <div className="modal-box max-w-lg max-h-[90vh] overflow-y-auto">
+            <h3 className="font-bold text-lg">Manage pinned streamers</h3>
+            <p className="text-sm text-base-content/60 mt-1">
+              Pinned streamers group embeds by person (one dock button per streamer). Each can link YouTube channel, Kick, and Twitch.
+            </p>
+
+            <div className="mt-4 flex flex-col gap-3">
+              {pinnedStreamers.map((s) => (
+                <div key={s.id} className="border border-base-300 rounded-lg p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium truncate">{s.nickname || 'Unnamed'}</span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost"
+                        onClick={() => setEditingStreamerId(editingStreamerId === s.id ? null : s.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost text-error"
+                        onClick={() => {
+                          setPinnedStreamers((prev) => prev.filter((x) => x.id !== s.id))
+                          if (editingStreamerId === s.id) setEditingStreamerId(null)
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-base-content/60 flex flex-wrap gap-x-3 gap-y-0">
+                    {s.youtubeChannelId ? <span>YT: {s.youtubeChannelId.slice(0, 12)}…</span> : null}
+                    {s.kickSlug ? <span>Kick: {s.kickSlug}</span> : null}
+                    {s.twitchLogin ? <span>Twitch: {s.twitchLogin}</span> : null}
+                    {!s.youtubeChannelId && !s.kickSlug && !s.twitchLogin ? <span>No platforms</span> : null}
+                  </div>
+                  {editingStreamerId === s.id && (
+                    <PinnedStreamerForm
+                      streamer={s}
+                      onSave={(next) => {
+                        setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? next : x)))
+                        setEditingStreamerId(null)
+                      }}
+                      onCancel={() => setEditingStreamerId(null)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {editingStreamerId === '__new__' ? (
+              <div className="border border-base-300 rounded-lg p-3 mt-3">
+                <div className="text-sm font-medium mb-2">New streamer</div>
+                <PinnedStreamerForm
+                  streamer={{
+                    id: '__new__',
+                    nickname: '',
+                    youtubeChannelId: undefined,
+                    kickSlug: undefined,
+                    twitchLogin: undefined,
+                  }}
+                  onSave={(next) => {
+                    setPinnedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
+                    setEditingStreamerId(null)
+                  }}
+                  onCancel={() => setEditingStreamerId(null)}
+                />
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost btn-outline mt-3"
+                onClick={() => setEditingStreamerId('__new__')}
+              >
+                + Add streamer
+              </button>
+            )}
+
+            <div className="border-t border-base-300 pt-4 mt-4">
+              <div className="text-sm font-semibold text-base-content/70 mb-2">Poll / refresh</div>
+              <label className="flex items-center justify-between gap-2 text-sm">
+                <span>YouTube poll ×</span>
+                <input
+                  type="number"
+                  step={0.25}
+                  className="input input-sm w-20"
+                  value={youTubePollMultiplier}
+                  min={0.25}
+                  max={5}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (Number.isFinite(v)) setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
+                  }}
+                />
+              </label>
+              <div className="text-xs text-base-content/50 mt-1">Live-detection multiplier for YouTube channels.</div>
+              <label className="flex items-center justify-between gap-2 text-sm mt-2">
+                <span>Kick poll</span>
+                <span className="text-base-content/50 text-xs">(coming soon)</span>
+              </label>
+              <label className="flex items-center justify-between gap-2 text-sm mt-1">
+                <span>Twitch poll</span>
+                <span className="text-base-content/50 text-xs">(coming soon)</span>
+              </label>
+            </div>
+
+            <div className="modal-action mt-4">
+              <button className="btn btn-primary" onClick={() => setPinnedStreamersModalOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => setPinnedStreamersModalOpen(false)} aria-hidden="true" />
+        </div>
+      )}
+
+    </div>
+  )
+}
+
+/** Inline form for add/edit pinned streamer (nickname + YT/Kick/Twitch). */
+function PinnedStreamerForm({
+  streamer,
+  onSave,
+  onCancel,
+}: {
+  streamer: PinnedStreamer
+  onSave: (next: PinnedStreamer) => void
+  onCancel: () => void
+}) {
+  const [nickname, setNickname] = useState(streamer.nickname)
+  const [youtubeChannelId, setYoutubeChannelId] = useState(streamer.youtubeChannelId ?? '')
+  const [kickSlug, setKickSlug] = useState(streamer.kickSlug ?? '')
+  const [twitchLogin, setTwitchLogin] = useState(streamer.twitchLogin ?? '')
+
+  useEffect(() => {
+    setNickname(streamer.nickname)
+    setYoutubeChannelId(streamer.youtubeChannelId ?? '')
+    setKickSlug(streamer.kickSlug ?? '')
+    setTwitchLogin(streamer.twitchLogin ?? '')
+  }, [streamer.id, streamer.nickname, streamer.youtubeChannelId, streamer.kickSlug, streamer.twitchLogin])
+
+  const handleSave = () => {
+    const nick = nickname.trim() || 'Unnamed'
+    const yt = youtubeChannelId.trim() || undefined
+    const kick = kickSlug.trim().toLowerCase() || undefined
+    const twitch = twitchLogin.trim().toLowerCase() || undefined
+    onSave({
+      ...streamer,
+      nickname: nick,
+      youtubeChannelId: yt || undefined,
+      kickSlug: kick,
+      twitchLogin: twitch,
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-2 mt-2 p-2 bg-base-200 rounded">
+      <label className="flex flex-col gap-0.5 text-xs">
+        <span>Nickname</span>
+        <input
+          type="text"
+          className="input input-sm input-bordered"
+          placeholder="e.g. Destiny"
+          value={nickname}
+          onChange={(e) => setNickname(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-0.5 text-xs">
+        <span>YouTube channel (full URL e.g. youtube.com/destiny, or @Handle)</span>
+        <input
+          type="text"
+          className="input input-sm input-bordered"
+          placeholder="Optional"
+          value={youtubeChannelId}
+          onChange={(e) => setYoutubeChannelId(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-0.5 text-xs">
+        <span>Kick slug</span>
+        <input
+          type="text"
+          className="input input-sm input-bordered"
+          placeholder="e.g. destiny (optional)"
+          value={kickSlug}
+          onChange={(e) => setKickSlug(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-0.5 text-xs">
+        <span>Twitch login</span>
+        <input
+          type="text"
+          className="input input-sm input-bordered"
+          placeholder="e.g. destiny (optional)"
+          value={twitchLogin}
+          onChange={(e) => setTwitchLogin(e.target.value)}
+        />
+      </label>
+      <div className="flex gap-2 mt-1">
+        <button type="button" className="btn btn-sm btn-primary" onClick={handleSave}>
+          Save
+        </button>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }

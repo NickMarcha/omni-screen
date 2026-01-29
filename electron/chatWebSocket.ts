@@ -55,6 +55,12 @@ export interface ChatMute {
   mute: any // Structure unknown, will be logged
 }
 
+/** UNMUTE indicates a user was unmuted (semantically an unban). Payload is same shape as ChatMessage. */
+export interface ChatUnmute {
+  type: 'UNMUTE'
+  unmute: ChatMessage
+}
+
 export interface ChatMe {
   type: 'ME'
   data: any // Structure unknown, will be logged
@@ -157,6 +163,7 @@ export type ChatWebSocketEvent =
   | ChatPin
   | ChatNames
   | ChatMute
+  | ChatUnmute
   | ChatMe
   | ChatPollStart
   | ChatVoteCast
@@ -478,6 +485,13 @@ export class ChatWebSocket extends EventEmitter {
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse MUTE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
                   }
+                } else if (msgStr.startsWith('UNMUTE ')) {
+                  try {
+                    const unmuteData = JSON.parse(msgStr.substring(7)) as ChatMessage
+                    this.emit('unmute', { type: 'UNMUTE', unmute: unmuteData } as ChatUnmute)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse UNMUTE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
                 } else if (msgStr.startsWith('ME ')) {
                   try {
                     const meData = msgStr.substring(3).trim()
@@ -696,6 +710,18 @@ export class ChatWebSocket extends EventEmitter {
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse MUTE:', e, 'Message:', message.substring(0, 100))
           // Continue processing - don't crash
+        }
+      } else if (message.startsWith('UNMUTE ')) {
+        // UNMUTE {...} — user was unmuted (semantically: unbanned from chat)
+        try {
+          const unmuteData = JSON.parse(message.substring(7)) as ChatMessage
+          this.emit('unmute', { type: 'UNMUTE', unmute: unmuteData } as ChatUnmute)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse UNMUTE:', e, 'Message:', message.substring(0, 100))
+          fileLogger.writeWsDiscrepancy('chat', 'unmute_parse_error', {
+            preview: message.substring(0, 2000),
+            error: e instanceof Error ? e.message : String(e),
+          })
         }
       } else if (message.startsWith('ME ')) {
         // ME null or ME {...}

@@ -13,6 +13,7 @@ import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
 import * as destinyEmbedView from './destinyEmbedView'
 import { getYouTubeLiveOrLatest } from './youtubeLiveOrLatest'
+import { checkUrlIsLive } from './urlIsLive'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +42,29 @@ let viewerWin: BrowserWindow | null = null
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
 let liveWebSocket: LiveWebSocket | null = null
+/** Current embed keys and display names from DGG live feed. Used to treat YouTube as live when it appears in DGG. */
+const currentDggEmbedKeys = new Set<string>()
+const currentDggEmbedByKey = new Map<string, { displayName?: string }>()
+function makeDggEmbedKey(platform: string, id: string): string {
+  const p = String(platform || '').toLowerCase()
+  const rawId = String(id || '')
+  const idNorm = p === 'youtube' ? rawId : rawId.toLowerCase()
+  return `${p}:${idNorm}`
+}
+function getDggYouTubeVideoIdForStreamer(streamerNickname?: string): string | null {
+  const ytKeys = [...currentDggEmbedKeys].filter((k) => k.startsWith('youtube:'))
+  if (ytKeys.length === 0) return null
+  if (ytKeys.length === 1) return ytKeys[0].slice('youtube:'.length)
+  const nick = (streamerNickname || '').trim().toLowerCase()
+  if (nick) {
+    for (const key of ytKeys) {
+      const meta = currentDggEmbedByKey.get(key)
+      const display = (meta?.displayName || '').trim().toLowerCase()
+      if (display && (display.includes(nick) || nick.includes(display))) return key.slice('youtube:'.length)
+    }
+  }
+  return ytKeys[0].slice('youtube:'.length)
+}
 let kickChatManager: KickChatManager | null = null
 let youTubeChatManager: YouTubeChatManager | null = null
 let twitchChatManager: TwitchChatManager | null = null
@@ -251,8 +275,9 @@ function createApplicationMenu() {
         {
           label: 'Wipe Cache',
           click: async () => {
-            const w = BrowserWindow.getFocusedWindow()
-            const { response } = await dialog.showMessageBox(w ?? undefined, {
+            const w = BrowserWindow.getFocusedWindow() ?? win
+            if (!w || w.isDestroyed()) return
+            const { response } = await dialog.showMessageBox(w, {
               type: 'warning',
               title: 'Wipe Cache',
               message: 'Clear all app caches?',
@@ -266,7 +291,7 @@ function createApplicationMenu() {
               mentionCache.clearAll()
               const ses = win?.webContents?.session
               if (ses) {
-                await ses.clearStorageData({ storages: ['cache'] })
+                await ses.clearStorageData({ storages: ['cachestorage'] })
                 await ses.clearCache()
               }
               if (w && !w.isDestroyed()) w.reload()
@@ -278,8 +303,9 @@ function createApplicationMenu() {
         {
           label: 'Reset All User Settings',
           click: async () => {
-            const w = BrowserWindow.getFocusedWindow()
-            const { response } = await dialog.showMessageBox(w ?? undefined, {
+            const w = BrowserWindow.getFocusedWindow() ?? win
+            if (!w || w.isDestroyed()) return
+            const { response } = await dialog.showMessageBox(w, {
               type: 'warning',
               title: 'Reset All User Settings',
               message: 'Reset all user settings to defaults?',
@@ -289,10 +315,8 @@ function createApplicationMenu() {
               cancelId: 0
             })
             if (response !== 1) return
-            const target = w ?? win
-            if (target && !target.isDestroyed()) {
-              target.webContents.send('settings-reset-request')
-            }
+            const target = w
+            if (!target.isDestroyed()) target.webContents.send('settings-reset-request')
           }
         },
         { type: 'separator' },
@@ -2198,11 +2222,42 @@ ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
 })
 
 // YouTube: resolve channel to live stream or latest video (no API key; scrape + RSS)
-ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string) => {
+ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, options?: { streamerNickname?: string }) => {
+  const inputPreview = (channelIdOrUrl || '').slice(0, 60)
+  const streamerNickname = options?.streamerNickname
   try {
-    return await getYouTubeLiveOrLatest(channelIdOrUrl)
+    const result = await getYouTubeLiveOrLatest(channelIdOrUrl)
+    if ('error' in result) {
+      fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, error: result.error })
+      return result
+    }
+    let isLive = result.isLive
+    let videoId = result.videoId
+    if (!isLive || !videoId || !currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId))) {
+      const dggVideoId = getDggYouTubeVideoIdForStreamer(streamerNickname)
+      if (dggVideoId) {
+        videoId = dggVideoId
+        isLive = true
+      } else if (videoId && currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId))) {
+        isLive = true
+      }
+    }
+    const out = { ...result, isLive, videoId }
+    fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, isLive: out.isLive, videoId: out.videoId })
+    return out
   } catch (e) {
-    return { error: e instanceof Error ? e.message : 'Unknown error' }
+    const err = e instanceof Error ? e.message : 'Unknown error'
+    fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, error: err })
+    return { error: err }
+  }
+})
+
+// Check if a pasted embed URL is currently live (YouTube video, Kick channel, Twitch channel)
+ipcMain.handle('url-is-live', async (_event, url: string) => {
+  try {
+    return await checkUrlIsLive(url)
+  } catch (e) {
+    return { live: false, error: e instanceof Error ? e.message : 'Unknown error' }
   }
 })
 
@@ -2479,6 +2534,10 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       chatWebSocket.on('mute', (event) => {
         safeSend('chat-websocket-mute', event)
       })
+
+      chatWebSocket.on('unmute', (event) => {
+        safeSend('chat-websocket-unmute', event)
+      })
       
       chatWebSocket.on('me', (event) => {
         safeSend('chat-websocket-me', event)
@@ -2580,7 +2639,21 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
         const message = error?.message || (error instanceof Error ? error.message : String(error) || 'Unknown error')
         safeSend('live-websocket-error', { message })
       })
-      liveWebSocket.on('message', (data) => safeSend('live-websocket-message', data))
+      liveWebSocket.on('message', (data: any) => {
+        safeSend('live-websocket-message', data)
+        if (data?.type === 'dggApi:embeds' && Array.isArray(data.data)) {
+          currentDggEmbedKeys.clear()
+          currentDggEmbedByKey.clear()
+          data.data.forEach((embed: { platform?: string; id?: string; mediaItem?: { metadata?: { displayName?: string } } }) => {
+            if (embed?.platform && embed?.id) {
+              const key = makeDggEmbedKey(embed.platform, embed.id)
+              currentDggEmbedKeys.add(key)
+              const displayName = embed?.mediaItem?.metadata?.displayName
+              if (displayName) currentDggEmbedByKey.set(key, { displayName })
+            }
+          })
+        }
+      })
     }
 
     if (!liveWebSocket.isConnected()) {
@@ -2841,41 +2914,32 @@ ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
 // This ensures the logs directory is created in the correct location (project root/logs)
 fileLogger.initialize()
 
-// Intercept console methods in main process to write to file
-const originalConsoleLog = console.log
-const originalConsoleError = console.error
-const originalConsoleWarn = console.warn
-const originalConsoleInfo = console.info
-const originalConsoleDebug = console.debug
+// Intercept console methods in main process: write to log files; errors/warnings go to files only (no console)
+function stringifyArgs(args: any[]): string {
+  return args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')
+}
 
 console.log = (...args: any[]) => {
-  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
-  fileLogger.writeLog('info', 'main', message, args)
-  originalConsoleLog.apply(console, args)
+  fileLogger.writeLog('info', 'main', stringifyArgs(args), args)
+  // Do not forward to console so all output goes to log files only
 }
 
 console.error = (...args: any[]) => {
-  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
-  fileLogger.writeLog('error', 'main', message, args)
-  originalConsoleError.apply(console, args)
+  fileLogger.writeLog('error', 'main', stringifyArgs(args), args)
+  // Do not forward to console so issues are in log files only
 }
 
 console.warn = (...args: any[]) => {
-  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
-  fileLogger.writeLog('warn', 'main', message, args)
-  originalConsoleWarn.apply(console, args)
+  fileLogger.writeLog('warn', 'main', stringifyArgs(args), args)
+  // Do not forward to console so issues are in log files only
 }
 
 console.info = (...args: any[]) => {
-  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
-  fileLogger.writeLog('info', 'main', message, args)
-  originalConsoleInfo.apply(console, args)
+  fileLogger.writeLog('info', 'main', stringifyArgs(args), args)
 }
 
 console.debug = (...args: any[]) => {
-  const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')
-  fileLogger.writeLog('debug', 'main', message, args)
-  originalConsoleDebug.apply(console, args)
+  fileLogger.writeLog('debug', 'main', stringifyArgs(args), args)
 }
 
 // IPC handler for renderer process to send logs
@@ -2883,21 +2947,16 @@ ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any
   fileLogger.writeLog(level, 'renderer', message, args)
 })
 
-// Global error handlers to prevent crashes
+// Global error handlers: log to files only (no console)
 process.on('uncaughtException', (error) => {
   const errorMessage = error instanceof Error ? error.message : String(error) || 'Unknown error'
   const errorStack = error instanceof Error ? error.stack : String(error)
-  console.error('[Main Process] Uncaught Exception:', errorMessage)
-  console.error('[Main Process] Uncaught Exception stack:', errorStack)
   fileLogger.writeLog('error', 'main', `Uncaught Exception: ${errorMessage}`, [errorStack])
-  // Don't exit - log and continue
 })
 
 process.on('unhandledRejection', (reason, _promise) => {
   const reasonMessage = reason instanceof Error ? reason.message : String(reason) || 'Unknown reason'
-  console.error('[Main Process] Unhandled Rejection:', reasonMessage)
   fileLogger.writeLog('error', 'main', `Unhandled Rejection: ${reasonMessage}`, [reason])
-  // Don't exit - log and continue
 })
 
 // Cleanup on app quit

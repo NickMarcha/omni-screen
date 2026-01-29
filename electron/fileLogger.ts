@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url'
 
 class FileLogger {
   private logFilePath: string | null = null
+  private errorLogFilePath: string | null = null
   private logStream: fs.WriteStream | null = null
+  private errorStream: fs.WriteStream | null = null
   private logsDir: string | null = null
   private sessionTimestamp: string | null = null
   private extraStreams: Map<string, fs.WriteStream> = new Map()
@@ -55,42 +57,52 @@ class FileLogger {
         fs.mkdirSync(logsDir, { recursive: true })
       }
     } catch (error) {
-      console.error('Failed to create logs directory:', error)
+      try {
+        if (process.stderr?.write) process.stderr.write(`[FileLogger] Failed to create logs directory: ${error}\n`)
+      } catch {
+        // ignore
+      }
     }
   }
 
   /**
-   * Initialize log file for this session
-   * Creates a new log file with timestamp
+   * Initialize log files for this session.
+   * Creates two files: general (info/warn) and errors-only.
    */
   initialize() {
     try {
-      // Ensure directory exists and get the correct path
       const logsDir = this.getLogsDirectory()
-      
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5) // Format: 2026-01-25T12-30-45
       this.sessionTimestamp = timestamp
+      const iso = new Date().toISOString()
+
+      // General log: info + warning
       const filename = `app-${timestamp}.log`
       this.logFilePath = path.join(logsDir, filename)
-      
-      // Create write stream (append mode)
       this.logStream = fs.createWriteStream(this.logFilePath, { flags: 'a' })
-      
-      // Write session start marker
-      const startMessage = `=== Application Session Started ===\n`
-      this.logStream.write(`[${new Date().toISOString()}] [INFO] [MAIN] ${startMessage}`)
-      
-      console.log(`[FileLogger] Log file created: ${this.logFilePath}`)
-      
+      this.logStream.write(`[${iso}] [INFO] [MAIN] === Application Session Started ===\n`)
+
+      // Errors-only log
+      const errorFilename = `app-${timestamp}-errors.log`
+      this.errorLogFilePath = path.join(logsDir, errorFilename)
+      this.errorStream = fs.createWriteStream(this.errorLogFilePath, { flags: 'a' })
+      this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session Started (errors only) ===\n`)
+      this.logStream.write(`[${iso}] [INFO] [MAIN] [FileLogger] Log files: general=${filename}, errors=${errorFilename}\n`)
+
       return this.logFilePath
     } catch (error) {
-      console.error('Failed to initialize file logger:', error)
+      try {
+        const fallback = process.stderr
+        if (fallback && fallback.write) fallback.write(`[FileLogger] Failed to initialize: ${error}\n`)
+      } catch {
+        // ignore
+      }
       return null
     }
   }
 
   private ensureSessionInitialized() {
-    if (!this.logStream || !this.sessionTimestamp) {
+    if (!this.logStream || !this.errorStream || !this.sessionTimestamp) {
       this.initialize()
     }
   }
@@ -131,7 +143,11 @@ class FileLogger {
 
       return stream
     } catch (e) {
-      console.error('[FileLogger] Failed to create extra stream:', key, e)
+      try {
+        this.writeLog('error', 'main', `[FileLogger] Failed to create extra stream: ${key}`, [String(e)])
+      } catch {
+        if (process.stderr?.write) process.stderr.write(`[FileLogger] Failed to create extra stream: ${key}\n`)
+      }
       return null
     }
   }
@@ -176,55 +192,60 @@ class FileLogger {
   }
 
   /**
-   * Write a log entry to file
+   * Write a log entry to file(s).
+   * - info, warn, debug → general log only (app-*.log)
+   * - error → both general log and errors-only log (app-*-errors.log)
    */
   writeLog(level: string, process: 'main' | 'renderer', message: string, args: any[] = []) {
-    if (!this.logStream) {
-      // Try to initialize if not already done
-      this.initialize()
-      if (!this.logStream) return
-    }
+    this.ensureSessionInitialized()
+    if (!this.logStream) return
 
     try {
       const timestamp = new Date().toISOString()
-
-      // Format log line
       let logLine = `[${timestamp}] [${level.toUpperCase()}] [${process.toUpperCase()}] ${message}`
-      
-      // Add arguments if present
       if (args.length > 0) {
         try {
-          const argsStr = args.map(arg => {
-            if (typeof arg === 'object') {
-              return JSON.stringify(arg, null, 2)
-            }
-            return String(arg)
-          }).join(' ')
+          const argsStr = args.map(arg =>
+            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+          ).join(' ')
           logLine += ` ${argsStr}`
-        } catch (e) {
-          logLine += ` [Error serializing args: ${e}]`
+        } catch {
+          logLine += ` [Error serializing args]`
         }
       }
-      
       logLine += '\n'
-      
+
       this.logStream.write(logLine)
-    } catch (error) {
-      console.error('Failed to write to log file:', error)
+      if (level === 'error' && this.errorStream) {
+        this.errorStream.write(logLine)
+      }
+    } catch {
+      try {
+        const stderr = (process as unknown as NodeJS.Process).stderr
+        if (stderr?.write) stderr.write('[FileLogger] Failed to write log line\n')
+      } catch {
+        // ignore
+      }
     }
   }
 
   /**
-   * Close the log stream
+   * Close all log streams
    */
   close() {
+    const iso = new Date().toISOString()
     if (this.logStream) {
-      this.writeLog('info', 'main', '=== Application Session Ended ===', [])
+      this.logStream.write(`[${iso}] [INFO] [MAIN] === Application Session Ended ===\n`)
       this.logStream.end()
       this.logStream = null
     }
-
-    // Close extra streams
+    if (this.errorStream) {
+      this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session Ended ===\n`)
+      this.errorStream.end()
+      this.errorStream = null
+    }
+    this.logFilePath = null
+    this.errorLogFilePath = null
     for (const stream of this.extraStreams.values()) {
       try {
         stream.end()
@@ -235,11 +256,14 @@ class FileLogger {
     this.extraStreams.clear()
   }
 
-  /**
-   * Get the current log file path
-   */
+  /** Get the general log file path (info/warn). */
   getLogFilePath(): string | null {
     return this.logFilePath
+  }
+
+  /** Get the errors-only log file path. */
+  getErrorLogFilePath(): string | null {
+    return this.errorLogFilePath
   }
 }
 
