@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import CombinedChat from './CombinedChat'
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import { omniColorForKey, textColorOn, withAlpha } from '../utils/omniColors'
+import { getAppPreferences } from '../utils/appPreferences'
 
 type ChatPaneSide = 'left' | 'right'
 type ChatMode = 'embedded' | 'combined'
@@ -49,6 +51,27 @@ function makeEmbedKey(platform: string, id: string) {
 function makeLegacyEmbedKey(platform: string, id: string) {
   // Previous behavior: lowercased everything. Keep to migrate persisted selections.
   return `${String(platform || '').toLowerCase()}:${String(id || '').toLowerCase()}`
+}
+
+function makeViewTransitionNameForKey(key: string) {
+  // `view-transition-name` must be a valid CSS identifier-ish token.
+  // Keep it deterministic and stable across reorders.
+  return `omni-embed-${String(key || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')}`
+}
+
+function startViewTransitionIfSupported(run: () => void) {
+  const anyDoc = document as any
+  if (typeof anyDoc?.startViewTransition === 'function') {
+    anyDoc.startViewTransition(() => {
+      flushSync(() => {
+        run()
+      })
+    })
+    return
+  }
+  run()
 }
 
 function parseEmbedKey(key: string): { platform: string; id: string } | null {
@@ -200,6 +223,20 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [chatEmbedReload, setChatEmbedReload] = useState(0)
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
+  const [destinyEmbedDetached, setDestinyEmbedDetached] = useState(false)
+  const destinyEmbedSlotRef = useRef<HTMLDivElement | null>(null)
+  const destinyEmbedResizeObserverRef = useRef<ResizeObserver | null>(null)
+  const destinyEmbedResizeHandlerRef = useRef<(() => void) | null>(null)
+  const destinyEmbedResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const destinyEmbedRafRef = useRef<number | null>(null)
+
+  const dggUtilitiesEnabled = (() => {
+    try {
+      return getAppPreferences().userscripts.dggUtilities
+    } catch {
+      return false
+    }
+  })()
 
   const chatEmbedSrc = useMemo(() => {
     // cache-buster so we can reload after login
@@ -244,6 +281,76 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return () => {
       window.ipcRenderer.off('login-success', handler)
     }
+  }, [])
+
+  // When not showing the Destiny embed slot (BrowserView), hide the view so it doesn't cover the iframe or combined chat.
+  useEffect(() => {
+    if (!(chatPaneOpen && chatMode === 'embedded' && dggUtilitiesEnabled)) {
+      window.ipcRenderer.invoke('destiny-embed-hide').catch(() => {})
+    }
+  }, [chatPaneOpen, chatMode, dggUtilitiesEnabled])
+
+  useEffect(() => {
+    const handler = () => setDestinyEmbedDetached(false)
+    window.ipcRenderer.on('destiny-embed-reattached', handler)
+    return () => {
+      window.ipcRenderer.off('destiny-embed-reattached', handler)
+    }
+  }, [])
+
+  const destinyEmbedSlotRefCallback = useCallback((el: HTMLDivElement | null) => {
+    destinyEmbedSlotRef.current = el
+    destinyEmbedResizeObserverRef.current?.disconnect()
+    destinyEmbedResizeObserverRef.current = null
+    if (destinyEmbedResizeHandlerRef.current) {
+      window.removeEventListener('resize', destinyEmbedResizeHandlerRef.current)
+      destinyEmbedResizeHandlerRef.current = null
+    }
+    if (destinyEmbedResizeTimeoutRef.current != null) {
+      clearTimeout(destinyEmbedResizeTimeoutRef.current)
+      destinyEmbedResizeTimeoutRef.current = null
+    }
+    if (destinyEmbedRafRef.current != null) {
+      cancelAnimationFrame(destinyEmbedRafRef.current)
+      destinyEmbedRafRef.current = null
+    }
+    if (!el) {
+      window.ipcRenderer.invoke('destiny-embed-hide').catch(() => {})
+      return
+    }
+    const sendBounds = () => {
+      const rect = el.getBoundingClientRect()
+      window.ipcRenderer.invoke('destiny-embed-set-bounds', { x: rect.left, y: rect.top, width: rect.width, height: rect.height }).catch(() => {})
+    }
+    // Throttle: at most one bounds update per animation frame so resizing the pane isn't choppy.
+    const sendBoundsThrottled = () => {
+      if (destinyEmbedRafRef.current != null) return
+      destinyEmbedRafRef.current = requestAnimationFrame(() => {
+        destinyEmbedRafRef.current = null
+        sendBounds()
+      })
+    }
+    // Defer bounds after window resize so layout has settled (e.g. DevTools dock).
+    const sendBoundsAfterResize = () => {
+      if (destinyEmbedResizeTimeoutRef.current != null) clearTimeout(destinyEmbedResizeTimeoutRef.current)
+      destinyEmbedRafRef.current = requestAnimationFrame(() => {
+        destinyEmbedRafRef.current = requestAnimationFrame(() => {
+          destinyEmbedRafRef.current = null
+          sendBounds()
+          destinyEmbedResizeTimeoutRef.current = window.setTimeout(() => {
+            destinyEmbedResizeTimeoutRef.current = null
+            sendBounds()
+          }, 120)
+        })
+      })
+    }
+    sendBounds()
+    const ro = new ResizeObserver(sendBoundsThrottled)
+    ro.observe(el)
+    destinyEmbedResizeObserverRef.current = ro
+    // Re-send bounds when window resizes (e.g. opening DevTools); ResizeObserver only fires on element size change, not position.
+    window.addEventListener('resize', sendBoundsAfterResize)
+    destinyEmbedResizeHandlerRef.current = sendBoundsAfterResize
   }, [])
 
   const openDestinyLogin = useCallback(() => {
@@ -402,32 +509,35 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           const legacyKey = makeLegacyEmbedKey(embed.platform, embed.id)
           if (legacyKey !== canonicalKey) legacyToCanonical.set(legacyKey, canonicalKey)
         })
-        setAvailableEmbeds(next)
 
-        setSelectedEmbedKeys((prev) => {
-          const pruned = new Set<string>()
-          prev.forEach((k) => {
-            if (next.has(k)) {
-              pruned.add(k)
-              return
-            }
-            const migrated = legacyToCanonical.get(k)
-            if (migrated && next.has(migrated)) pruned.add(migrated)
-          })
-          return pruned
-        })
+        startViewTransitionIfSupported(() => {
+          setAvailableEmbeds(next)
 
-        setSelectedEmbedChatKeys((prev) => {
-          const pruned = new Set<string>()
-          prev.forEach((k) => {
-            if (next.has(k)) {
-              pruned.add(k)
-              return
-            }
-            const migrated = legacyToCanonical.get(k)
-            if (migrated && next.has(migrated)) pruned.add(migrated)
+          setSelectedEmbedKeys((prev) => {
+            const pruned = new Set<string>()
+            prev.forEach((k) => {
+              if (next.has(k)) {
+                pruned.add(k)
+                return
+              }
+              const migrated = legacyToCanonical.get(k)
+              if (migrated && next.has(migrated)) pruned.add(migrated)
+            })
+            return pruned
           })
-          return pruned
+
+          setSelectedEmbedChatKeys((prev) => {
+            const pruned = new Set<string>()
+            prev.forEach((k) => {
+              if (next.has(k)) {
+                pruned.add(k)
+                return
+              }
+              const migrated = legacyToCanonical.get(k)
+              if (migrated && next.has(migrated)) pruned.add(migrated)
+            })
+            return pruned
+          })
         })
         return
       }
@@ -680,7 +790,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (cinemaMode) {
         // Edge-to-edge embeds: no card chrome, no header, no padding, no gaps.
         return (
-          <div key={item.key} className="w-full h-full min-h-0 min-w-0 overflow-hidden">
+          <div
+            key={item.key}
+            className="w-full h-full min-h-0 min-w-0 overflow-hidden"
+            style={{ viewTransitionName: makeViewTransitionNameForKey(item.key) } as any}
+          >
             {content}
           </div>
         )
@@ -690,7 +804,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         <div
           key={item.key}
           className="card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0"
-          style={{ borderTop: `4px solid ${accent}` }}
+          style={{ borderTop: `4px solid ${accent}`, viewTransitionName: makeViewTransitionNameForKey(item.key) } as any}
         >
           <div className="p-2 flex items-center justify-between gap-2" style={{ background: withAlpha(accent, 0.08) }}>
             <div className="min-w-0">
@@ -863,9 +977,36 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           <button className="btn btn-xs btn-primary" onClick={openDestinyLogin}>
                             Login
                           </button>
-                          <button className="btn btn-xs btn-ghost" onClick={() => setChatEmbedReload((v) => v + 1)}>
+                          <button
+                            className="btn btn-xs btn-ghost"
+                            onClick={() =>
+                              dggUtilitiesEnabled
+                                ? window.ipcRenderer.invoke('destiny-embed-reload')
+                                : setChatEmbedReload((v) => v + 1)
+                            }
+                          >
                             Reload
                           </button>
+                          {dggUtilitiesEnabled ? (
+                            <>
+                              <button
+                                className="btn btn-xs btn-ghost"
+                                title="Open DevTools for the chat embed (inspect when docked)"
+                                onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
+                              >
+                                Inspect
+                              </button>
+                              <button
+                                className="btn btn-xs btn-ghost"
+                                onClick={() => {
+                                  setDestinyEmbedDetached(true)
+                                  window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
+                                }}
+                              >
+                                Detach
+                              </button>
+                            </>
+                          ) : null}
                           <div className="text-xs text-base-content/60">Discord can’t auth inside an iframe.</div>
                         </>
                       ) : (
@@ -991,13 +1132,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
                 <div className="flex-1 min-h-0 overflow-hidden">
                   {chatMode === 'embedded' ? (
-                    <iframe
-                      src={chatEmbedSrc}
-                      title="Destiny.gg Chat"
-                      className="w-full h-full"
-                      style={{ border: 'none' }}
-                      allow="clipboard-read; clipboard-write"
-                    />
+                    dggUtilitiesEnabled ? (
+                      destinyEmbedDetached ? (
+                        <div className="w-full h-full flex items-center justify-center bg-base-200 text-base-content/70 text-sm p-4 text-center">
+                          Chat detached. Close the chat window to re-attach.
+                        </div>
+                      ) : (
+                        <div
+                          ref={destinyEmbedSlotRefCallback}
+                          className="w-full h-full min-w-0 min-h-0"
+                          style={{ backgroundColor: 'transparent' }}
+                        />
+                      )
+                    ) : (
+                      <iframe
+                        src={chatEmbedSrc}
+                        title="Destiny.gg Chat"
+                        className="w-full h-full"
+                        style={{ border: 'none' }}
+                        allow="clipboard-read; clipboard-write"
+                      />
+                    )
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
@@ -1066,7 +1221,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             <div className="flex-1 min-w-0">
               <div
                 ref={dockRef}
-                className="overflow-x-auto overflow-y-hidden whitespace-nowrap"
+                className="overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll"
                 onWheel={onDockWheel}
                 style={{ overscrollBehaviorX: 'contain' as any }}
               >
@@ -1297,9 +1452,36 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           <button className="btn btn-xs btn-primary" onClick={openDestinyLogin}>
                             Login
                           </button>
-                          <button className="btn btn-xs btn-ghost" onClick={() => setChatEmbedReload((v) => v + 1)}>
+                          <button
+                            className="btn btn-xs btn-ghost"
+                            onClick={() =>
+                              dggUtilitiesEnabled
+                                ? window.ipcRenderer.invoke('destiny-embed-reload')
+                                : setChatEmbedReload((v) => v + 1)
+                            }
+                          >
                             Reload
                           </button>
+                          {dggUtilitiesEnabled ? (
+                            <>
+                              <button
+                                className="btn btn-xs btn-ghost"
+                                title="Open DevTools for the chat embed (inspect when docked)"
+                                onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
+                              >
+                                Inspect
+                              </button>
+                              <button
+                                className="btn btn-xs btn-ghost"
+                                onClick={() => {
+                                  setDestinyEmbedDetached(true)
+                                  window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
+                                }}
+                              >
+                                Detach
+                              </button>
+                            </>
+                          ) : null}
                           <div className="text-xs text-base-content/60">Discord can’t auth inside an iframe.</div>
                         </>
                       ) : (
@@ -1425,13 +1607,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
                 <div className="flex-1 min-h-0 overflow-hidden">
                   {chatMode === 'embedded' ? (
-                    <iframe
-                      src={chatEmbedSrc}
-                      title="Destiny.gg Chat"
-                      className="w-full h-full"
-                      style={{ border: 'none' }}
-                      allow="clipboard-read; clipboard-write"
-                    />
+                    dggUtilitiesEnabled ? (
+                      destinyEmbedDetached ? (
+                        <div className="w-full h-full flex items-center justify-center bg-base-200 text-base-content/70 text-sm p-4 text-center">
+                          Chat detached. Close the chat window to re-attach.
+                        </div>
+                      ) : (
+                        <div
+                          ref={destinyEmbedSlotRefCallback}
+                          className="w-full h-full min-w-0 min-h-0"
+                          style={{ backgroundColor: 'transparent' }}
+                        />
+                      )
+                    ) : (
+                      <iframe
+                        src={chatEmbedSrc}
+                        title="Destiny.gg Chat"
+                        className="w-full h-full"
+                        style={{ border: 'none' }}
+                        allow="clipboard-read; clipboard-write"
+                      />
+                    )
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}

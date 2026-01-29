@@ -15,3 +15,21 @@ body {
   height: 100%;
   overflow: hidden;
 }
+
+/* OmniScreen bottom dock: thin, unobtrusive horizontal scrollbar */
+.embed-dock-scroll::-webkit-scrollbar {
+  height: 0px; /* hide horizontal scrollbar track while keeping scroll behavior */
+}
+
+.embed-dock-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.embed-dock-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+
+.embed-dock-scroll {
+  /* Hide scrollbar for Firefox while keeping scrolling enabled */
+  scrollbar-width: none;
+}

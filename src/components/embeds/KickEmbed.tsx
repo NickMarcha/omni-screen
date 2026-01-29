@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getAppPreferences } from '../../utils/appPreferences'
 
 interface KickEmbedProps {
   url: string
@@ -44,6 +45,13 @@ function parseKickUrl(url: string): { username: string | null } {
 export default function KickEmbed({ url, autoplay = false, mute = false, onError, fit = 'aspect' }: KickEmbedProps) {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const kickstinyEnabled = (() => {
+    try {
+      return getAppPreferences().userscripts.kickstiny
+    } catch {
+      return true
+    }
+  })()
 
   useEffect(() => {
     if (!url) {
@@ -126,25 +134,75 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
               }
         }
       >
-        <iframe
-          src={embedUrl}
-          width="100%"
-          height="100%"
-          frameBorder="0"
-          scrolling="no"
-          allowFullScreen
-          style={{
-            border: 'none',
-            width: '100%',
-            height: '100%',
-            position: 'absolute',
-            left: '0px',
-            top: '0px',
-            overflow: 'hidden',
-            backgroundColor: 'rgb(var(--b2))',
-          }}
-          title="Kick stream"
-        />
+        {kickstinyEnabled ? (
+          <webview
+            src={embedUrl}
+            title="Kick stream"
+            className="w-full h-full"
+            style={
+              {
+                border: 'none',
+                width: '100%',
+                height: '100%',
+                position: 'absolute',
+                left: '0px',
+                top: '0px',
+                overflow: 'hidden',
+                backgroundColor: 'rgb(var(--b2))',
+              } as any
+            }
+            allowpopups="true"
+            partition="persist:main"
+            ref={(el: any) => {
+              if (!el) return
+              const key = '__omni_kickstiny_injected'
+              const inject = async () => {
+                try {
+                  const injected = await el.executeJavaScript(`Boolean(window.${key})`, true)
+                  if (injected) return
+                  const scriptUrl = 'https://r2cdn.destiny.gg/kickstiny/kickstiny.user.js'
+                  const code = `
+(() => {
+  try {
+    if (window.${key}) return;
+    window.${key} = true;
+    const s = document.createElement("script");
+    s.src = "${scriptUrl}";
+    s.async = true;
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) {}
+})();
+`
+                  await el.executeJavaScript(code, true)
+                } catch {
+                  // ignore
+                }
+              }
+              el.removeEventListener?.('dom-ready', inject)
+              el.addEventListener?.('dom-ready', inject)
+            }}
+          />
+        ) : (
+          <iframe
+            src={embedUrl}
+            width="100%"
+            height="100%"
+            frameBorder="0"
+            scrolling="no"
+            allowFullScreen
+            style={{
+              border: 'none',
+              width: '100%',
+              height: '100%',
+              position: 'absolute',
+              left: '0px',
+              top: '0px',
+              overflow: 'hidden',
+              backgroundColor: 'rgb(var(--b2))',
+            }}
+            title="Kick stream"
+          />
+        )}
       </div>
     </div>
   )

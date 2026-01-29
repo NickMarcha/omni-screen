@@ -11,6 +11,7 @@ import { mentionCache } from './mentionCache'
 import { KickChatManager } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
+import * as destinyEmbedView from './destinyEmbedView'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -431,7 +432,15 @@ function createWindow() {
       webSecurity: false,
       // Enable transparency for window transparency option
       transparent: true,
+      // Needed for <webview> (userscript injection into embeds)
+      webviewTag: true,
     },
+  })
+
+  destinyEmbedView.setMainWindowRef(win)
+  win.setMaxListeners(20) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest)
+  win.on('closed', () => {
+    destinyEmbedView.setMainWindowRef(null)
   })
 
   // Configure webRequest handlers for YouTube and Reddit embeds
@@ -864,6 +873,7 @@ function getOrCreateViewerWindow(): BrowserWindow {
     }
   })
 
+  viewerWin.setMaxListeners(20)
   viewerWin.on('closed', () => {
     viewerWin = null
   })
@@ -895,6 +905,7 @@ function getOrCreateViewerWindow(): BrowserWindow {
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    destinyEmbedView.setMainWindowRef(null)
     app.quit()
     win = null
   }
@@ -1211,6 +1222,46 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
       }
     }
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+// Destiny embed (single BrowserView, userscript injection, detach support)
+ipcMain.handle('destiny-embed-set-bounds', (_event, bounds: unknown) => {
+  try {
+    destinyEmbedView.setBounds(win ?? null, bounds)
+  } catch (e) {
+    console.error('destiny-embed-set-bounds failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
+  }
+})
+ipcMain.handle('destiny-embed-hide', () => {
+  try {
+    destinyEmbedView.hide(win ?? null)
+  } catch (e) {
+    console.error('destiny-embed-hide failed:', e instanceof Error ? e.message : e, '')
+  }
+})
+ipcMain.handle('destiny-embed-detach', () => {
+  try {
+    destinyEmbedView.detach(win ?? null)
+  } catch (e) {
+    console.error('destiny-embed-detach failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
+  }
+})
+ipcMain.handle('destiny-embed-is-detached', () => {
+  return destinyEmbedView.isDetached()
+})
+ipcMain.handle('destiny-embed-reload', () => {
+  try {
+    destinyEmbedView.reload()
+  } catch (e) {
+    console.error('destiny-embed-reload failed:', e instanceof Error ? e.message : e, '')
+  }
+})
+ipcMain.handle('destiny-embed-open-devtools', () => {
+  try {
+    destinyEmbedView.openDevTools()
+  } catch (e) {
+    console.error('destiny-embed-open-devtools failed:', e instanceof Error ? e.message : e, '')
   }
 })
 
@@ -2190,6 +2241,7 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
       }
     })
     
+    loginWindow.setMaxListeners(20)
     // Clean up when window is closed
     loginWindow.on('closed', () => {
       // Optionally notify renderer that login window was closed
@@ -2493,6 +2545,7 @@ ipcMain.handle('kick-open-cookie-window', async (_event, payload?: { slug?: stri
       // ignore
     }
 
+    w.setMaxListeners(20)
     // After the user closes the window, re-attempt history fetches.
     w.on('closed', () => {
       try {

@@ -8,6 +8,15 @@ import mehdiAwarePng from '../assets/media/mehdiAware.png'
 import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
 import noHopePng from '../assets/media/NoHope.png'
 import whickedSteinPng from '../assets/media/WhickedStein.png'
+import {
+  applyThemeToDocument,
+  darkThemes,
+  defaultPreferences,
+  getAppPreferences,
+  lightThemes,
+  setAppPreferences,
+  type AppPreferences,
+} from '../utils/appPreferences'
 
 interface MenuProps {
   onNavigate: (page: 'link-scroller' | 'omni-screen') => void
@@ -42,6 +51,9 @@ function Menu({ onNavigate }: MenuProps) {
     onCancel: () => setModalOpen(false),
     onOk: () => window.ipcRenderer.invoke('start-download'),
   })
+
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
 
   const checkUpdate = async () => {
     setChecking(true)
@@ -103,6 +115,21 @@ function Menu({ onNavigate }: MenuProps) {
     }
   }, [onUpdateCanAvailable, onUpdateError, onDownloadProgress, onUpdateDownloaded])
 
+  useEffect(() => {
+    if (!settingsOpen) return
+    setPrefsDraft(getAppPreferences())
+  }, [settingsOpen])
+
+  const saveSettings = useCallback(() => {
+    setAppPreferences(prefsDraft)
+    applyThemeToDocument(prefsDraft.theme)
+    setSettingsOpen(false)
+  }, [prefsDraft])
+
+  const resetSettings = useCallback(() => {
+    setPrefsDraft(defaultPreferences)
+  }, [])
+
   return (
     <div className="min-h-screen bg-base-100 text-base-content flex flex-col items-center justify-center p-8">
       <h1 className="text-5xl font-bold text-center mb-2 text-primary flex items-center justify-center gap-3">
@@ -145,14 +172,20 @@ function Menu({ onNavigate }: MenuProps) {
 
       {/* Update Button */}
       <div className="card bg-base-200 shadow-xl p-6 max-w-md w-full">
-        <button 
-          className="btn btn-secondary w-full" 
-          disabled={checking} 
-          onClick={checkUpdate}
-        >
-          {checking ? 'Checking...' : 'Check for Updates'}
-        </button>
+        <div className="flex flex-col gap-3">
+          <button className="btn btn-secondary w-full" disabled={checking} onClick={checkUpdate}>
+            {checking ? 'Checking...' : 'Check for Updates'}
+          </button>
+          <button className="btn btn-outline w-full" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </button>
+        </div>
       </div>
+
+      {/* Acknowledgements */}
+      <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
+        Thanks to polecat.me, Rustlesearch, d.gg utilities (vyneer), and Kickstiny for tolerating my misuse of their APIs and scripts.
+      </p>
 
       {/* Update Modal */}
       {modalOpen && (
@@ -198,6 +231,177 @@ function Menu({ onNavigate }: MenuProps) {
                   {modalBtn.okText||'Update'}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {settingsOpen && (
+        <div className="modal modal-open">
+          <div className="modal-box bg-base-300 text-base-content max-w-lg p-6">
+            <h3 className="font-bold text-lg mb-6">App Settings</h3>
+
+            <div className="space-y-6">
+              <div className="border border-base-200 rounded-lg p-5">
+                <div className="font-semibold mb-4">Theme</div>
+
+                <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-4 items-center">
+                  <label className="label py-0 pr-0">
+                    <span className="label-text">Mode</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-48"
+                    value={prefsDraft.theme.mode}
+                    onChange={(e) =>
+                      setPrefsDraft((p) => ({
+                        ...p,
+                        theme: { ...p.theme, mode: e.target.value as any },
+                      }))
+                    }
+                  >
+                    <option value="system">System</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+
+                  <label className="label py-0 pr-0">
+                    <span className="label-text">Light theme</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-48"
+                    value={prefsDraft.theme.lightTheme}
+                    disabled={prefsDraft.theme.mode === 'dark'}
+                    onChange={(e) =>
+                      setPrefsDraft((p) => ({
+                        ...p,
+                        theme: { ...p.theme, lightTheme: e.target.value as any },
+                      }))
+                    }
+                  >
+                    {lightThemes.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label className="label py-0 pr-0">
+                    <span className="label-text">Dark theme</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-48"
+                    value={prefsDraft.theme.darkTheme}
+                    disabled={prefsDraft.theme.mode === 'light'}
+                    onChange={(e) =>
+                      setPrefsDraft((p) => ({
+                        ...p,
+                        theme: { ...p.theme, darkTheme: e.target.value as any },
+                      }))
+                    }
+                  >
+                    {darkThemes.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label className="label py-0 pr-0">
+                    <span className="label-text">Embed theme</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-48"
+                    value={prefsDraft.theme.embedTheme}
+                    onChange={(e) =>
+                      setPrefsDraft((p) => ({
+                        ...p,
+                        theme: { ...p.theme, embedTheme: e.target.value as any },
+                      }))
+                    }
+                  >
+                    <option value="follow">Follow app theme</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="border border-base-200 rounded-lg p-5">
+                <div className="font-semibold mb-4">Userscripts</div>
+
+                <div className="space-y-4">
+                  <label className="flex items-start justify-between gap-4 py-1">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">Destiny chat: d.gg utilities</div>
+                      <div className="text-xs text-base-content/60 mt-1">
+                        Injects d.gg utilities into embedded chat (BrowserView). Off = iframe only.
+                      </div>
+                      <a
+                        href="https://vyneer.me/utilities"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="link link-primary text-xs mt-0.5 inline-block"
+                      >
+                        vyneer.me/utilities
+                      </a>
+                    </div>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                      checked={prefsDraft.userscripts.dggUtilities}
+                      onChange={(e) =>
+                        setPrefsDraft((p) => ({
+                          ...p,
+                          userscripts: { ...p.userscripts, dggUtilities: e.target.checked },
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <div className="divider my-1" />
+
+                  <label className="flex items-start justify-between gap-4 py-1">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">Kick embeds: Kickstiny</div>
+                      <div className="text-xs text-base-content/60 mt-1">
+                        Injects kickstiny.user.js into Kick player embeds.
+                      </div>
+                      <a
+                        href="https://github.com/destinygg/kickstiny"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="link link-primary text-xs mt-0.5 inline-block"
+                      >
+                        github.com/destinygg/kickstiny
+                      </a>
+                    </div>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                      checked={prefsDraft.userscripts.kickstiny}
+                      onChange={(e) =>
+                        setPrefsDraft((p) => ({
+                          ...p,
+                          userscripts: { ...p.userscripts, kickstiny: e.target.checked },
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-action mt-6 pt-4 border-t border-base-200">
+              <button className="btn btn-ghost" onClick={resetSettings}>
+                Reset
+              </button>
+              <button className="btn btn-outline" onClick={() => setSettingsOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={saveSettings}>
+                Save
+              </button>
             </div>
           </div>
         </div>

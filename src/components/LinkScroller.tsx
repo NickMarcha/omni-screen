@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { logger } from '../utils/logger'
+import { applyThemeToDocument, getAppPreferences } from '../utils/appPreferences'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
@@ -30,8 +31,13 @@ import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
 import bennyLovePng from '../assets/media/BennyLove.png'
 import achshullyRetardedPng from '../assets/media/ACHshullyRetarded.png'
 
+// Canonical message ID for banning/filtering: platform:channel:date:nick
+export function messageId(platform: string, channel: string, date: number, nick: string): string {
+  return `${platform}:${channel}:${date}:${nick}`
+}
+
 interface MentionData {
-  id: string // Unique ID: date-nick (no hash needed)
+  id: string // Unique ID: platform:channel:date:nick (or legacy date-nick)
   date: number
   text: string
   nick: string
@@ -39,6 +45,8 @@ interface MentionData {
   matchedTerms: string[] // Terms from filter that matched this mention
   searchAfter?: number // For rustlesearch API pagination
   isStreaming?: boolean // true for new incoming WebSocket messages, false for history/API
+  platform?: string // e.g. 'dgg', 'kick'
+  channel?: string // e.g. 'Destinygg', 'destiny'
 }
 
 interface ImgurAlbumMedia {
@@ -63,6 +71,7 @@ interface ImgurAlbumData {
 
 interface LinkCard {
   id: string
+  messageId: string // platform:channel:date:nick for banning whole message
   url: string
   text: string
   nick: string
@@ -87,6 +96,8 @@ interface LinkCard {
   isLSF?: boolean
   isTrusted?: boolean
   isStreaming?: boolean // true for new incoming WebSocket messages
+  platform?: string // e.g. 'dgg', 'kick'
+  channel?: string // e.g. 'Destinygg', 'destiny'
 }
 
 // Extract URLs from text
@@ -226,20 +237,43 @@ interface ThemeSettings {
   embedTheme: EmbedThemeMode // Embed theme: follow, light, or dark
 }
 
+// Normalize URL for banned-link matching (strip fragment, lowercase)
+function normalizeUrlForBan(url: string): string {
+  try {
+    const u = new URL(url)
+    u.hash = ''
+    return u.href.toLowerCase()
+  } catch {
+    return url.toLowerCase()
+  }
+}
+
 // Settings interface
 interface Settings {
-  filter: string[] // Changed from string to array - list of usernames/terms to filter by
+  filter: string[] // list of usernames/terms to filter by
   showNSFW: boolean
   showNSFL: boolean
-  showNonLinks: boolean // New: show messages without links
-  bannedTerms: string[] // Changed from string to array
-  bannedUsers: string[] // New: list of banned usernames
-  platformSettings: Record<string, PlatformDisplayMode> // New: platform display settings (filter/text/embed)
-  linkOpenAction: LinkOpenAction // New: how to open links when clicked
-  trustedUsers: string[] // New: list of trusted usernames
-  mutedUsers?: MutedUser[] // New: list of muted users with expiration timestamps
-  keybinds: Keybind[] // New: customizable keyboard shortcuts
-  theme: ThemeSettings // New: theme settings
+  showNonLinks: boolean
+  bannedTerms: string[]
+  bannedUsers: string[]
+  bannedLinks: string[] // normalized URLs to hide (right-click "Ban this link")
+  bannedMessages: string[] // message IDs (platform:channel:date:nick) to hide (right-click "Ban this message")
+  platformSettings: Record<string, PlatformDisplayMode>
+  linkOpenAction: LinkOpenAction
+  trustedUsers: string[]
+  mutedUsers?: MutedUser[]
+  keybinds: Keybind[]
+  theme: ThemeSettings
+  // Channels: where to fetch incoming messages
+  channels?: {
+    dgg?: { enabled: boolean }
+    kick?: { enabled: boolean; channelSlug?: string }
+  }
+  // Footer display: platform label and color
+  footerDisplay?: {
+    showPlatformLabel?: boolean
+    platformColorStyle?: 'tint' | 'subtle' | 'none'
+  }
 }
 
 // Load settings from localStorage
@@ -316,6 +350,8 @@ function loadSettings(): Settings {
         showNonLinks: parsed.showNonLinks ?? false,
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
         bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
+        bannedLinks: Array.isArray(parsed.bannedLinks) ? parsed.bannedLinks : [],
+        bannedMessages: Array.isArray(parsed.bannedMessages) ? parsed.bannedMessages : [],
         platformSettings: platformSettings,
         linkOpenAction: (parsed.linkOpenAction === 'none' || parsed.linkOpenAction === 'clipboard' || parsed.linkOpenAction === 'browser' || parsed.linkOpenAction === 'viewer')
           ? parsed.linkOpenAction
@@ -329,6 +365,14 @@ function loadSettings(): Settings {
           darkTheme: parsed.theme.darkTheme || 'business',
           embedTheme: parsed.theme.embedTheme || 'follow'
         } : { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
+        channels: parsed.channels && typeof parsed.channels === 'object' ? {
+          dgg: parsed.channels.dgg !== undefined ? { enabled: !!parsed.channels.dgg?.enabled } : { enabled: true },
+          kick: parsed.channels.kick !== undefined ? { enabled: !!parsed.channels.kick?.enabled, channelSlug: String(parsed.channels.kick?.channelSlug || '').trim() || undefined } : { enabled: false, channelSlug: undefined }
+        } : undefined,
+        footerDisplay: parsed.footerDisplay && typeof parsed.footerDisplay === 'object' ? {
+          showPlatformLabel: parsed.footerDisplay.showPlatformLabel !== false,
+          platformColorStyle: (parsed.footerDisplay.platformColorStyle === 'tint' || parsed.footerDisplay.platformColorStyle === 'subtle' || parsed.footerDisplay.platformColorStyle === 'none') ? parsed.footerDisplay.platformColorStyle : 'tint'
+        } : undefined,
       }
       return migrated
     }
@@ -367,12 +411,16 @@ function loadSettings(): Settings {
     showNonLinks: false,
     bannedTerms: [],
     bannedUsers: [],
+    bannedLinks: [],
+    bannedMessages: [],
     platformSettings: defaultPlatformSettings,
     linkOpenAction: 'browser',
     trustedUsers: [],
     mutedUsers: [],
     keybinds: defaultKeybinds,
     theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
+    channels: { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+    footerDisplay: { showPlatformLabel: true, platformColorStyle: 'tint' },
   }
     logger.settings('Using default settings')
   return defaults
@@ -828,59 +876,94 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
   }
   
   // Memoize cards by ID to prevent unnecessary recomputation
-  // Only recompute if the actual card IDs change, not just the array reference
   const cardsKey = useMemo(() => cards.map(c => c.id).join(','), [cards])
-  
+
+  // Refs for incremental masonry: only place NEW cards (prepend/append), never re-place existing ones
+  // so existing cards stay in the same column and don't remount (embeds don't reload)
+  const lastColumnsRef = useRef<LinkCard[][] | null>(null)
+  const lastColumnCountRef = useRef(columnCount)
+
   useEffect(() => {
-    // Distribute cards into columns - add each card to the column with the smallest total height
-    const newColumns: LinkCard[][] = Array.from({ length: columnCount }, () => [])
-    const columnHeights: number[] = Array(columnCount).fill(0)
-    
-    if (stackDirection === 'up') {
-      // For upward stacking: cards should be sorted newest first [newest, ..., oldest]
-      // Process them in normal order and use push to maintain that order
-      // With flex-col, index 0 (newest) renders at top, so newest appears at top
-      // Columns will be even at bottom (where we finish) and uneven at top (where we start)
+    const fullRedistribute = () => {
+      const newColumns: LinkCard[][] = Array.from({ length: columnCount }, () => [])
+      const columnHeights: number[] = Array(columnCount).fill(0)
       cards.forEach((card) => {
-        // Find the column with the smallest height
         let shortestColumn = 0
         let minHeight = columnHeights[0]
-        
         for (let i = 1; i < columnCount; i++) {
           if (columnHeights[i] < minHeight) {
             minHeight = columnHeights[i]
             shortestColumn = i
           }
         }
-        
-        // Append to column (add to end) - maintains order: [newest, ..., oldest]
-        // With flex-col rendering, newest (index 0) appears at top
         newColumns[shortestColumn].push(card)
-        // Use estimated height based on card type
         columnHeights[shortestColumn] += estimateCardHeight(card)
       })
-    } else {
-      // For downward stacking: process cards in normal order (newest first)
-      // Add them using push so they appear at the top of columns (near the divider)
-      cards.forEach((card) => {
-        // Find the column with the smallest height
-        let shortestColumn = 0
-        let minHeight = columnHeights[0]
-        
-        for (let i = 1; i < columnCount; i++) {
-          if (columnHeights[i] < minHeight) {
-            minHeight = columnHeights[i]
-            shortestColumn = i
-          }
-        }
-        
-        // Append to column (add to end) so newest cards are at top
-        newColumns[shortestColumn].push(card)
-        // Use estimated height based on card type
-        columnHeights[shortestColumn] += estimateCardHeight(card)
-      })
+      lastColumnsRef.current = newColumns.map(col => [...col])
+      lastColumnCountRef.current = columnCount
+      setColumns(newColumns)
     }
-    
+
+    // Column count changed (e.g. resize), no previous state, or cards empty → full redistribute
+    if (columnCount !== lastColumnCountRef.current || lastColumnsRef.current === null || cards.length === 0) {
+      if (cards.length === 0) {
+        lastColumnsRef.current = null
+        setColumns(Array.from({ length: columnCount }, () => []))
+        return
+      }
+      fullRedistribute()
+      return
+    }
+
+    const previousColumns = lastColumnsRef.current
+    const previousIds = new Set(previousColumns.flat().map(c => c.id))
+    const currentIds = cards.map(c => c.id)
+    const newIds = new Set(currentIds.filter(id => !previousIds.has(id)))
+
+    // No new cards
+    if (newIds.size === 0) {
+      if (currentIds.length !== previousIds.size) {
+        // Some cards removed (e.g. refresh) → full redistribute
+        fullRedistribute()
+      }
+      return
+    }
+
+    // New cards: determine if prepend (new at top) or append (new at bottom)
+    const newCards = cards.filter(c => newIds.has(c.id))
+    const firstNewIndex = cards.findIndex(c => newIds.has(c.id))
+    const lastNewIndex = cards.length - 1 - [...cards].reverse().findIndex(c => newIds.has(c.id))
+    const isPrepend = firstNewIndex === 0 && lastNewIndex === newCards.length - 1
+    const isAppend = lastNewIndex === cards.length - 1 && firstNewIndex === cards.length - newCards.length
+
+    if (!isPrepend && !isAppend) {
+      // Reorder, replace, or mixed change → full redistribute
+      fullRedistribute()
+      return
+    }
+
+    // Incremental: keep previous column assignment, only place new cards in shortest column
+    const newColumns = previousColumns.map(col => [...col])
+    const columnHeights = newColumns.map(col => col.reduce((sum, c) => sum + estimateCardHeight(c), 0))
+
+    for (const card of newCards) {
+      let shortestColumn = 0
+      let minHeight = columnHeights[0]
+      for (let i = 1; i < columnCount; i++) {
+        if (columnHeights[i] < minHeight) {
+          minHeight = columnHeights[i]
+          shortestColumn = i
+        }
+      }
+      if (isPrepend) {
+        newColumns[shortestColumn].unshift(card)
+      } else {
+        newColumns[shortestColumn].push(card)
+      }
+      columnHeights[shortestColumn] += estimateCardHeight(card)
+    }
+
+    lastColumnsRef.current = newColumns.map(col => [...col])
     setColumns(newColumns)
   }, [cardsKey, columnCount, stackDirection, cards])
 
@@ -901,7 +984,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
             <div 
               key={card.id}
               id={`card-${card.id}`}
-              className={`card shadow-xl flex flex-col border-2 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
+              className={`card shadow-xl flex flex-col border-2 transition-all duration-200 ease-out ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
               onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
             >
               {(() => {
@@ -1740,9 +1823,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   }))
   
   // Settings tab state
-  const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds' | 'theme'>('filtering')
+  const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds'>('filtering')
   
-  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, linkOpenAction, trustedUsers, mutedUsers } = settings
+  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, linkOpenAction, trustedUsers, mutedUsers } = settings
   
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1985,85 +2068,28 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     const cleanedSettings = { ...tempSettings, mutedUsers: cleanedMutedUsers }
     updateSettings(cleanedSettings)
     setSettingsOpen(false)
-    // Apply theme immediately
-    applyTheme(tempSettings.theme)
+    // Theme settings live in the main Menu; re-apply current app theme just in case.
+    applyThemeToDocument(getAppPreferences().theme)
   }
-  
-  // Apply theme to document
-  const applyTheme = useCallback((themeSettings: ThemeSettings) => {
-    const html = document.documentElement
-    const body = document.body
-    
-    // Clear any custom CSS variables first
-    const varsToRemove = ['--b1', '--b2', '--b3', '--bc', '--p', '--pc', '--s', '--sc', '--a', '--ac', '--n', '--nc', '--in', '--inc', '--su', '--suc', '--wa', '--wac', '--er', '--erc']
-    varsToRemove.forEach(v => html.style.removeProperty(v))
-    
-    let themeToApply: string
-    
-    if (themeSettings.mode === 'system') {
-      // Use system preference
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-      themeToApply = mediaQuery.matches ? themeSettings.darkTheme : themeSettings.lightTheme
-    } else if (themeSettings.mode === 'light') {
-      themeToApply = themeSettings.lightTheme
-    } else {
-      themeToApply = themeSettings.darkTheme
-    }
-    
-    html.setAttribute('data-theme', themeToApply)
-    body.setAttribute('data-theme', themeToApply)
-    logger.theme(`Theme applied: ${themeToApply}`)
-    
-    // Also apply to root div for proper cascading
-    const rootDiv = document.getElementById('root')
-    if (rootDiv) {
-      const themeValue = html.getAttribute('data-theme')
-      if (themeValue) {
-        rootDiv.setAttribute('data-theme', themeValue)
-      }
-    }
-    
-    // Verify theme was applied (only log in debug mode)
-    logger.debug('Theme applied', {
-      html: html.getAttribute('data-theme'),
-      body: body.getAttribute('data-theme'),
-      root: rootDiv?.getAttribute('data-theme')
-    })
-  }, [])
   
   // Helper function to get embed theme
   const getEmbedTheme = useCallback((): 'light' | 'dark' => {
-    if (settings.theme.embedTheme === 'follow') {
+    const appTheme = getAppPreferences().theme
+    if (appTheme.embedTheme === 'follow') {
       // Follow the current app theme
-      if (settings.theme.mode === 'system') {
+      if (appTheme.mode === 'system') {
         const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
         return mediaQuery.matches ? 'dark' : 'light'
-      } else if (settings.theme.mode === 'light') {
+      } else if (appTheme.mode === 'light') {
         return 'light'
       } else {
         return 'dark'
       }
     } else {
       // Override with explicit light or dark
-      return settings.theme.embedTheme
+      return appTheme.embedTheme
     }
-  }, [settings.theme])
-  
-  // Apply theme on mount and when settings change
-  useEffect(() => {
-    applyTheme(settings.theme)
-    
-    // Listen for system theme changes if using system mode
-    if (settings.theme.mode === 'system') {
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-      const updateTheme = (_e: MediaQueryListEvent | MediaQueryList) => {
-        applyTheme(settings.theme) // Re-apply theme to handle system changes
-      }
-      updateTheme(mediaQuery)
-      mediaQuery.addEventListener('change', updateTheme)
-      return () => mediaQuery.removeEventListener('change', updateTheme)
-    }
-  }, [settings.theme, applyTheme])
+  }, [])
   
   // Fetch emotes and load CSS on mount
   useEffect(() => {
@@ -2194,23 +2220,23 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             logger.api(`  Date range for "${term}": ${new Date(oldest.date).toISOString()} (oldest) to ${new Date(newest.date).toISOString()} (newest)`)
           }
           
+          const platform = 'dgg'
+          const channel = 'Destinygg'
           termData.forEach(mention => {
-            // Use date-nick as unique ID (no hash needed)
-            const uniqueId = `${mention.date}-${mention.nick}`
-            
+            const uniqueId = messageId(platform, channel, mention.date, mention.nick)
             if (mentionsMap.has(uniqueId)) {
-              // Merge: add this term to matchedTerms if not already present
               const existing = mentionsMap.get(uniqueId)!
               if (!existing.matchedTerms.includes(term)) {
                 existing.matchedTerms.push(term)
               }
             } else {
-              // New mention: set matchedTerms and ID, mark as not streaming
               mentionsMap.set(uniqueId, {
                 ...mention,
                 id: uniqueId,
                 matchedTerms: [term],
-                isStreaming: false // API mentions are not streaming
+                isStreaming: false,
+                platform,
+                channel
               })
             }
           })
@@ -2244,8 +2270,15 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               logger.api(`First rustlesearch message: date=${new Date(rustleData[0].date).toISOString()}, nick=${rustleData[0].nick}, text=${rustleData[0].text.substring(0, 50)}...`)
             }
             
-            // Mark all rustlesearch data as not streaming
-            mergedData = rustleData.map(m => ({ ...m, isStreaming: false })).sort((a, b) => b.date - a.date)
+            const platform = 'dgg'
+            const channel = 'Destinygg'
+            mergedData = rustleData.map(m => ({
+              ...m,
+              id: messageId(platform, channel, m.date, m.nick),
+              isStreaming: false,
+              platform,
+              channel
+            })).sort((a, b) => b.date - a.date)
             
             // Store searchAfter for pagination and mark as using rustlesearch
             if (rustleResult.searchAfter) {
@@ -2514,20 +2547,24 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
     })
 
-    // Listen for WebSocket messages
+    // Listen for WebSocket messages (d.gg)
     const handleMessage = (_event: any, data: { type: 'MSG'; message: any }) => {
       if (data.type === 'MSG' && data.message) {
         const chatMsg = data.message
-        
-        // Convert chat message to MentionData format
+        const platform = 'dgg'
+        const channel = 'Destinygg'
+        const date = chatMsg.timestamp
+        const nick = chatMsg.nick
         const mention: MentionData = {
-          id: `${chatMsg.timestamp}-${chatMsg.nick}`,
-          date: chatMsg.timestamp,
+          id: messageId(platform, channel, date, nick),
+          date,
           text: chatMsg.data,
-          nick: chatMsg.nick,
+          nick,
           flairs: chatMsg.features?.join(',') || '',
           matchedTerms: [],
-          isStreaming: true // Mark as streaming message
+          isStreaming: true,
+          platform,
+          channel
         }
 
         // Check if message matches any filter terms
@@ -2566,15 +2603,21 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         // Convert and filter history messages
         const filteredMentions: MentionData[] = []
         
+        const platform = 'dgg'
+        const channel = 'Destinygg'
         history.messages.forEach(chatMsg => {
+          const date = chatMsg.timestamp
+          const nick = chatMsg.nick
           const mention: MentionData = {
-            id: `${chatMsg.timestamp}-${chatMsg.nick}`,
-            date: chatMsg.timestamp,
+            id: messageId(platform, channel, date, nick),
+            date,
             text: chatMsg.data,
-            nick: chatMsg.nick,
+            nick,
             flairs: chatMsg.features?.join(',') || '',
             matchedTerms: [],
-            isStreaming: false // History messages are not streaming
+            isStreaming: false,
+            platform,
+            channel
           }
 
           // Check if message matches any filter terms
@@ -2685,14 +2728,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     fetchMentions(filter, offset, true)
   }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
-  // Handle scroll to load more (automatic)
+  // Dedicated scroll container for overview mode (so scrolling keeps working even if <body> is locked)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+
   const handleScroll = useCallback(() => {
     if (loadingMore || !hasMore || loading) return
-
-    const scrollTop = window.scrollY || document.documentElement.scrollTop
-    const scrollHeight = document.documentElement.scrollHeight
-    const clientHeight = window.innerHeight
-    
+    const el = scrollContainerRef.current
+    if (!el) return
+    const { scrollTop, scrollHeight, clientHeight } = el
     // Trigger when within 200px of bottom
     if (scrollHeight - scrollTop - clientHeight < 200) {
       fetchMentions(filter, offset, true)
@@ -2700,8 +2743,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
   useEffect(() => {
-    window.addEventListener('scroll', handleScroll)
-    return () => window.removeEventListener('scroll', handleScroll)
+    const el = scrollContainerRef.current
+    if (!el) return
+    el.addEventListener('scroll', handleScroll)
+    return () => {
+      el.removeEventListener('scroll', handleScroll)
+    }
   }, [handleScroll])
 
   // Cache for card objects to prevent unnecessary re-renders
@@ -2730,7 +2777,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
       // Filter out banned users
       if (isBannedUser(mention.nick, bannedUsers)) {
-        return // Skip this mention entirely
+        return
+      }
+
+      // Filter out banned messages (whole message hidden)
+      if (bannedMessages?.includes(mention.id)) {
+        return
       }
 
       // Filter out muted users (mutes expire after 24 hours)
@@ -2794,14 +2846,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const cachedCard = cardCacheRef.current.get(uniqueId)
           const cardData = {
             id: uniqueId,
-            url: actualUrl, // Use the actual media URL if it's a Reddit media link
+            messageId: mention.id,
+            platform: mention.platform,
+            channel: mention.channel,
+            url: actualUrl,
             text: mention.text,
             nick: mention.nick,
             date: mention.date,
             isDirectMedia: mediaInfo.isMedia,
             mediaType: mediaInfo.type,
-            linkType: linkType, // Keep original URL for link type detection
-            embedUrl: embedUrl ?? undefined, // Use nullish coalescing to preserve null
+            linkType: linkType,
+            embedUrl: embedUrl ?? undefined,
             isYouTube,
             isTwitter,
             isTikTok,
@@ -2812,13 +2867,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             isBluesky,
             isKick,
             isLSF,
-            isTrusted, // Add trusted flag
-            isStreaming: mention.isStreaming, // Pass through streaming flag
+            isTrusted,
+            isStreaming: mention.isStreaming,
           }
           
           // Reuse cached card if data matches, otherwise create new one
           let card: LinkCard
-          if (cachedCard && 
+          if (cachedCard &&
+              cachedCard.messageId === cardData.messageId &&
               cachedCard.url === cardData.url &&
               cachedCard.text === cardData.text &&
               cachedCard.nick === cardData.nick &&
@@ -2829,7 +2885,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           } else {
             card = cardData
           }
-          
+          if (card.url && bannedLinks?.includes(normalizeUrlForBan(card.url))) return
           cards.push(card)
           newCache.set(uniqueId, card)
         })
@@ -2841,20 +2897,24 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         
         const cardData = {
           id: uniqueId,
-          url: '', // Empty URL for non-link messages
+          messageId: mention.id,
+          platform: mention.platform,
+          channel: mention.channel,
+          url: '',
           text: mention.text,
           nick: mention.nick,
           date: mention.date,
           isDirectMedia: false,
           linkType: undefined,
           isTrusted,
-          isStreaming: mention.isStreaming, // Pass through streaming flag
+          isStreaming: mention.isStreaming,
         }
         
         // Check if we have a cached card with the same data
         const cachedCard = cardCacheRef.current.get(uniqueId)
         let card: LinkCard
-        if (cachedCard && 
+        if (cachedCard &&
+            cachedCard.messageId === cardData.messageId &&
             cachedCard.text === cardData.text &&
             cachedCard.nick === cardData.nick &&
             cachedCard.date === cardData.date &&
@@ -2864,7 +2924,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         } else {
           card = cardData
         }
-        
         cards.push(card)
         newCache.set(uniqueId, card)
       }
@@ -2874,7 +2933,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     cardCacheRef.current = newCache
     
     return cards
-  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, platformSettings, trustedUsers, mutedUsers])
+  }, [mentions, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, trustedUsers, mutedUsers])
 
   const highlightedCard = linkCards.find(card => card.id === highlightedCardId)
   const highlightedIndex = highlightedCardId ? linkCards.findIndex(card => card.id === highlightedCardId) : -1
@@ -3193,12 +3252,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           >
             Keybinds
           </button>
-          <button
-            className={`tab ${settingsTab === 'theme' ? 'tab-active' : ''}`}
-            onClick={() => setSettingsTab('theme')}
-          >
-            Theme
-          </button>
         </div>
         
         <div className="space-y-4 max-h-[60vh] overflow-y-auto">
@@ -3463,13 +3516,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             />
           )}
           
-          {/* Theme Tab */}
-          {settingsTab === 'theme' && (
-            <ThemeTab
-              theme={tempSettings.theme}
-              onThemeChange={(theme) => setTempSettings({ ...tempSettings, theme })}
-            />
-          )}
+          {/* Theme settings moved to the main Menu */}
         </div>
 
         <div className="modal-action">
@@ -4133,7 +4180,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // Overview Mode
   return (
     <>
-      <div className="min-h-screen bg-base-200 p-4">
+      <div ref={scrollContainerRef} className="h-screen overflow-y-auto bg-base-200 p-4">
       {loading && mentions.length === 0 && (
         <div className="flex justify-center items-center py-8">
           <img 

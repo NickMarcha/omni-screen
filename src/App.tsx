@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import LinkScroller from './components/LinkScroller'
 import Menu from './components/Menu'
 import OmniScreen from './components/OmniScreen'
+import { applyThemeToDocument, getAppPreferences } from './utils/appPreferences'
 import './App.css'
 
 type Page = 'menu' | 'link-scroller' | 'omni-screen'
@@ -9,14 +10,17 @@ type Page = 'menu' | 'link-scroller' | 'omni-screen'
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('menu')
 
-  // Ensure theme is applied to root div as well
+  // Apply persisted theme on app load (Menu can edit it).
   useEffect(() => {
-    const root = document.getElementById('root')
-    if (root) {
-      const htmlTheme = document.documentElement.getAttribute('data-theme')
-      if (htmlTheme) {
-        root.setAttribute('data-theme', htmlTheme)
-      }
+    const prefs = getAppPreferences()
+    applyThemeToDocument(prefs.theme)
+
+    // If using system mode, re-apply on system theme changes
+    if (prefs.theme.mode === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const handler = () => applyThemeToDocument(getAppPreferences().theme)
+      mediaQuery.addEventListener?.('change', handler)
+      return () => mediaQuery.removeEventListener?.('change', handler)
     }
   }, [])
 
