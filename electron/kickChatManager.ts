@@ -135,7 +135,27 @@ async function fetchKickJson(url: string): Promise<any> {
 
 function extractKickEmotes(raw: any): Array<{ id: number; name?: string; start?: number; end?: number }> | undefined {
   const candidates = [raw?.emotes, raw?.emoticons, raw?.message?.emotes, raw?.message?.emoticons].filter(Boolean)
-  const first = candidates.find((x) => Array.isArray(x))
+  let first = candidates.find((x) => Array.isArray(x)) as any[] | undefined
+
+  // Some Kick payloads use content as array of fragments: [{ type: 'text', content: '...' }, { type: 'emote', id, ... }]
+  if (!first && Array.isArray(raw?.content)) {
+    const fromFragments: Array<{ id: number; name?: string; start?: number; end?: number }> = []
+    let offset = 0
+    for (const frag of raw.content as any[]) {
+      if (!frag || typeof frag !== 'object') continue
+      const type = String(frag?.type ?? frag?.kind ?? '').toLowerCase()
+      const text = typeof frag?.content === 'string' ? frag.content : String(frag?.text ?? '')
+      if (type === 'emote' || type === 'emoticon') {
+        const id = Number(frag?.id ?? frag?.emote_id ?? frag?.emoticon_id)
+        if (Number.isFinite(id) && id > 0) {
+          fromFragments.push({ id, name: typeof frag?.name === 'string' ? frag.name : undefined, start: offset, end: offset + text.length })
+        }
+      }
+      offset += text.length
+    }
+    if (fromFragments.length > 0) return fromFragments
+  }
+
   if (!first) return undefined
 
   const out: Array<{ id: number; name?: string; start?: number; end?: number }> = []
@@ -187,12 +207,21 @@ function normalizeKickMessage(parsed: any, slugHint?: string, chatroomIdHint?: n
   const sender = parsed?.sender ?? parsed?.user ?? parsed?.author ?? {}
   const createdAt = String(parsed?.created_at ?? parsed?.createdAt ?? parsed?.created_at?.date ?? parsed?.timestamp ?? '')
 
+  let content: string
+  if (Array.isArray(parsed?.content)) {
+    content = (parsed.content as any[])
+      .map((f: any) => (typeof f?.content === 'string' ? f.content : typeof f?.text === 'string' ? f.text : String(f ?? '')))
+      .join('')
+  } else {
+    content = String(parsed?.content ?? parsed?.message ?? parsed?.body ?? '')
+  }
+
   const msg: KickChatMessage = {
     platform: 'kick',
     slug,
     chatroomId,
     id: String(parsed?.id ?? parsed?.message_id ?? ''),
-    content: String(parsed?.content ?? parsed?.message ?? parsed?.body ?? ''),
+    content,
     createdAt,
     emotes: extractKickEmotes(parsed),
     sender: {

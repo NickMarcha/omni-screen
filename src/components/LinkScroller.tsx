@@ -36,6 +36,14 @@ export function messageId(platform: string, channel: string, date: number, nick:
   return `${platform}:${channel}:${date}:${nick}`
 }
 
+// Kick emote shape (from Kick chat message payload)
+interface KickEmote {
+  id: number
+  name?: string
+  start?: number
+  end?: number
+}
+
 interface MentionData {
   id: string // Unique ID: platform:channel:date:nick (or legacy date-nick)
   date: number
@@ -47,6 +55,7 @@ interface MentionData {
   isStreaming?: boolean // true for new incoming WebSocket messages, false for history/API
   platform?: string // e.g. 'dgg', 'kick'
   channel?: string // e.g. 'Destinygg', 'destiny'
+  kickEmotes?: KickEmote[] // Kick emote positions/ids for rendering
 }
 
 interface ImgurAlbumMedia {
@@ -98,6 +107,7 @@ interface LinkCard {
   isStreaming?: boolean // true for new incoming WebSocket messages
   platform?: string // e.g. 'dgg', 'kick'
   channel?: string // e.g. 'Destinygg', 'destiny'
+  kickEmotes?: KickEmote[] // Kick emote data for rendering
 }
 
 // Extract URLs from text
@@ -150,11 +160,24 @@ function containsNSFL(text: string): boolean {
   return /NSFL/i.test(text)
 }
 
-// Check if text contains banned terms
+// Check if text contains banned terms (substring match: no word-boundary, so offensive terms cannot be bypassed)
 function containsBannedTerms(text: string, bannedTerms: string[] | undefined): boolean {
   if (!bannedTerms || bannedTerms.length === 0) return false
   const lowerText = text.toLowerCase()
   return bannedTerms.some(term => term.trim() && lowerText.includes(term.trim().toLowerCase()))
+}
+
+// Check if filter term appears in text/nick as a whole word (whitespace or start/end of string; used only for filter terms, not banned terms)
+function filterTermMatchesAsWord(haystack: string, term: string): boolean {
+  const t = term.trim()
+  if (!t) return false
+  const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  try {
+    const re = new RegExp('\\b' + escaped + '\\b', 'i')
+    return re.test(haystack)
+  } catch {
+    return haystack.toLowerCase().includes(t.toLowerCase())
+  }
 }
 
 // Check if user is banned
@@ -368,11 +391,11 @@ function loadSettings(): Settings {
         channels: parsed.channels && typeof parsed.channels === 'object' ? {
           dgg: parsed.channels.dgg !== undefined ? { enabled: !!parsed.channels.dgg?.enabled } : { enabled: true },
           kick: parsed.channels.kick !== undefined ? { enabled: !!parsed.channels.kick?.enabled, channelSlug: String(parsed.channels.kick?.channelSlug || '').trim() || undefined } : { enabled: false, channelSlug: undefined }
-        } : undefined,
+        } : { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
         footerDisplay: parsed.footerDisplay && typeof parsed.footerDisplay === 'object' ? {
           showPlatformLabel: parsed.footerDisplay.showPlatformLabel !== false,
           platformColorStyle: (parsed.footerDisplay.platformColorStyle === 'tint' || parsed.footerDisplay.platformColorStyle === 'subtle' || parsed.footerDisplay.platformColorStyle === 'none') ? parsed.footerDisplay.platformColorStyle : 'tint'
-        } : undefined,
+        } : { showPlatformLabel: true, platformColorStyle: 'tint' as const },
       }
       return migrated
     }
@@ -822,8 +845,23 @@ function getYouTubeEmbedUrl(url: string): string | null {
   }
 }
 
+// Helpers for card footer platform label and color
+function getPlatformLabel(card: LinkCard): string {
+  if (card.platform === 'kick') return `Kick • ${card.channel || '?'}`
+  if (card.platform === 'dgg') return 'd.gg'
+  if (card.channel) return `${card.platform || 'Chat'} • ${card.channel}`
+  return card.platform || ''
+}
+
+function getPlatformFooterColor(platform: string | undefined, style: 'tint' | 'subtle' | 'none' | undefined): string {
+  if (!style || style === 'none' || !platform) return ''
+  if (platform === 'dgg') return style === 'tint' ? 'border-l-4 border-l-primary bg-primary/5' : 'border-l-4 border-l-primary/40 bg-primary/5'
+  if (platform === 'kick') return style === 'tint' ? 'border-l-4 border-l-success bg-success/5' : 'border-l-4 border-l-success/40 bg-success/5'
+  return style === 'tint' ? 'border-l-4 border-l-secondary bg-secondary/5' : 'border-l-4 border-l-secondary/40 bg-secondary/5'
+}
+
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down' }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down' }) {
+function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down', footerDisplay }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down', footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none' } }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -984,7 +1022,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
             <div 
               key={card.id}
               id={`card-${card.id}`}
-              className={`card shadow-xl flex flex-col border-2 transition-all duration-200 ease-out ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-300'}`}
+              className={`card shadow-xl flex flex-col border-2 transition-all duration-200 ease-out p-0 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-content/20'}`}
               onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
             >
               {(() => {
@@ -1047,7 +1085,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1059,7 +1097,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1071,7 +1109,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1083,7 +1121,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1095,7 +1133,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1107,7 +1145,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1119,7 +1157,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1131,7 +1169,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1143,7 +1181,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1155,7 +1193,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                     return (
                       <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
                         <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink)}
+                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink, card.kickEmotes)}
                         </p>
                         <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
                           {card.url}
@@ -1167,7 +1205,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                   // Show embed version if platform setting is 'embed'
                   if (card.isYouTube && youtubeMode === 'embed') {
                     return (
-                      <div className="p-2" key={`youtube-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`youtube-${card.id}-${reloadKey}`}>
                         <YouTubeEmbed 
                           url={card.url} 
                           embedUrl={card.embedUrl!}
@@ -1180,63 +1218,63 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
                   }
                   if (card.isTwitter && twitterMode === 'embed') {
                     return (
-                      <div className="p-2" key={`twitter-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`twitter-${card.id}-${reloadKey}`}>
                         <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
                       </div>
                     )
                   }
                   if (card.isTikTok && tiktokMode === 'embed') {
                     return (
-                      <div className="p-2" key={`tiktok-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`tiktok-${card.id}-${reloadKey}`}>
                         <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
                       </div>
                     )
                   }
                   if (card.isReddit && redditMode === 'embed') {
                     return (
-                      <div className="p-2" key={`reddit-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`reddit-${card.id}-${reloadKey}`}>
                         <RedditEmbed url={card.url} theme={getEmbedTheme()} />
                       </div>
                     )
                   }
                   if (card.isStreamable && streamableMode === 'embed') {
                     return (
-                      <div className="p-2" key={`streamable-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`streamable-${card.id}-${reloadKey}`}>
                         <StreamableEmbed url={card.url} autoplay={false} mute={false} />
                       </div>
                     )
                   }
                   if (card.isWikipedia && wikipediaMode === 'embed') {
                     return (
-                      <div className="p-2" key={`wikipedia-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`wikipedia-${card.id}-${reloadKey}`}>
                         <WikipediaEmbed url={card.url} />
                       </div>
                     )
                   }
                   if (card.isBluesky && blueskyMode === 'embed') {
                     return (
-                      <div className="p-2" key={`bluesky-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`bluesky-${card.id}-${reloadKey}`}>
                         <BlueskyEmbed url={card.url} />
                       </div>
                     )
                   }
                   if (card.isKick && kickMode === 'embed') {
                     return (
-                      <div className="p-2" key={`kick-${card.id}-${reloadKey}`}>
-                        <KickEmbed url={card.url} autoplay={false} mute={false} />
+                      <div className="p-0" key={`kick-${card.id}-${reloadKey}`}>
+                        <KickEmbed url={card.url} autoplay={false} mute={true} useIframeOnly />
                       </div>
                     )
                   }
                   if (card.isLSF && lsfMode === 'embed') {
                     return (
-                      <div className="p-2" key={`lsf-${card.id}-${reloadKey}`}>
+                      <div className="p-0" key={`lsf-${card.id}-${reloadKey}`}>
                         <LSFEmbed url={card.url} autoplay={false} mute={false} />
                       </div>
                     )
                   }
                   if (card.isImgur && imgurMode === 'embed') {
                     return (
-                      <div className="p-2">
+                      <div className="p-0">
                         <div className="bg-base-200 rounded-lg p-4 text-center">
                           <img 
                             src={imgurIcon} 
@@ -1266,43 +1304,52 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
               {/* Text content and metadata at bottom - always visible */}
               <div className="flex-shrink-0">
                 {/* Message text with rounded dark grey background */}
-                <div className="bg-base-300 rounded-lg p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                  <div className="break-words overflow-wrap-anywhere mb-3">
+                <div className="bg-base-300 rounded-lg p-3" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
+                  <div className="break-words overflow-wrap-anywhere mb-2">
                     <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {card.isYouTube 
-                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isReddit
-                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isTwitter
-                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isStreamable
-                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isImgur
-                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isWikipedia
-                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isBluesky
-                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isKick
-                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink, card.kickEmotes)
                         : card.isLSF
-                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink)
-                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink)
+                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink, card.kickEmotes)
+                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink, card.kickEmotes)
                       }
                     </p>
                   </div>
                   
-                  {/* User info and expand button */}
-                  <div className="flex items-center justify-between pt-2 border-t border-base-content/20" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                    <div className="flex items-center gap-4">
+                  {/* User info and expand button - stretch to card edges */}
+                  <div
+                    className={`flex items-center justify-between pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(card.platform, footerDisplay?.platformColorStyle ?? 'tint')}`}
+                    onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
+                  >
+                    <div className="flex items-center gap-4 flex-wrap">
                       <div>
+                        {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(card) && (
+                          <span className="text-xs text-base-content/50 mr-2" data-platform={card.platform}>{getPlatformLabel(card)}</span>
+                        )}
                         <span className="text-xs text-base-content/70">Posted by</span>
                         <a
-                          href={`https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=Destinygg`}
+                          href={card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : '#')}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="ml-2 text-sm font-bold text-primary hover:underline"
-                          onClick={(e) => handleAnchorClick(e, `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=Destinygg`)}
+                          onClick={(e) => {
+                            const url = card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : card.url || '#')
+                            handleAnchorClick(e, url)
+                          }}
                         >
                           {card.nick}
                         </a>
@@ -1591,6 +1638,89 @@ function loadCSSOnce(href: string, id: string): Promise<void> {
   })
 }
 
+// Kick emote: render as img from files.kick.com
+function renderKickEmoteImg(id: number, name?: string, key?: string) {
+  const src = `https://files.kick.com/emotes/${encodeURIComponent(String(id))}/fullsize`
+  return (
+    <img
+      key={key ?? `kick-emote-${id}`}
+      src={src}
+      alt={name ? `:${name}:` : 'kick emote'}
+      title={name ? `:${name}:` : undefined}
+      loading="lazy"
+      className="inline-block align-middle mx-0.5"
+      style={{ height: 18, width: 'auto' }}
+    />
+  )
+}
+
+// Process text with Kick emotes (position-based or name-based)
+function processTextWithKickEmotes(text: string, kickEmotes: KickEmote[], baseKey: number = 0): (string | JSX.Element)[] {
+  if (!text) return ['']
+  if (!kickEmotes?.length) return [text]
+
+  const withRanges = kickEmotes
+    .map((e) => ({
+      id: Number(e?.id),
+      name: typeof e?.name === 'string' ? e.name : undefined,
+      start: typeof e?.start === 'number' ? e.start : Number(e?.start),
+      end: typeof e?.end === 'number' ? e.end : Number(e?.end),
+    }))
+    .filter((e) => Number.isFinite(e.id) && e.id > 0 && Number.isFinite(e.start) && Number.isFinite(e.end) && (e.end as number) > (e.start as number))
+    .sort((a, b) => (a.start as number) - (b.start as number))
+
+  if (withRanges.length > 0) {
+    const parts: (string | JSX.Element)[] = []
+    let last = 0
+    let k = baseKey
+    for (const e of withRanges) {
+      const s = e.start as number
+      const en = e.end as number
+      if (s < last) continue
+      if (s > text.length) continue
+      if (en > text.length) continue
+      if (s > last) parts.push(text.slice(last, s))
+      parts.push(renderKickEmoteImg(e.id, e.name, `kick-emote-${k++}`))
+      last = en
+    }
+    if (last < text.length) parts.push(text.slice(last))
+    return parts.length ? parts : [text]
+  }
+
+  const nameToId = new Map<string, number>()
+  for (const e of kickEmotes) {
+    const id = Number((e as any)?.id)
+    const name = typeof (e as any)?.name === 'string' ? String((e as any).name).trim() : ''
+    if (!name || !Number.isFinite(id) || id <= 0) continue
+    if (!nameToId.has(name)) nameToId.set(name, id)
+  }
+  if (nameToId.size === 0) return [text]
+
+  const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const names = Array.from(nameToId.keys()).sort((a, b) => b.length - a.length).slice(0, 50)
+  const pattern = `:?(${names.map(escapeRegex).join('|')}):?`
+  let re: RegExp
+  try {
+    re = new RegExp(`(?<![\\w])${pattern}(?![\\w])`, 'g')
+  } catch {
+    re = new RegExp(`\\b${pattern}\\b`, 'g')
+  }
+  const parts: (string | JSX.Element)[] = []
+  let last = 0
+  let match: RegExpExecArray | null
+  let k = baseKey
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index))
+    const name = match[1]
+    const id = nameToId.get(name)
+    if (id) parts.push(renderKickEmoteImg(id, name, `kick-emote-${k++}`))
+    else parts.push(match[0])
+    last = match.index + match[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length ? parts : [text]
+}
+
 // Process text segment to replace emotes with CSS-styled spans
 function processTextWithEmotes(text: string, emotesMap: Map<string, string>, baseKey: number = 0): (string | JSX.Element)[] {
   if (emotesMap.size === 0) {
@@ -1649,18 +1779,43 @@ function processTextWithEmotes(text: string, emotesMap: Map<string, string>, bas
   return parts.length > 0 ? parts : [text]
 }
 
+// Replace Kick bracket syntax [emote:ID:name] with emote images (Kick sends this when no emotes array)
+function processKickEmoteBrackets(text: string, baseKey: number = 0): (string | JSX.Element)[] {
+  const tokenRe = /\[emote:(\d+):([^\]]+)\]/g
+  if (!tokenRe.test(text)) return [text]
+  tokenRe.lastIndex = 0
+  const parts: (string | JSX.Element)[] = []
+  let last = 0
+  let match: RegExpExecArray | null
+  let k = baseKey
+  while ((match = tokenRe.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index))
+    const id = parseInt(match[1], 10)
+    const name = match[2] || undefined
+    if (Number.isFinite(id) && id > 0) parts.push(renderKickEmoteImg(id, name, `kick-bracket-${k++}`))
+    else parts.push(match[0])
+    last = match.index + match[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length ? parts : [text]
+}
+
 // Process a text segment for greentext (lines starting with ">")
-function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey: number = 0): (string | JSX.Element)[] {
+function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey: number = 0, kickEmotes?: KickEmote[]): (string | JSX.Element)[] {
   const lines = text.split('\n')
   const parts: (string | JSX.Element)[] = []
   let keyCounter = baseKey
+  const processEmotes = (line: string, key: number) => {
+    if (line.includes('[emote:')) return processKickEmoteBrackets(line, key)
+    if (kickEmotes?.length) return processTextWithKickEmotes(line, kickEmotes, key)
+    return emotesMap ? processTextWithEmotes(line, emotesMap, key) : [line]
+  }
 
   lines.forEach((line, lineIndex) => {
     const isGreentext = line.trim().startsWith('>')
     
     if (isGreentext) {
-      // Process the greentext line for emotes
-      const processedLine = emotesMap ? processTextWithEmotes(line, emotesMap, keyCounter) : [line]
+      const processedLine = processEmotes(line, keyCounter)
       
       processedLine.forEach((part) => {
         if (typeof part === 'string') {
@@ -1701,8 +1856,7 @@ function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey
         }
       })
     } else {
-      // Regular text - process for emotes but don't apply greentext styling
-      const processedLine = emotesMap ? processTextWithEmotes(line, emotesMap, keyCounter) : [line]
+      const processedLine = processEmotes(line, keyCounter)
       processedLine.forEach((part) => {
         if (typeof part === 'string') {
           parts.push(part)
@@ -1722,7 +1876,7 @@ function processGreentext(text: string, emotesMap?: Map<string, string>, baseKey
   return parts.length > 0 ? parts : [text]
 }
 
-function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string, emotesMap?: Map<string, string>, onOpenLink?: (url: string) => void): JSX.Element {
+function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: string, emotesMap?: Map<string, string>, onOpenLink?: (url: string) => void, kickEmotes?: KickEmote[]): JSX.Element {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
@@ -1732,10 +1886,9 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
 
   while ((match = urlRegex.exec(text)) !== null) {
     hasLinks = true
-    // Add text before the link (process for greentext and emotes)
     if (match.index > lastIndex) {
       const textSegment = text.substring(lastIndex, match.index)
-      const processedSegment = processGreentext(textSegment, emotesMap, keyCounter)
+      const processedSegment = processGreentext(textSegment, emotesMap, keyCounter, kickEmotes)
       processedSegment.forEach((part) => {
         parts.push(part)
         keyCounter++
@@ -1769,19 +1922,17 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
     lastIndex = match.index + match[0].length
   }
   
-  // Add remaining text (process for greentext and emotes)
   if (lastIndex < text.length) {
     const textSegment = text.substring(lastIndex)
-    const processedSegment = processGreentext(textSegment, emotesMap, keyCounter)
+    const processedSegment = processGreentext(textSegment, emotesMap, keyCounter, kickEmotes)
     processedSegment.forEach((part) => {
       parts.push(part)
       keyCounter++
     })
   }
   
-  // If no links found, still process for greentext and emotes
   if (!hasLinks) {
-    const processedSegment = processGreentext(text, emotesMap, keyCounter)
+    const processedSegment = processGreentext(text, emotesMap, keyCounter, kickEmotes)
     return <>{processedSegment}</>
   }
 
@@ -1802,6 +1953,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     showNonLinks: settings.showNonLinks ?? false,
     bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
     bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
+    bannedLinks: Array.isArray(settings.bannedLinks) ? settings.bannedLinks : [],
+    bannedMessages: Array.isArray(settings.bannedMessages) ? settings.bannedMessages : [],
     platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : {
       'YouTube': 'embed',
       'Twitter': 'embed',
@@ -1820,13 +1973,16 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     mutedUsers: Array.isArray(settings.mutedUsers) ? cleanupExpiredMutes(settings.mutedUsers) : [],
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
     theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
+    channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+    footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint' },
   }))
   
   // Settings tab state
-  const [settingsTab, setSettingsTab] = useState<'filtering' | 'keybinds'>('filtering')
+  const [settingsTab, setSettingsTab] = useState<'filtering' | 'banned' | 'channels' | 'footer' | 'keybinds'>('filtering')
   
-  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, linkOpenAction, trustedUsers, mutedUsers } = settings
-  
+  const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, linkOpenAction, trustedUsers, mutedUsers, footerDisplay } = settings
+  const dggEnabled = settings.channels?.dgg?.enabled !== false
+
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1899,12 +2055,16 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         showNonLinks: settings.showNonLinks ?? false,
         bannedTerms: Array.isArray(settings.bannedTerms) ? settings.bannedTerms : [],
         bannedUsers: Array.isArray(settings.bannedUsers) ? settings.bannedUsers : [],
+        bannedLinks: Array.isArray(settings.bannedLinks) ? settings.bannedLinks : [],
+        bannedMessages: Array.isArray(settings.bannedMessages) ? settings.bannedMessages : [],
         platformSettings: settings.platformSettings && typeof settings.platformSettings === 'object' ? settings.platformSettings : defaultPlatformSettings,
         linkOpenAction: settings.linkOpenAction || 'browser',
         trustedUsers: Array.isArray(settings.trustedUsers) ? settings.trustedUsers : [],
-        mutedUsers: Array.isArray(settings.mutedUsers) ? settings.mutedUsers : [], // Include all mutes (cleanup happens on save)
+        mutedUsers: Array.isArray(settings.mutedUsers) ? settings.mutedUsers : [],
         keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
         theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
+        channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+        footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint' },
       })
     }
   }, [settingsOpen, settings])
@@ -2021,6 +2181,21 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     closeContextMenu()
   }, [closeContextMenu, handleOpenLink])
 
+  const handleBanLink = useCallback((url: string) => {
+    const normalized = normalizeUrlForBan(url)
+    const current = settings.bannedLinks || []
+    if (current.includes(normalized)) { closeContextMenu(); return }
+    updateSettings({ ...settings, bannedLinks: [...current, normalized] })
+    closeContextMenu()
+  }, [settings, updateSettings, closeContextMenu])
+
+  const handleBanMessage = useCallback((messageIdToBan: string) => {
+    const current = settings.bannedMessages || []
+    if (current.includes(messageIdToBan)) { closeContextMenu(); return }
+    updateSettings({ ...settings, bannedMessages: [...current, messageIdToBan] })
+    closeContextMenu()
+  }, [settings, updateSettings, closeContextMenu])
+
   const handleCopyMessage = useCallback((card: LinkCard) => {
     navigator.clipboard.writeText(card.text).catch(err => {
       logger.error('Failed to copy message:', err)
@@ -2128,10 +2303,15 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
   const SIZE = 150
 
-  const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false) => {
-    // Prevent duplicate concurrent calls
+  const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false, dggEnabledFlag: boolean = true) => {
     if (fetchInProgressRef.current) {
       logger.api('fetchMentions: Another fetch already in progress, skipping duplicate call')
+      return
+    }
+    if (!dggEnabledFlag) {
+      setLoading(false)
+      setLoadingMore(false)
+      if (!append) setMentions([])
       return
     }
     
@@ -2223,6 +2403,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const platform = 'dgg'
           const channel = 'Destinygg'
           termData.forEach(mention => {
+            const matchesAsWord = filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)
+            if (!matchesAsWord) return
             const uniqueId = messageId(platform, channel, mention.date, mention.nick)
             if (mentionsMap.has(uniqueId)) {
               const existing = mentionsMap.get(uniqueId)!
@@ -2515,29 +2697,30 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   useEffect(() => {
     if (filter && filter.length > 0 && websocketHistoryReceived) {
       logger.api('WebSocket history received, now fetching mentions API')
-      fetchMentions(filter, 0, false)
+      fetchMentions(filter, 0, false, dggEnabled)
     }
-  }, [filter, fetchMentions, websocketHistoryReceived])
+  }, [filter, fetchMentions, websocketHistoryReceived, dggEnabled])
 
   // WebSocket connection for streaming messages
   useEffect(() => {
+    if (!dggEnabled) {
+      setWebsocketHistoryReceived(true)
+      return
+    }
     // Clear any existing timeout
     if (websocketHistoryTimeoutRef.current) {
       clearTimeout(websocketHistoryTimeoutRef.current)
       websocketHistoryTimeoutRef.current = null
     }
     
-    // Set a timeout to proceed with mentions API even if WebSocket history doesn't arrive
-    // This ensures the app doesn't hang if WebSocket has issues
     websocketHistoryTimeoutRef.current = setTimeout(() => {
       if (!websocketHistoryReceived && filter && filter.length > 0) {
         logger.api('WebSocket history timeout - proceeding with mentions API fetch')
         setWebsocketHistoryReceived(true)
       }
       websocketHistoryTimeoutRef.current = null
-    }, 5000) // 5 second timeout
+    }, 5000)
 
-    // Connect to WebSocket
     window.ipcRenderer.invoke('chat-websocket-connect').catch((err) => {
       logger.error('Failed to connect chat WebSocket:', err)
       // If connection fails immediately, proceed with mentions API
@@ -2567,14 +2750,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           channel
         }
 
-        // Check if message matches any filter terms
+        // Check if message matches any filter terms (whole-word: whitespace or start/end of string)
         const lowerText = mention.text.toLowerCase()
         const lowerNick = mention.nick.toLowerCase()
         const matchingTerms: string[] = []
         
         filter.forEach(term => {
-          const lowerTerm = term.toLowerCase()
-          if (lowerText.includes(lowerTerm) || lowerNick.includes(lowerTerm)) {
+          if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) {
             matchingTerms.push(term)
           }
         })
@@ -2620,14 +2802,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             channel
           }
 
-          // Check if message matches any filter terms
-          const lowerText = mention.text.toLowerCase()
-          const lowerNick = mention.nick.toLowerCase()
+          // Check if message matches any filter terms (whole-word)
           const matchingTerms: string[] = []
-          
           filter.forEach(term => {
-            const lowerTerm = term.toLowerCase()
-            if (lowerText.includes(lowerTerm) || lowerNick.includes(lowerTerm)) {
+            if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) {
               matchingTerms.push(term)
             }
           })
@@ -2719,28 +2897,79 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         websocketHistoryTimeoutRef.current = null
       }
     }
-  }, [filter, websocketHistoryReceived]) // Re-run when filter changes to update matching logic
+  }, [filter, websocketHistoryReceived, dggEnabled])
 
-  // Handle load more button click
+  // Kick channel: set targets and listen for messages when Kick is enabled
+  const kickEnabled = !!settings.channels?.kick?.enabled
+  const kickSlug = (settings.channels?.kick?.channelSlug || '').trim()
+  useEffect(() => {
+    if (!kickEnabled || !kickSlug) {
+      window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
+      return
+    }
+    window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [kickSlug] }).catch((err) => {
+      logger.error('Failed to set Kick chat targets:', err)
+    })
+    // Delayed refetch so history is retried after initial fetch (e.g. if cookies weren't ready)
+    const refetchTimer = window.setTimeout(() => {
+      window.ipcRenderer.invoke('kick-chat-refetch-history', { slugs: [kickSlug] }).catch(() => {})
+    }, 4500)
+    const handleKickMessage = (_event: any, msg: { platform: 'kick'; slug: string; content: string; createdAt: string; sender?: { username?: string; slug?: string }; isHistory?: boolean; emotes?: KickEmote[] }) => {
+      if (!msg || msg.platform !== 'kick') return
+      const platform = 'kick'
+      const channel = msg.slug || 'unknown'
+      const date = Number.isFinite(Date.parse(msg.createdAt)) ? Date.parse(msg.createdAt) : Date.now()
+      const nick = msg.sender?.username || msg.sender?.slug || 'kick'
+      const mention: MentionData = {
+        id: messageId(platform, channel, date, nick),
+        date,
+        text: msg.content ?? '',
+        nick,
+        flairs: '',
+        matchedTerms: [],
+        isStreaming: !msg.isHistory,
+        platform,
+        channel,
+        kickEmotes: Array.isArray(msg.emotes) ? msg.emotes : undefined
+      }
+      const matchingTerms: string[] = []
+      filter.forEach(term => {
+        if (filterTermMatchesAsWord(mention.text, term) || filterTermMatchesAsWord(mention.nick, term)) matchingTerms.push(term)
+      })
+      if (matchingTerms.length === 0) return
+      mention.matchedTerms = matchingTerms
+      setMentions(prev => {
+        const exists = prev.some(m => m.id === mention.id)
+        if (exists) return prev
+        return [mention, ...prev]
+      })
+    }
+    window.ipcRenderer.on('kick-chat-message', handleKickMessage)
+    return () => {
+      window.clearTimeout(refetchTimer)
+      window.ipcRenderer.off('kick-chat-message', handleKickMessage)
+      window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
+    }
+  }, [kickEnabled, kickSlug, filter])
+
+  // Handle load more button click (only when d.gg enabled; Kick has no long history)
   const handleLoadMore = useCallback(() => {
-    if (loadingMore || !hasMore || loading) return
-    // For rustlesearch, we use searchAfter instead of offset, but fetchMentions handles this internally
-    fetchMentions(filter, offset, true)
-  }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
+    if (!dggEnabled || loadingMore || !hasMore || loading) return
+    fetchMentions(filter, offset, true, dggEnabled)
+  }, [dggEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
   // Dedicated scroll container for overview mode (so scrolling keeps working even if <body> is locked)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
   const handleScroll = useCallback(() => {
-    if (loadingMore || !hasMore || loading) return
+    if (!dggEnabled || loadingMore || !hasMore || loading) return
     const el = scrollContainerRef.current
     if (!el) return
     const { scrollTop, scrollHeight, clientHeight } = el
-    // Trigger when within 200px of bottom
     if (scrollHeight - scrollTop - clientHeight < 200) {
-      fetchMentions(filter, offset, true)
+      fetchMentions(filter, offset, true, dggEnabled)
     }
-  }, [filter, offset, loadingMore, hasMore, loading, fetchMentions])
+  }, [dggEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
   useEffect(() => {
     const el = scrollContainerRef.current
@@ -2849,6 +3078,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             messageId: mention.id,
             platform: mention.platform,
             channel: mention.channel,
+            kickEmotes: mention.kickEmotes,
             url: actualUrl,
             text: mention.text,
             nick: mention.nick,
@@ -2900,6 +3130,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           messageId: mention.id,
           platform: mention.platform,
           channel: mention.channel,
+          kickEmotes: mention.kickEmotes,
           url: '',
           text: mention.text,
           nick: mention.nick,
@@ -3027,10 +3258,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     if (direction === 'next') {
       // If we're at the end, try to load more
       if (highlightedIndex === linkCards.length - 1) {
-        if (hasMore && !loadingMore && !loading) {
+        if (hasMore && dggEnabled && !loadingMore && !loading) {
           logger.api('At end of list, loading more mentions...')
           waitingForMoreRef.current = true
-          await fetchMentions(filter, offset, true)
+          await fetchMentions(filter, offset, true, dggEnabled)
           // The useEffect below will handle advancing to the next card after loading
         } else {
           // No more to load or already loading, loop around to beginning
@@ -3055,14 +3286,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         setHasMore(true)
         setLoading(true)
         setError(null)
-        await fetchMentions(filter, 0, false)
+        await fetchMentions(filter, 0, false, dggEnabled)
         // The useEffect below will handle highlighting the first card after refresh
       } else {
         // Not at beginning, just move to previous
         setHighlightedCardId(linkCards[highlightedIndex - 1].id)
       }
     }
-  }, [highlightedIndex, linkCards, hasMore, loadingMore, loading, filter, offset, fetchMentions])
+  }, [highlightedIndex, linkCards, hasMore, dggEnabled, loadingMore, loading, filter, offset, fetchMentions])
 
   // Auto-advance to next card after loading more content when at the end
   useEffect(() => {
@@ -3134,7 +3365,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     setHighlightedCardId(null)
     
     logger.api(`State reset, calling fetchMentions with filter="${filter}", offset=0`)
-    fetchMentions(filter, 0, false)
+    fetchMentions(filter, 0, false, dggEnabled)
   }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId])
 
   // Helper function to navigate in overview modal
@@ -3245,6 +3476,24 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             onClick={() => setSettingsTab('filtering')}
           >
             Filtering
+          </button>
+          <button
+            className={`tab ${settingsTab === 'banned' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('banned')}
+          >
+            Banned
+          </button>
+          <button
+            className={`tab ${settingsTab === 'channels' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('channels')}
+          >
+            Channels
+          </button>
+          <button
+            className={`tab ${settingsTab === 'footer' ? 'tab-active' : ''}`}
+            onClick={() => setSettingsTab('footer')}
+          >
+            Styling
           </button>
           <button
             className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
@@ -3504,6 +3753,131 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 <label className="label">
                   <span className="label-text-alt">Choose how each platform should be displayed: Filter out (hide), Text (link only), or Embed (full embed)</span>
                 </label>
+              </div>
+            </div>
+          )}
+
+          {/* Card footer tab: platform label and color */}
+          {settingsTab === 'footer' && (
+            <div className="space-y-4">
+              <div className="border border-base-300 rounded-lg p-4">
+                <div className="font-semibold mb-2">Card footer (posted by / platform)</div>
+                <label className="label cursor-pointer justify-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-primary"
+                    checked={tempSettings.footerDisplay?.showPlatformLabel !== false}
+                    onChange={(e) => setTempSettings({
+                      ...tempSettings,
+                      footerDisplay: { ...tempSettings.footerDisplay, showPlatformLabel: e.target.checked, platformColorStyle: tempSettings.footerDisplay?.platformColorStyle ?? 'tint' },
+                    })}
+                  />
+                  <span className="label-text">Show platform label (e.g. d.gg, Kick • channel)</span>
+                </label>
+                <div className="form-control gap-1 mt-2">
+                  <span className="label-text">Platform color</span>
+                  <div className="flex gap-4">
+                    {(['tint', 'subtle', 'none'] as const).map((style) => (
+                      <label key={style} className="label cursor-pointer gap-2">
+                        <input
+                          type="radio"
+                          name="footer-platform-color"
+                          className="radio radio-primary radio-sm"
+                          checked={(tempSettings.footerDisplay?.platformColorStyle ?? 'tint') === style}
+                          onChange={() => setTempSettings({
+                            ...tempSettings,
+                            footerDisplay: { ...tempSettings.footerDisplay, showPlatformLabel: tempSettings.footerDisplay?.showPlatformLabel !== false, platformColorStyle: style },
+                          })}
+                        />
+                        <span className="label-text capitalize">{style}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <span className="label-text-alt">Light tint = colored border/background by platform; subtle = muted; none = no color.</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Banned tab: banned links and banned messages */}
+          {settingsTab === 'banned' && (
+            <div className="space-y-4">
+              <ListManager
+                title="Banned links"
+                items={tempSettings.bannedLinks || []}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedLinks: items })}
+                placeholder="Link will be added from right-click menu"
+                helpText="Links added here are hidden. Right-click a card → Ban this link to add."
+              />
+              <ListManager
+                title="Banned messages"
+                items={tempSettings.bannedMessages || []}
+                onItemsChange={(items) => setTempSettings({ ...tempSettings, bannedMessages: items })}
+                placeholder="Message ID (platform:channel:date:nick) added from right-click"
+                helpText="Whole messages are hidden. Right-click a card → Ban this message to add."
+              />
+            </div>
+          )}
+
+          {/* Channels tab: where to fetch incoming messages */}
+          {settingsTab === 'channels' && (
+            <div className="space-y-4">
+              <div className="border border-base-300 rounded-lg p-4">
+                <div className="font-semibold mb-2">Destiny.gg (d.gg)</div>
+                <label className="label cursor-pointer justify-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-primary"
+                    checked={tempSettings.channels?.dgg?.enabled !== false}
+                    onChange={(e) => setTempSettings({
+                      ...tempSettings,
+                      channels: {
+                        ...tempSettings.channels,
+                        dgg: { enabled: e.target.checked },
+                        kick: tempSettings.channels?.kick ?? { enabled: false, channelSlug: undefined },
+                      },
+                    })}
+                  />
+                  <span className="label-text">Enable d.gg (polecat, rustlesearch, chat history)</span>
+                </label>
+                <p className="text-xs text-base-content/60 mt-1">Filter terms apply to all enabled channels (d.gg, Kick, etc.).</p>
+              </div>
+              <div className="border border-base-300 rounded-lg p-4">
+                <div className="font-semibold mb-2">Kick</div>
+                <label className="label cursor-pointer justify-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-primary"
+                    checked={!!tempSettings.channels?.kick?.enabled}
+                    onChange={(e) => setTempSettings({
+                      ...tempSettings,
+                      channels: {
+                        ...tempSettings.channels,
+                        dgg: tempSettings.channels?.dgg ?? { enabled: true },
+                        kick: { enabled: e.target.checked, channelSlug: tempSettings.channels?.kick?.channelSlug ?? '' },
+                      },
+                    })}
+                  />
+                  <span className="label-text">Enable Kick channel</span>
+                </label>
+                <div className="form-control gap-1 mt-2">
+                  <span className="label-text">Channel slug</span>
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm w-full max-w-xs"
+                    placeholder="e.g. destiny"
+                    value={tempSettings.channels?.kick?.channelSlug ?? ''}
+                    onChange={(e) => setTempSettings({
+                      ...tempSettings,
+                      channels: {
+                        ...tempSettings.channels,
+                        dgg: tempSettings.channels?.dgg ?? { enabled: true },
+                        kick: { enabled: !!tempSettings.channels?.kick?.enabled, channelSlug: e.target.value.trim() || undefined },
+                      },
+                    })}
+                  />
+                  <span className="label-text-alt">Kick channel URL slug (e.g. destiny for kick.com/destiny)</span>
+                </div>
               </div>
             </div>
           )}
@@ -3771,6 +4145,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             
             {/* Autoplay, Mute, and Loop toggles */}
             <div className="flex flex-col items-center gap-2">
+              <p className="text-xs text-base-content/50">Highlight view only (overview does not autoplay)</p>
               {/* Autoplay toggle */}
               <div className="flex items-center gap-2">
                 <label className="label cursor-pointer gap-2">
@@ -3819,37 +4194,41 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
           {/* Middle section - Text content */}
           <div className="flex-shrink-0 p-4 border-b border-base-300">
-            <div className={`bg-base-300 rounded-lg p-4 ${highlightedCard.isTrusted ? 'border-2 border-yellow-500' : ''}`}>
+            <div className={`bg-base-300 rounded-lg p-3 ${highlightedCard.isTrusted ? 'border-2 border-yellow-500' : ''}`}>
               <div className="mb-3 break-words overflow-wrap-anywhere">
                 <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {highlightedCard.isYouTube 
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isReddit
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isTwitter
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isImgur
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isKick
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link', emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Kick link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isLSF
-                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link', emotesMap, handleOpenLink)
-                    : renderTextWithLinks(highlightedCard.text, undefined, undefined, emotesMap, handleOpenLink)
+                    ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'LSF link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
+                    : renderTextWithLinks(highlightedCard.text, undefined, undefined, emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                   }
                 </p>
               </div>
-              <div className="flex items-center gap-4 pt-2 border-t border-base-content/20">
+              <div className={`flex items-center gap-4 pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(highlightedCard.platform, footerDisplay?.platformColorStyle)}`}>
                 <div>
+                  {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(highlightedCard) && (
+                    <span className="text-xs text-base-content/50 mr-2">{getPlatformLabel(highlightedCard)}</span>
+                  )}
                   <span className="text-xs text-base-content/70">Posted by</span>
                   <a
-                    href={`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`}
+                    href={highlightedCard.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || 'Destinygg')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : '#')}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="ml-2 text-sm font-bold text-primary hover:underline"
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      handleOpenLink(`https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=Destinygg`)
+                      const url = highlightedCard.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || 'Destinygg')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : highlightedCard.url || '#')
+                      handleOpenLink(url)
                     }}
                   >
                     {highlightedCard.nick}
@@ -3913,8 +4292,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               ))}
             </div>
             
-            {/* Load More button in sidebar */}
-            {hasMore && (
+            {/* Load More button in sidebar (only when d.gg is enabled; Kick has no long history) */}
+            {hasMore && dggEnabled && (
               <div className="mt-4 flex justify-center">
                 <button
                   onClick={handleLoadMore}
@@ -3936,14 +4315,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 </button>
               </div>
             )}
-            {!hasMore && linkCards.length > 0 && (
+            {(!hasMore || !dggEnabled) && linkCards.length > 0 && (
               <div className="mt-4 text-center">
                 <img 
                   src={manHoldsCatPng} 
                   alt="No more links" 
                   className="mx-auto max-w-xs mb-2"
                 />
-                <p className="text-xs text-base-content/50">No more links to load</p>
+                <p className="text-xs text-base-content/50">{dggEnabled ? 'No more links to load' : 'Load more only available with d.gg enabled'}</p>
               </div>
             )}
           </div>
@@ -4057,6 +4436,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Message
             </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm text-warning"
+              onClick={() => handleBanMessage(contextMenu.card!.messageId)}
+            >
+              Ban this message
+            </button>
           </div>
           
           {/* Link actions */}
@@ -4083,6 +4468,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     >
                       Open Link
                     </button>
+                    <button
+                      className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm text-warning"
+                      onClick={() => handleBanLink(urls[0])}
+                    >
+                      Ban this link
+                    </button>
                   </>
                 ) : (
                   <>
@@ -4101,6 +4492,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                           title={url}
                         >
                           Open Link {index + 1}
+                        </button>
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm truncate text-warning"
+                          onClick={() => handleBanLink(url)}
+                          title={url}
+                        >
+                          Ban link {index + 1}
                         </button>
                       </div>
                     ))}
@@ -4220,6 +4618,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 embedReloadKeys={embedReloadKeys}
                 onContextMenu={handleContextMenu}
                 stackDirection="up"
+                footerDisplay={footerDisplay}
               />
             </div>
           )}
@@ -4249,14 +4648,15 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 embedReloadKeys={embedReloadKeys}
                 onContextMenu={handleContextMenu}
                 stackDirection="down"
+                footerDisplay={footerDisplay}
               />
             </div>
             )}
         </>
       )}
       
-      {/* Load More button */}
-      {!loading && hasMore && (
+      {/* Load More button (only when d.gg is enabled; Kick has no long history) */}
+      {!loading && hasMore && dggEnabled && (
         <div className="flex justify-center py-8">
           <button
             onClick={handleLoadMore}
@@ -4278,14 +4678,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           </button>
         </div>
       )}
-      {!loading && !hasMore && linkCards.length > 0 && (
+      {!loading && (!hasMore || !dggEnabled) && linkCards.length > 0 && (
         <div className="text-center py-8">
           <img 
             src={manHoldsCatPng} 
             alt="No more links" 
             className="mx-auto max-w-xs mb-4"
           />
-          <p className="text-base-content/70">No more links to load</p>
+          <p className="text-base-content/70">{dggEnabled ? 'No more links to load' : 'Load more only available with d.gg enabled'}</p>
         </div>
       )}
 
@@ -4325,7 +4725,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   <div>
                     <div className="text-xs text-base-content/50 mb-1">Message</div>
                     <div className="text-sm whitespace-pre-wrap break-words">
-                      {renderTextWithLinks(expandedCard.text, undefined, undefined, emotesMap, handleOpenLink)}
+                      {renderTextWithLinks(expandedCard.text, undefined, undefined, emotesMap, handleOpenLink, expandedCard.kickEmotes)}
                     </div>
                   </div>
                   <div>
@@ -4379,7 +4779,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   ) : expandedCard.isBluesky ? (
                     <BlueskyEmbed url={expandedCard.url} />
                   ) : expandedCard.isKick ? (
-                    <KickEmbed url={expandedCard.url} autoplay={false} mute={false} />
+                    <KickEmbed url={expandedCard.url} autoplay={false} mute={true} />
                   ) : expandedCard.isLSF ? (
                     <LSFEmbed url={expandedCard.url} autoplay={false} mute={false} />
                   ) : (
@@ -4556,6 +4956,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Message
             </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm text-warning"
+              onClick={() => handleBanMessage(contextMenu.card!.messageId)}
+            >
+              Ban this message
+            </button>
           </div>
           
           {/* Link actions */}
@@ -4582,6 +4988,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     >
                       Open Link
                     </button>
+                    <button
+                      className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm text-warning"
+                      onClick={() => handleBanLink(urls[0])}
+                    >
+                      Ban this link
+                    </button>
                   </>
                 ) : (
                   <>
@@ -4600,6 +5012,13 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                           title={url}
                         >
                           Open Link {index + 1}
+                        </button>
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm truncate text-warning"
+                          onClick={() => handleBanLink(url)}
+                          title={url}
+                        >
+                          Ban link {index + 1}
                         </button>
                       </div>
                     ))}

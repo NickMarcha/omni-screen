@@ -12,11 +12,10 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
   const [error, setError] = useState<string | null>(null)
   const [embedHtml, setEmbedHtml] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
-    console.log('TwitterEmbed useEffect triggered, url:', url)
-    
-    // Cleanup previous embed
+    mountedRef.current = true
     if (containerRef.current) {
       containerRef.current.innerHTML = ''
     }
@@ -25,83 +24,57 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
     setLoading(true)
     
     if (!url) {
-      console.log('TwitterEmbed: No URL provided')
       setError('No URL provided')
       setLoading(false)
       return
     }
 
-    // Extract tweet ID from URL
     const tweetIdMatch = url.match(/\/status\/(\d+)/)
     const tweetId = tweetIdMatch ? tweetIdMatch[1] : null
 
     if (!tweetId) {
-      console.log('TwitterEmbed: Could not extract tweet ID from URL:', url)
       setError('Invalid Twitter URL - could not extract tweet ID')
       setLoading(false)
       if (onError) onError('Invalid Twitter URL')
       return
     }
 
-    console.log('Creating Twitter embed for tweet ID:', tweetId)
-    
     let isCancelled = false
 
     const loadScriptAndCreate = (container: HTMLDivElement) => {
-      if (isCancelled) return
+      if (container) container.innerHTML = ''
       
-      // Clear container before creating new embed
-      if (container) {
-        container.innerHTML = ''
-      }
-      
-      // Check if script is already loaded
       if (typeof window !== 'undefined' && (window as any).twttr) {
-        // @ts-ignore
         if ((window as any).twttr.ready) {
-          // @ts-ignore
           (window as any).twttr.ready(() => {
-            if (!isCancelled) {
-              createTweetEmbed(container)
-            }
+            const currentContainer = containerRef.current || container
+            if (currentContainer && !isCancelled) createTweetEmbed(currentContainer)
           })
         } else {
           setTimeout(() => {
-            if (!isCancelled) {
-              createTweetEmbed(container)
-            }
+            const currentContainer = containerRef.current || container
+            if (currentContainer && !isCancelled) createTweetEmbed(currentContainer)
           }, 100)
         }
       } else {
-        // Load the script safely (only once)
-        console.log('Loading Twitter widgets.js script...')
         loadScriptOnce('https://platform.twitter.com/widgets.js', 'twitter-widgets')
           .then(() => {
-            if (isCancelled) return
-            console.log('Twitter widgets.js script loaded')
-            // @ts-ignore
+            const currentContainer = containerRef.current || container
+            if (!currentContainer || isCancelled) return
             if ((window as any).twttr && (window as any).twttr.ready) {
-              // @ts-ignore
               (window as any).twttr.ready(() => {
-                if (isCancelled) return
-                const currentContainer = containerRef.current || container
-                if (currentContainer) {
-                  createTweetEmbed(currentContainer)
-                }
+                const c = containerRef.current || currentContainer
+                if (c && !isCancelled) createTweetEmbed(c)
               })
             } else {
               setTimeout(() => {
-                if (!isCancelled) {
-                  const currentContainer = containerRef.current || container
-                  if (currentContainer) {
-                    createTweetEmbed(currentContainer)
-                  }
-                }
+                const c = containerRef.current || currentContainer
+                if (c && !isCancelled) createTweetEmbed(c)
               }, 100)
             }
           })
           .catch(() => {
-            if (isCancelled) return
+            if (!mountedRef.current) return
             setError('Failed to load Twitter widgets script')
             setLoading(false)
             if (onError) onError('Failed to load Twitter widgets script')
@@ -110,17 +83,8 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
     }
 
     const createTweetEmbed = (container: HTMLDivElement) => {
-      if (isCancelled) return
-      
       const currentContainer = containerRef.current || container
-      if (!currentContainer) {
-        if (!isCancelled) {
-          setError('Embed container not found')
-          setLoading(false)
-          if (onError) onError('Embed container not found')
-        }
-        return
-      }
+      if (!currentContainer) return
 
       // @ts-ignore
       const twttr = (window as any).twttr
@@ -131,25 +95,22 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
         if (isCancelled) return
 
         const timeout = setTimeout(() => {
-          if (!isCancelled) {
-            // Check if iframe was created but might be showing an error
-            const iframe = currentContainer.querySelector('iframe')
-            if (iframe) {
-              // Give it a bit more time - sometimes Twitter takes longer
-              setTimeout(() => {
-                if (!isCancelled && !currentContainer.querySelector('iframe[src*="embed"]')) {
-                  setError('Tweet not found or unavailable')
-                  setEmbedHtml(null) // Clear embed HTML so error shows
-                  setLoading(false)
-                  if (onError) onError('Tweet not found or unavailable')
-                }
-              }, 2000)
-            } else {
-              setError('Embed creation timed out. The tweet may be unavailable or require login.')
-              setEmbedHtml(null) // Clear embed HTML so error shows
-              setLoading(false)
-              if (onError) onError('Embed creation timed out')
-            }
+          if (!mountedRef.current) return
+          const iframe = currentContainer.querySelector('iframe')
+          if (iframe) {
+            setTimeout(() => {
+              if (mountedRef.current && !currentContainer.querySelector('iframe[src*="embed"]')) {
+                setError('Tweet not found or unavailable')
+                setEmbedHtml(null)
+                setLoading(false)
+                if (onError) onError('Tweet not found or unavailable')
+              }
+            }, 2000)
+          } else {
+            setError('Embed creation timed out. The tweet may be unavailable or require login.')
+            setEmbedHtml(null)
+            setLoading(false)
+            if (onError) onError('Embed creation timed out')
           }
         }, 10000)
 
@@ -174,7 +135,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
 
           // Check if embed was created (sometimes promise doesn't resolve but embed appears)
           const checkEmbedCreated = () => {
-            if (isCancelled) return false
+            if (!mountedRef.current) return false
             
             const iframe = currentContainer.querySelector('iframe')
             const embedDiv = currentContainer.querySelector('.twitter-tweet-rendered, .twitter-tweet')
@@ -217,7 +178,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
                 iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));'
               }
 
-              if (!isCancelled) {
+              if (mountedRef.current) {
                 setError(null)
                 setLoading(false)
                 setEmbedHtml(fixedHtml)
@@ -245,7 +206,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
 
           // Also wait for promise
           promise.then(() => {
-            if (isCancelled) return
+            if (!mountedRef.current) return
             clearTimeout(timeout)
             if (checkInterval) clearInterval(checkInterval)
             console.log('✅ Tweet embed created (promise resolved)')
@@ -254,8 +215,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
               // Check if height is suspiciously small (error state)
               const iframeHeight = parseInt(iframe.style.height || iframe.getAttribute('height') || '0')
               if (iframeHeight > 0 && iframeHeight < 150) {
-                console.log('⚠️ Tweet iframe has very small height after promise, likely error:', iframeHeight, 'px')
-                if (!isCancelled) {
+                if (mountedRef.current) {
                   setError('Tweet not found or unavailable')
                   setEmbedHtml(null)
                   setLoading(false)
@@ -265,18 +225,17 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
               }
               iframe.style.cssText = 'width: 100%; min-height: 200px; display: block; visibility: visible; position: relative; background-color: rgb(var(--b2));'
             }
-            if (!isCancelled) {
+            if (mountedRef.current) {
               setEmbedHtml(currentContainer.innerHTML)
               setError(null)
               setLoading(false)
             }
           }).catch((error: Error) => {
-            if (isCancelled) return
+            if (!mountedRef.current) return
             clearTimeout(timeout)
             if (checkInterval) clearInterval(checkInterval)
-            console.error('❌ Error creating tweet embed:', error.message)
             if (!checkEmbedCreated()) {
-              if (!isCancelled) {
+              if (mountedRef.current) {
                 setError(error.message || 'Failed to create Twitter embed')
                 setLoading(false)
                 if (onError) onError(error.message || 'Failed to create Twitter embed')
@@ -284,17 +243,17 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
             }
           })
         } catch (error) {
-          if (isCancelled) return
+          if (!mountedRef.current) return
           clearTimeout(timeout)
           const errorMessage = error instanceof Error ? error.message : 'Failed to create Twitter embed'
-          if (!isCancelled) {
+          if (mountedRef.current) {
             setError(errorMessage)
             setLoading(false)
             if (onError) onError(errorMessage)
           }
         }
       } else {
-        if (!isCancelled) {
+        if (mountedRef.current) {
           setError('Twitter widgets.js not available')
           setLoading(false)
           if (onError) onError('Twitter widgets.js not available')
@@ -302,44 +261,30 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
       }
     }
 
-    // Wait for the ref to be available, then load script and create embed
     const checkRefAndCreate = (attempts = 0) => {
       if (isCancelled) return
-      
       const container = containerRef.current
-      console.log(`TwitterEmbed: checkRefAndCreate attempt ${attempts}, container:`, container)
       if (!container) {
         if (attempts < 50) {
           setTimeout(() => checkRefAndCreate(attempts + 1), 100)
           return
-        } else {
-          if (!isCancelled) {
-            console.error('TwitterEmbed: Container not found after 50 attempts')
-            setError('Embed container not found')
-            setLoading(false)
-            if (onError) onError('Embed container not found')
-          }
-          return
         }
+        if (mountedRef.current) {
+          setError('Embed container not found')
+          setLoading(false)
+          if (onError) onError('Embed container not found')
+        }
+        return
       }
-
-      console.log('TwitterEmbed: Container found, loading script and creating embed')
       loadScriptAndCreate(container)
     }
 
-    // Start checking for the ref - don't require it to be available immediately
     checkRefAndCreate()
 
-    // Cleanup function
     return () => {
-      console.log('TwitterEmbed: Cleanup - cancelling embed creation')
       isCancelled = true
-      if (containerRef.current) {
-        containerRef.current.innerHTML = ''
-      }
-      setEmbedHtml(null)
-      setError(null)
-      setLoading(false)
+      mountedRef.current = false
+      if (containerRef.current) containerRef.current.innerHTML = ''
     }
   }, [url, onError])
 

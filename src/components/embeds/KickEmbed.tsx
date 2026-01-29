@@ -7,6 +7,8 @@ interface KickEmbedProps {
   mute?: boolean
   onError?: (error: string) => void
   fit?: 'aspect' | 'fill'
+  /** When true, always use iframe (no webview/userscript). Use in overview mode to avoid autoplay. */
+  useIframeOnly?: boolean
 }
 
 // Extract username from Kick livestream URL (clips are not supported)
@@ -42,10 +44,11 @@ function parseKickUrl(url: string): { username: string | null } {
   }
 }
 
-export default function KickEmbed({ url, autoplay = false, mute = false, onError, fit = 'aspect' }: KickEmbedProps) {
+export default function KickEmbed({ url, autoplay = false, mute = false, onError, fit = 'aspect', useIframeOnly = false }: KickEmbedProps) {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const kickstinyEnabled = (() => {
+    if (useIframeOnly) return false
     try {
       return getAppPreferences().userscripts.kickstiny
     } catch {
@@ -67,11 +70,10 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
       }
 
       // Build embed URL with parameters for livestreams only
+      // When not autoplaying, set autoplay=false and muted so Kick player doesn't autostart with sound
       const params = new URLSearchParams()
-      if (autoplay) {
-        params.set('autoplay', 'true')
-      }
-      if (mute) {
+      params.set('autoplay', autoplay ? 'true' : 'false')
+      if (mute || !autoplay) {
         params.set('muted', 'true')
       }
       
@@ -85,7 +87,7 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
       setError(errorMsg)
       if (onError) onError(errorMsg)
     }
-  }, [url, autoplay, mute, onError])
+  }, [url, autoplay, mute, onError, useIframeOnly])
 
   if (error) {
     return (
@@ -190,6 +192,7 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
             frameBorder="0"
             scrolling="no"
             allowFullScreen
+            allow={autoplay && !mute ? 'autoplay; fullscreen' : 'fullscreen'}
             style={{
               border: 'none',
               width: '100%',

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import yeeCharmGif from '../assets/media/YeeCharm.gif'
+import logoPng from '../assets/logo.png'
 import abaGrinchPng from '../assets/media/AbaGrinch.png'
 import achshullyRetardedPng from '../assets/media/ACHshullyRetarded.png'
 import bennyLovePng from '../assets/media/BennyLove.png'
@@ -156,16 +157,19 @@ function Menu({ onNavigate }: MenuProps) {
           </div>
         </button>
 
-        {/* Omni Screen - Disabled */}
+        {/* Omni Screen */}
         <button
           className="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-shadow cursor-pointer"
           onClick={() => onNavigate('omni-screen')}
         >
-          <div className="card-body items-center text-center">
-            <h2 className="card-title text-2xl mb-4">Omni Screen</h2>
-            <p className="text-base-content/70">
-              Split-screen embeds + live chat
-            </p>
+          <div className="card-body flex-row items-center gap-6">
+            <img src={logoPng} alt="" className="w-32 h-32 object-contain flex-shrink-0" />
+            <div className="flex flex-col text-left">
+              <h2 className="card-title text-2xl mb-2">Omni Screen</h2>
+              <p className="text-base-content/70">
+                Split-screen embeds + live chat
+              </p>
+            </div>
           </div>
         </button>
       </div>
