@@ -139,10 +139,65 @@ function isLikelyYouTubeId(id: string) {
   return /^[a-zA-Z0-9_-]{8,20}$/.test(id)
 }
 
+/** Parse supported embed URLs into platform + id. Returns null if not supported. */
+function parseEmbedUrl(url: string): { platform: string; id: string } | null {
+  const s = String(url || '').trim()
+  if (!s) return null
+  try {
+    const u = new URL(s.startsWith('http') ? s : `https://${s}`)
+    const host = (u.hostname || '').toLowerCase()
+    // YouTube: youtube.com/watch?v=ID, youtu.be/ID
+    if (host === 'www.youtube.com' || host === 'youtube.com') {
+      const v = u.searchParams.get('v')
+      if (v && isLikelyYouTubeId(v)) return { platform: 'youtube', id: v }
+    }
+    if (host === 'youtu.be') {
+      const id = (u.pathname || '').replace(/^\/+/, '').split('/')[0]
+      if (id && isLikelyYouTubeId(id)) return { platform: 'youtube', id }
+    }
+    // Kick: kick.com/channelname
+    if (host === 'www.kick.com' || host === 'kick.com') {
+      const m = (u.pathname || '').match(/^\/([^/]+)/)
+      if (m && m[1]) return { platform: 'kick', id: m[1].toLowerCase() }
+    }
+    // Twitch: twitch.tv/channelname
+    if (host === 'www.twitch.tv' || host === 'twitch.tv') {
+      const m = (u.pathname || '').match(/^\/([^/]+)/)
+      if (m && m[1]) return { platform: 'twitch', id: m[1].toLowerCase() }
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
 export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // ---- Live WS (embeds list) ----
   const [availableEmbeds, setAvailableEmbeds] = useState<Map<string, LiveEmbed>>(new Map())
   const [bannedEmbeds, setBannedEmbeds] = useState<Map<string, BannedEmbed>>(new Map())
+
+  // ---- Manual embeds (from pasted links) ----
+  const [manualEmbeds, setManualEmbeds] = useState<Map<string, LiveEmbed>>(() => {
+    try {
+      const raw = localStorage.getItem('omni-screen:manual-embeds')
+      if (!raw) return new Map()
+      const arr = JSON.parse(raw) as Array<{ key: string; platform: string; id: string; title?: string }>
+      if (!Array.isArray(arr)) return new Map()
+      const m = new Map<string, LiveEmbed>()
+      arr.forEach((item) => {
+        if (item?.key && item?.platform && item?.id) {
+          m.set(item.key, {
+            platform: item.platform,
+            id: item.id,
+            mediaItem: item.title ? { metadata: { displayName: item.title, title: item.title } } : undefined,
+          })
+        }
+      })
+      return m
+    } catch {
+      return new Map()
+    }
+  })
 
   // ---- Selection + layout ----
   const [selectedEmbedKeys, setSelectedEmbedKeys] = useState<Set<string>>(() => {
@@ -229,6 +284,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const destinyEmbedResizeHandlerRef = useRef<(() => void) | null>(null)
   const destinyEmbedResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const destinyEmbedRafRef = useRef<number | null>(null)
+  const destinyEmbedLayoutTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const manualEmbedsRef = useRef<Map<string, LiveEmbed>>(manualEmbeds)
+  manualEmbedsRef.current = manualEmbeds
+  const [ytChannelLoading, setYtChannelLoading] = useState(false)
+  const [ytChannelError, setYtChannelError] = useState<string | null>(null)
 
   const dggUtilitiesEnabled = (() => {
     try {
@@ -315,12 +375,30 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       destinyEmbedRafRef.current = null
     }
     if (!el) {
+      destinyEmbedLayoutTimeoutsRef.current.forEach((t) => clearTimeout(t))
+      destinyEmbedLayoutTimeoutsRef.current = []
       window.ipcRenderer.invoke('destiny-embed-hide').catch(() => {})
       return
     }
+    const lastLoggedRef = { rect: { left: -1, top: -1, width: -1, height: -1 } }
     const sendBounds = () => {
       const rect = el.getBoundingClientRect()
-      window.ipcRenderer.invoke('destiny-embed-set-bounds', { x: rect.left, y: rect.top, width: rect.width, height: rect.height }).catch(() => {})
+      const x = Math.round(rect.left)
+      const y = Math.round(rect.top)
+      const w = Math.round(rect.width)
+      const h = Math.round(rect.height)
+      const changed =
+        lastLoggedRef.rect.left !== x ||
+        lastLoggedRef.rect.top !== y ||
+        lastLoggedRef.rect.width !== w ||
+        lastLoggedRef.rect.height !== h
+      const viewportW = window.innerWidth
+      const viewportH = window.innerHeight
+      if (changed) lastLoggedRef.rect = { left: x, top: y, width: w, height: h }
+      // Must send viewport size so main can scale bounds: renderer viewport (CSS) often differs from getContentSize() on Windows/DPI.
+      window.ipcRenderer
+        .invoke('destiny-embed-set-bounds', { x, y, width: w, height: h, viewportWidth: viewportW, viewportHeight: viewportH })
+        .catch(() => {})
     }
     // Throttle: at most one bounds update per animation frame so resizing the pane isn't choppy.
     const sendBoundsThrottled = () => {
@@ -345,10 +423,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       })
     }
     sendBounds()
+    // Re-send after layout settles (flex/chat pane can have delayed size)
+    const t1 = window.setTimeout(sendBounds, 50)
+    const t2 = window.setTimeout(sendBounds, 200)
+    destinyEmbedLayoutTimeoutsRef.current = [t1, t2]
     const ro = new ResizeObserver(sendBoundsThrottled)
     ro.observe(el)
     destinyEmbedResizeObserverRef.current = ro
-    // Re-send bounds when window resizes (e.g. opening DevTools); ResizeObserver only fires on element size change, not position.
     window.addEventListener('resize', sendBoundsAfterResize)
     destinyEmbedResizeHandlerRef.current = sendBoundsAfterResize
   }, [])
@@ -363,6 +444,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [gridHostSize, setGridHostSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
 
   // Persist selection
+  // Merge DGG websocket embeds with manual (pasted link) embeds for the dock and grid
+  const combinedAvailableEmbeds = useMemo(() => {
+    const m = new Map<string, LiveEmbed>(availableEmbeds)
+    manualEmbeds.forEach((v, k) => m.set(k, v))
+    return m
+  }, [availableEmbeds, manualEmbeds])
+
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:selected-embeds', JSON.stringify(Array.from(selectedEmbedKeys.values())))
@@ -370,6 +458,20 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [selectedEmbedKeys])
+
+  useEffect(() => {
+    try {
+      const arr = Array.from(manualEmbeds.entries()).map(([key, e]) => ({
+        key,
+        platform: e.platform,
+        id: e.id,
+        title: e.mediaItem?.metadata?.displayName || e.mediaItem?.metadata?.title,
+      }))
+      localStorage.setItem('omni-screen:manual-embeds', JSON.stringify(arr))
+    } catch {
+      // ignore
+    }
+  }, [manualEmbeds])
 
   useEffect(() => {
     try {
@@ -514,27 +616,29 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           setAvailableEmbeds(next)
 
           setSelectedEmbedKeys((prev) => {
+            const manual = manualEmbedsRef.current
             const pruned = new Set<string>()
             prev.forEach((k) => {
-              if (next.has(k)) {
+              if (next.has(k) || manual.has(k)) {
                 pruned.add(k)
                 return
               }
               const migrated = legacyToCanonical.get(k)
-              if (migrated && next.has(migrated)) pruned.add(migrated)
+              if (migrated && (next.has(migrated) || manual.has(migrated))) pruned.add(migrated)
             })
             return pruned
           })
 
           setSelectedEmbedChatKeys((prev) => {
+            const manual = manualEmbedsRef.current
             const pruned = new Set<string>()
             prev.forEach((k) => {
-              if (next.has(k)) {
+              if (next.has(k) || manual.has(k)) {
                 pruned.add(k)
                 return
               }
               const migrated = legacyToCanonical.get(k)
-              if (migrated && next.has(migrated)) pruned.add(migrated)
+              if (migrated && (next.has(migrated) || manual.has(migrated))) pruned.add(migrated)
             })
             return pruned
           })
@@ -597,15 +701,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       const parsed = parseEmbedKey(key)
       if (!parsed) return
       if (parsed.platform !== 'youtube') return
-      // YouTube IDs are case sensitive. Try to resolve the canonical ID from the current embeds list.
-      // If we can't, skip for now (prevents sending a broken lowercase id on startup).
-      const direct = availableEmbeds.get(key)
+      const direct = combinedAvailableEmbeds.get(key)
       if (direct?.id) {
         ids.push(String(direct.id))
         return
       }
       const want = String(parsed.id)
-      for (const [k, e] of availableEmbeds.entries()) {
+      for (const [k, e] of combinedAvailableEmbeds.entries()) {
         if (!k.startsWith('youtube:')) continue
         if (String(e?.id || '').toLowerCase() === want.toLowerCase()) {
           ids.push(String(e.id))
@@ -616,7 +718,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
     const uniq = Array.from(new Set(ids)).sort()
     window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: uniq, opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
-  }, [availableEmbeds, chatMode, chatPaneOpen, selectedEmbedChatKeys, youTubePollMultiplier])
+  }, [combinedAvailableEmbeds, chatMode, chatPaneOpen, selectedEmbedChatKeys, youTubePollMultiplier])
 
   // Subscribe Twitch IRC chat for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
@@ -642,13 +744,31 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const selectedEmbeds = useMemo(() => {
     const arr: { key: string; embed: LiveEmbed }[] = []
     selectedEmbedKeys.forEach((key) => {
-      const embed = availableEmbeds.get(key)
+      const embed = combinedAvailableEmbeds.get(key)
       if (embed) arr.push({ key, embed })
     })
     // stable order: higher count/viewers first
     arr.sort((a, b) => (Number(b.embed.count || 0) || 0) - (Number(a.embed.count || 0) || 0))
     return arr
-  }, [availableEmbeds, selectedEmbedKeys])
+  }, [combinedAvailableEmbeds, selectedEmbedKeys])
+
+  const addEmbedFromUrl = useCallback((url: string) => {
+    const parsed = parseEmbedUrl(url)
+    if (!parsed) return false
+    const key = makeEmbedKey(parsed.platform, parsed.id)
+    setManualEmbeds((prev) => {
+      const next = new Map(prev)
+      if (next.has(key)) return prev
+      next.set(key, {
+        platform: parsed.platform,
+        id: parsed.id,
+        mediaItem: { metadata: { displayName: parsed.id, title: parsed.id } },
+      })
+      return next
+    })
+    setSelectedEmbedKeys((prev) => new Set(prev).add(key))
+    return true
+  }, [])
 
   const toggleEmbed = useCallback((key: string) => {
     setSelectedEmbedKeys((prev) => {
@@ -705,12 +825,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   const embedDisplayNameByKey = useMemo(() => {
     const out: Record<string, string> = {}
-    for (const [key, e] of availableEmbeds.entries()) {
-      const dn = e?.mediaItem?.metadata?.displayName
+    for (const [key, e] of combinedAvailableEmbeds.entries()) {
+      const dn = e?.mediaItem?.metadata?.displayName || e?.mediaItem?.metadata?.title
       if (typeof dn === 'string' && dn.trim()) out[key] = dn.trim()
     }
     return out
-  }, [availableEmbeds])
+  }, [combinedAvailableEmbeds])
 
   const enabledKickSlugs = useMemo(() => {
     const slugs: string[] = []
@@ -834,7 +954,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   )
 
   const embedsList = useMemo(() => {
-    const items = Array.from(availableEmbeds.entries()).map(([key, embed]) => ({ key, embed }))
+    const items = Array.from(combinedAvailableEmbeds.entries()).map(([key, embed]) => ({ key, embed }))
     items.sort((a, b) => {
       // Sort by number of embeds (count) first; fall back to viewers if count is missing.
       const av = Number(a.embed.count ?? a.embed.mediaItem?.metadata?.viewers ?? 0) || 0
@@ -842,7 +962,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return bv - av
     })
     return items
-  }, [availableEmbeds])
+  }, [combinedAvailableEmbeds])
 
   const dockRef = useRef<HTMLDivElement | null>(null)
   const dockButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
@@ -1227,7 +1347,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               >
                 <div className="flex items-center gap-1">
                   {embedsList.length === 0 ? (
-                    <div className="text-xs text-base-content/60 px-2 py-1">No embeds available.</div>
+                    <div className="text-xs text-base-content/60 px-2 py-1">No embeds. Paste a link or wait for DGG list.</div>
                   ) : (
                     embedsList.map(({ key, embed }, idx) => {
                       const banned = bannedEmbeds.get(key)
@@ -1276,8 +1396,104 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </div>
             </div>
 
-            {/* Fixed controls (right side) */}
+            {/* Fixed controls (right side): + Link, cinema, settings, Back */}
             <div className="flex-none flex items-center gap-2">
+              <div className="dropdown dropdown-top dropdown-end">
+                <label tabIndex={0} className="btn btn-sm btn-ghost btn-outline" title="Add embed from link (YouTube, Kick, Twitch)">
+                  + Link
+                </label>
+                <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
+                  <div className="flex flex-col gap-2">
+                    <input
+                      type="text"
+                      placeholder="Paste YouTube/Kick/Twitch link"
+                      className="input input-sm input-bordered w-full"
+                      id="omni-paste-embed-url"
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return
+                        const el = document.getElementById('omni-paste-embed-url') as HTMLInputElement | null
+                        const url = el?.value?.trim()
+                        if (url && addEmbedFromUrl(url)) {
+                          el.value = ''
+                          ;(document.activeElement as HTMLElement)?.blur?.()
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      title="Add embed from pasted link"
+                      onClick={() => {
+                        const el = document.getElementById('omni-paste-embed-url') as HTMLInputElement | null
+                        const url = el?.value?.trim()
+                        if (url && addEmbedFromUrl(url)) el.value = ''
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                  <div className="border-t border-base-300 pt-2 mt-1 flex flex-col gap-2">
+                    <div className="text-xs font-semibold text-base-content/70">YouTube channel (live or latest)</div>
+                    <input
+                      type="text"
+                      placeholder="Channel ID, youtube.com/channel/UC..., or @Handle"
+                      className="input input-sm input-bordered w-full"
+                      id="omni-youtube-channel-input"
+                      disabled={ytChannelLoading}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return
+                        const el = document.getElementById('omni-youtube-channel-input') as HTMLInputElement | null
+                        const v = el?.value?.trim()
+                        if (!v) return
+                        setYtChannelError(null)
+                        setYtChannelLoading(true)
+                        window.ipcRenderer
+                          .invoke('youtube-live-or-latest', v)
+                          .then((r: { error?: string; videoId?: string }) => {
+                            if (r?.error) {
+                              setYtChannelError(r.error)
+                              return
+                            }
+                            if (r?.videoId && addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) {
+                              el!.value = ''
+                              setYtChannelError(null)
+                            }
+                          })
+                          .finally(() => setYtChannelLoading(false))
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost btn-outline"
+                    title="Resolve channel to live stream or latest video, then add embed"
+                    disabled={ytChannelLoading}
+                    onClick={() => {
+                      const el = document.getElementById('omni-youtube-channel-input') as HTMLInputElement | null
+                      const v = el?.value?.trim()
+                      if (!v) return
+                      setYtChannelError(null)
+                      setYtChannelLoading(true)
+                      window.ipcRenderer
+                        .invoke('youtube-live-or-latest', v)
+                        .then((r: { error?: string; videoId?: string }) => {
+                          if (r?.error) {
+                            setYtChannelError(r.error)
+                            return
+                          }
+                          if (r?.videoId && addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) {
+                            el!.value = ''
+                            setYtChannelError(null)
+                          }
+                        })
+                        .finally(() => setYtChannelLoading(false))
+                    }}
+                  >
+                    {ytChannelLoading ? '…' : 'Add live/latest'}
+                  </button>
+                  {ytChannelError ? <div className="text-xs text-error">{ytChannelError}</div> : null}
+                </div>
+              </div>
+              </div>
               <button
                 type="button"
                 className={`btn btn-sm ${cinemaMode ? 'btn-primary' : 'btn-ghost btn-outline'}`}
@@ -1318,6 +1534,25 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       <span>Cinema mode</span>
                       <input type="checkbox" className="toggle toggle-sm" checked={cinemaMode} onChange={(e) => setCinemaMode(e.target.checked)} />
                     </label>
+                    <div className="border-t border-base-300 pt-2 mt-1">
+                      <div className="text-xs font-semibold text-base-content/70 mb-1">Poll / refresh</div>
+                      <label className="flex items-center justify-between gap-2 text-sm">
+                        <span>YT poll ×</span>
+                        <input
+                          type="number"
+                          step={0.25}
+                          className="input input-sm w-20"
+                          value={youTubePollMultiplier}
+                          min={0.25}
+                          max={5}
+                          onChange={(e) => {
+                            const v = Number(e.target.value)
+                            if (Number.isFinite(v)) setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
+                          }}
+                        />
+                      </label>
+                      <div className="text-xs text-base-content/50 mt-0.5">Live-detection poll multiplier. Chat → Settings for more.</div>
+                    </div>
                   </div>
                 </div>
               </div>

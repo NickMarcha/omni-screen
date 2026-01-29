@@ -70,7 +70,7 @@ So there *is* a good way to get both userscript and login: **webview** (if we ca
 ## What has been tested
 
 - **Webview for Destiny chat**: Tried in-app. The webview guest was not reliably created (e.g. `getAllWebContents()` did not show a separate WebContents for the DGG embed in dev), so script injection did not run in the right context. Electron also recommends avoiding the webview tag. Not used for Destiny.
-- **BrowserView for Destiny chat**: Implemented in `electron/destinyEmbedView.ts`. Main process creates a single BrowserView with partition `persist:main`, loads `destiny.gg/embed/chat`, fetches the d.gg utilities userscript and injects on `did-finish-load`. Renderer sends bounds via IPC (ResizeObserver on the slot). Detach: view is moved to a new window; closing that window re-attaches the view to the main window. Single instance only (one websocket). Tested: layout, injection, login (same partition), detach/reattach.
+- **BrowserView for Destiny chat**: Implemented in `electron/destinyEmbedView.ts`. Main process creates a single BrowserView with partition `persist:main`, loads `destiny.gg/embed/chat`, fetches the d.gg utilities userscript and injects on `did-finish-load`. Renderer sends bounds via IPC (ResizeObserver on the slot). Detach: view is moved to a new window; closing that window re-attaches the view to the main window. Single instance only (one websocket). Tested: layout, injection, login (same partition), detach/reattach. **Electron #35994** (BrowserView setBounds inconsistent on Windows) was fixed in **Electron 27** (PR #38981, July 2023); with Electron 27+ we use BrowserView on all platforms when d.gg utilities is on. **Viewport scaling**: On Windows (and with DPI scaling), the renderer’s `innerWidth`/`innerHeight` often differ from the main process `getContentSize()`. We **must** send viewport size with bounds and scale in main (`final = bounds * (contentSize / viewportSize)`) so the BrowserView aligns with the slot. Do not remove viewport from the IPC payload or the scaling in `destiny-embed-set-bounds`; without it the embed renders in the wrong place.
 
 ### Findings (d.gg utilities injection)
 
@@ -83,14 +83,20 @@ So there *is* a good way to get both userscript and login: **webview** (if we ca
 
 ### Other notes
 
-- **MaxListenersExceededWarning**: Node warns when more than 10 listeners are added to an EventEmitter (default `maxListeners` is 10). The main window and other created windows (login, viewer, Kick login, Destiny detached) can accumulate listeners (e.g. `closed`, webRequest, etc.). We call `setMaxListeners(20)` on each `BrowserWindow` when created to avoid the warning.
+- **MaxListenersExceededWarning**: Node warns when more than 10 listeners are added to an EventEmitter (default `maxListeners` is 10). The main window and other created windows (login, viewer, Kick login, Destiny detached) can accumulate listeners (e.g. `closed`, webRequest, destiny-embed, etc.). We call `setMaxListeners(20)` (or `40` for the main window) on each `BrowserWindow` when created to avoid the warning.
 - **Embed position when DevTools opens**: Opening the developer console changes the layout (window or pane resizes). The Destiny embed (BrowserView) bounds are driven by the renderer via a slot’s `getBoundingClientRect()` and `ResizeObserver`. `ResizeObserver` only fires when the **element’s size** changes, not when it **moves** (e.g. when DevTools takes space). We send bounds on **window `resize`** and defer the read (double `requestAnimationFrame` + 120 ms fallback) so layout and DevTools dock position have time to settle before we measure the slot. Bounds are taken only from the **slot div’s** `getBoundingClientRect()` (viewport-relative); bounds are sent as-is (no main-process offset). ResizeObserver and window resize are **throttled** to one update per animation frame so resizing the pane isn't choppy. **Inspect** (chat header) opens DevTools for the embed; or use **Detach** to inspect in its own window. **Known limitation**: When DevTools are docked on the left, the embed can be offset (viewport origin ≠ window origin). Correcting this with `getContentBounds()` / `getBounds()` in the main process broke normal rendering or didn't fix it, so we leave it as-is; use right/bottom/external dock or close DevTools if it bothers you.
+
+## Manual embeds (Omni Screen dock)
+
+- **Paste link**: In the Omni Screen dock, **+ Link** opens a dropdown. You can paste a **YouTube**, **Kick**, or **Twitch** URL and click **Add** to add that embed to the list and grid. Manual embeds are persisted in `localStorage` and merged with the DGG websocket list.
+- **YouTube channel (live or latest)**: In the same dropdown, you can enter a **YouTube channel ID** (e.g. `UC...`), a **channel URL** (`youtube.com/channel/UC...`), or an **@handle** URL (e.g. `youtube.com/@AgendaFreeTV` or `@AgendaFreeTV`). Click **Add live/latest** to resolve the channel to the current **live stream** (or premiere) or, if not live, the **latest published video**, then add that video as an embed. No YouTube API key: the main process scrapes the channel page for `{"text":" watching"}` to get the live video ID, and falls back to the channel RSS feed (`/feeds/videos.xml?channel_id=...&orderby=published`) for the latest video. Implemented in `electron/youtubeLiveOrLatest.ts` and exposed via IPC `youtube-live-or-latest`.
 
 ## Summary (current app behavior)
 
 | Embed            | Container   | Userscript injection in-app        |
 |------------------|------------|------------------------------------|
 | Destiny chat (d.gg utilities off) | iframe  | No                                 |
-| Destiny chat (d.gg utilities on)  | BrowserView | Yes – injected from main process |
+| Destiny chat (d.gg utilities on)  | BrowserView | Yes – injected from main process (all platforms; Electron 27+ fixed #35994) |
 | Kick (Kickstiny off) | iframe  | No                                 |
 | Kick (Kickstiny on)  | webview | Yes – script injected via Electron |
+| Manual (paste link / YouTube channel) | iframe in grid | N/A – video embeds only |

@@ -12,6 +12,7 @@ import { KickChatManager } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
 import * as destinyEmbedView from './destinyEmbedView'
+import { getYouTubeLiveOrLatest } from './youtubeLiveOrLatest'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -502,7 +503,7 @@ function createWindow() {
   })
 
   destinyEmbedView.setMainWindowRef(win)
-  win.setMaxListeners(20) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest)
+  win.setMaxListeners(40) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest, destiny-embed setBounds)
   win.on('closed', () => {
     destinyEmbedView.setMainWindowRef(null)
   })
@@ -1324,9 +1325,35 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
 })
 
 // Destiny embed (single BrowserView, userscript injection, detach support)
-ipcMain.handle('destiny-embed-set-bounds', (_event, bounds: unknown) => {
+// REQUIRED: Renderer sends viewport (innerWidth/innerHeight) with bounds. We scale bounds by (contentSize/viewport)
+// so the BrowserView aligns with the slot. On Windows with DPI scaling, getContentSize() != renderer viewport;
+// without this scale the embed renders in the wrong place. Do not remove viewport or scaling.
+ipcMain.handle('destiny-embed-set-bounds', (_event, payload: unknown) => {
   try {
-    destinyEmbedView.setBounds(win ?? null, bounds)
+    const w = win ?? null
+    if (!w || w.isDestroyed()) return
+    const raw = payload as Record<string, unknown>
+    const x = Number(raw?.x)
+    const y = Number(raw?.y)
+    const width = Number(raw?.width)
+    const height = Number(raw?.height)
+    const viewportW = Number(raw?.viewportWidth)
+    const viewportH = Number(raw?.viewportHeight)
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) return
+    const [contentW, contentH] = w.getContentSize()
+    let finalX = Math.round(x)
+    let finalY = Math.round(y)
+    let finalW = Math.max(1, Math.round(width))
+    let finalH = Math.max(1, Math.round(height))
+    if (Number.isFinite(viewportW) && viewportW > 0 && Number.isFinite(viewportH) && viewportH > 0 && contentW > 0 && contentH > 0) {
+      const scaleX = contentW / viewportW
+      const scaleY = contentH / viewportH
+      finalX = Math.round(x * scaleX)
+      finalY = Math.round(y * scaleY)
+      finalW = Math.max(1, Math.round(width * scaleX))
+      finalH = Math.max(1, Math.round(height * scaleY))
+    }
+    destinyEmbedView.setBounds(w, { x: finalX, y: finalY, width: finalW, height: finalH })
   } catch (e) {
     console.error('destiny-embed-set-bounds failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
   }
@@ -2167,6 +2194,15 @@ ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
       success: false, 
       error: error instanceof Error ? error.message : 'Unknown error' 
     }
+  }
+})
+
+// YouTube: resolve channel to live stream or latest video (no API key; scrape + RSS)
+ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string) => {
+  try {
+    return await getYouTubeLiveOrLatest(channelIdOrUrl)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
 })
 

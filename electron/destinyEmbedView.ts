@@ -193,10 +193,11 @@ export function setBounds(mainWindow: BrowserWindow | null, bounds: unknown): vo
   if (detachedWin) return // view is in detached window; don't move it
   const safe = normalizeBounds(bounds)
   if (!safe) return
-  lastMainBounds = safe
   const view = getOrCreateView()
   mainWindow.setBrowserView(view)
-  view.setBounds(safe)
+  const final = { ...safe }
+  lastMainBounds = final
+  view.setBounds(final)
 }
 
 export function hide(mainWindow: BrowserWindow | null): void {
