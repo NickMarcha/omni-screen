@@ -428,7 +428,7 @@ function renderYouTubeContent(msg: YouTubeChatMessage): ReactNode {
 
 export default function CombinedChat({
   enableDgg,
-  embedDisplayNameByKey,
+  getEmbedDisplayName,
   maxMessages,
   showTimestamps,
   showSourceLabels,
@@ -437,7 +437,8 @@ export default function CombinedChat({
   onCountChange,
 }: {
   enableDgg: boolean
-  embedDisplayNameByKey: Record<string, string>
+  /** Lookup display name for a channel key (e.g. youtube:videoId); canonicalizes key so casing matches. */
+  getEmbedDisplayName: (key: string) => string
   maxMessages: number
   showTimestamps: boolean
   showSourceLabels: boolean
@@ -750,10 +751,11 @@ export default function CombinedChat({
                 : m.source === 'youtube'
                   ? `youtube:${m.videoId}`
                   : `twitch:${m.channel}`
+          const displayName = getEmbedDisplayName(colorKey)
           const accent =
             m.source === 'dgg'
               ? omniColorForKey(colorKey)
-              : omniColorForKey(colorKey, { displayName: embedDisplayNameByKey[colorKey] })
+              : omniColorForKey(colorKey, { displayName })
           const badgeText = textColorOn(accent)
           const term = highlightTerm?.trim() ?? ''
           const isHighlighted =
@@ -771,7 +773,7 @@ export default function CombinedChat({
                 >
                   {m.source === 'dgg'
                     ? 'DGG'
-                    : (embedDisplayNameByKey[colorKey]?.trim() ||
+                    : (displayName ||
                         (m.source === 'kick'
                           ? `K:${m.slug}`
                           : m.source === 'youtube'

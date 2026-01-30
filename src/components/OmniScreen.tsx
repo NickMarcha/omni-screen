@@ -65,8 +65,8 @@ export interface PinnedStreamer {
 function makeEmbedKey(platform: string, id: string) {
   const p = String(platform || '').toLowerCase()
   const rawId = String(id || '')
-  // YouTube video IDs in URLs are case-insensitive; normalize so pin and DGG WS dedupe to one embed.
-  const normalizedId = p === 'youtube' ? rawId.toLowerCase() : rawId.toLowerCase()
+  // YouTube video IDs are case-sensitive (11-char A-Za-z0-9_-); preserve exact casing. Other platforms normalize to lowercase.
+  const normalizedId = p === 'youtube' ? rawId : rawId.toLowerCase()
   return `${p}:${normalizedId}`
 }
 
@@ -106,7 +106,7 @@ function parseEmbedKey(key: string): { platform: string; id: string } | null {
   return { platform, id }
 }
 
-/** Return canonical key so pin vs websocket same stream merge (e.g. youtube:abc vs youtube:ABC → one key). */
+/** Return canonical key: platform lowercased; YouTube ID preserved (case-sensitive); other IDs lowercased. */
 function canonicalEmbedKey(key: string): string {
   const parsed = parseEmbedKey(key)
   return parsed ? makeEmbedKey(parsed.platform, parsed.id) : key
@@ -127,7 +127,8 @@ function findStreamersForKey(
     if (platform === 'kick' && s.kickSlug && s.kickSlug.toLowerCase() === idLower) result.push(s)
     else if (platform === 'twitch' && s.twitchLogin && s.twitchLogin.toLowerCase() === idLower) result.push(s)
     else if (platform === 'youtube' && youtubeVideoToStreamerIds) {
-      const ids = youtubeVideoToStreamerIds.get(key) ?? youtubeVideoToStreamerIds.get(`youtube:${id}`) ?? youtubeVideoToStreamerIds.get(`youtube:${idLower}`)
+      // YouTube video IDs are case-sensitive; use exact key only (no lowercase fallback).
+      const ids = youtubeVideoToStreamerIds.get(key) ?? youtubeVideoToStreamerIds.get(`youtube:${id}`)
       if (ids?.includes(s.id)) result.push(s)
     }
   }
@@ -348,6 +349,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const destinyEmbedLayoutTimeoutsRef = useRef<number[]>([])
   const manualEmbedsRef = useRef<Map<string, LiveEmbed>>(manualEmbeds)
   manualEmbedsRef.current = manualEmbeds
+  const pinnedOriginatedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const [ytChannelLoading, setYtChannelLoading] = useState(false)
   const [ytChannelError, setYtChannelError] = useState<string | null>(null)
   const [pasteLinkError, setPasteLinkError] = useState<string | null>(null)
@@ -376,6 +378,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
   /** Embeds from pinned streamer poll only (not manual, not persisted). So "Remove from list" does not apply to pinned-only. */
   const [pinnedOriginatedEmbeds, setPinnedOriginatedEmbeds] = useState<Map<string, LiveEmbed>>(() => new Map())
+  pinnedOriginatedEmbedsRef.current = pinnedOriginatedEmbeds
   /** Increment to trigger one immediate run of pinned streamer polls (e.g. Refresh button). */
   const [pinnedPollRefreshTrigger, setPinnedPollRefreshTrigger] = useState(0)
 
@@ -792,28 +795,30 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
           setSelectedEmbedKeys((prev) => {
             const manual = manualEmbedsRef.current
+            const pinned = pinnedOriginatedEmbedsRef.current
             const pruned = new Set<string>()
             prev.forEach((k) => {
-              if (next.has(k) || manual.has(k)) {
+              if (next.has(k) || manual.has(k) || pinned.has(k)) {
                 pruned.add(k)
                 return
               }
               const migrated = legacyToCanonical.get(k)
-              if (migrated && (next.has(migrated) || manual.has(migrated))) pruned.add(migrated)
+              if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) pruned.add(migrated)
             })
             return pruned
           })
 
           setSelectedEmbedChatKeys((prev) => {
             const manual = manualEmbedsRef.current
+            const pinned = pinnedOriginatedEmbedsRef.current
             const pruned = new Set<string>()
             prev.forEach((k) => {
-              if (next.has(k) || manual.has(k)) {
+              if (next.has(k) || manual.has(k) || pinned.has(k)) {
                 pruned.add(k)
                 return
               }
               const migrated = legacyToCanonical.get(k)
-              if (migrated && (next.has(migrated) || manual.has(migrated))) pruned.add(migrated)
+              if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) pruned.add(migrated)
             })
             return pruned
           })
@@ -1127,14 +1132,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     })
   }, [])
 
+  /** Display names for combined chat channel labels; prefer pinned streamer nickname when available. */
   const embedDisplayNameByKey = useMemo(() => {
     const out: Record<string, string> = {}
     for (const [key, e] of combinedAvailableEmbeds.entries()) {
-      const dn = e?.mediaItem?.metadata?.displayName || e?.mediaItem?.metadata?.title
-      if (typeof dn === 'string' && dn.trim()) out[key] = dn.trim()
+      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const nickname = streamers.map((s) => s.nickname?.trim()).find(Boolean)
+      if (nickname) {
+        out[key] = nickname
+      } else {
+        const dn = e?.mediaItem?.metadata?.displayName || e?.mediaItem?.metadata?.title
+        if (typeof dn === 'string' && dn.trim()) out[key] = dn.trim()
+      }
     }
     return out
-  }, [combinedAvailableEmbeds])
+  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId])
+
+  /** Lookup display name by message key (canonicalizes so youtube:rvijzhO5Shc matches youtube:rvijzho5shc). */
+  const getEmbedDisplayName = useCallback(
+    (key: string) => (embedDisplayNameByKey[canonicalEmbedKey(key)] ?? '').trim(),
+    [embedDisplayNameByKey],
+  )
 
   const enabledKickSlugs = useMemo(() => {
     const slugs: string[] = []
@@ -1665,7 +1683,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
-                      embedDisplayNameByKey={embedDisplayNameByKey}
+                      getEmbedDisplayName={getEmbedDisplayName}
                       maxMessages={combinedMaxMessages}
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}
@@ -2392,7 +2410,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
-                      embedDisplayNameByKey={embedDisplayNameByKey}
+                      getEmbedDisplayName={getEmbedDisplayName}
                       maxMessages={combinedMaxMessages}
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}
