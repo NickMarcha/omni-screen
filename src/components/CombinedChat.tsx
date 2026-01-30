@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 
 interface DggChatMessage {
@@ -464,7 +464,10 @@ export default function CombinedChat({
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
+  const [dggInputValue, setDggInputValue] = useState('')
+  const [dggConnected, setDggConnected] = useState(false)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const dggInputRef = useRef<HTMLInputElement | null>(null)
   const wasAtBottomRef = useRef(true)
   const shouldStickToBottomRef = useRef(false)
   const programmaticScrollRef = useRef(false)
@@ -613,12 +616,27 @@ export default function CombinedChat({
       setUpdateSeq((v) => v + 1)
     }
 
+    const handleConnected = () => {
+      if (alive) setDggConnected(true)
+    }
+    const handleDisconnected = () => {
+      if (alive) setDggConnected(false)
+    }
+
     window.ipcRenderer.invoke('chat-websocket-connect').catch(() => {})
+    window.ipcRenderer.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
+      if (alive && r?.connected) setDggConnected(true)
+    }).catch(() => {})
+    window.ipcRenderer.on('chat-websocket-connected', handleConnected)
+    window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
     window.ipcRenderer.on('chat-websocket-message', handleMessage)
     window.ipcRenderer.on('chat-websocket-history', handleHistory)
 
     return () => {
       alive = false
+      setDggConnected(false)
+      window.ipcRenderer.off('chat-websocket-connected', handleConnected)
+      window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
       window.ipcRenderer.off('chat-websocket-message', handleMessage)
       window.ipcRenderer.off('chat-websocket-history', handleHistory)
       window.ipcRenderer.invoke('chat-websocket-disconnect').catch(() => {})
@@ -751,6 +769,21 @@ export default function CombinedChat({
     window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: 'browser' }).catch(() => {})
   })
 
+  const sendDggMessage = useCallback(() => {
+    const text = dggInputValue.trim()
+    if (!text) return
+    window.ipcRenderer.invoke('chat-websocket-send', { data: text }).then((result: { success?: boolean }) => {
+      if (result?.success) setDggInputValue('')
+    }).catch(() => {})
+  }, [dggInputValue])
+
+  const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendDggMessage()
+    }
+  }, [sendDggMessage])
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
@@ -815,6 +848,28 @@ export default function CombinedChat({
           )
         })}
       </div>
+      {enableDgg && (
+        <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2">
+          <input
+            ref={dggInputRef}
+            type="text"
+            className="input input-sm input-bordered flex-1 min-w-0"
+            placeholder={dggConnected ? 'Message destiny.gg...' : 'Connecting...'}
+            value={dggInputValue}
+            onChange={(e) => setDggInputValue(e.target.value)}
+            onKeyDown={onDggInputKeyDown}
+            disabled={!dggConnected}
+          />
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={sendDggMessage}
+            disabled={!dggConnected || !dggInputValue.trim()}
+          >
+            Send
+          </button>
+        </div>
+      )}
     </div>
   )
 }

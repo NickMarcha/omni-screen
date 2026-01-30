@@ -174,6 +174,13 @@ export type ChatWebSocketEvent =
   | ChatBroadcastEvent
   | { type: 'MSG'; message: ChatMessage }
 
+const DESTINY_ORIGIN = 'https://www.destiny.gg'
+
+export interface ChatWebSocketConnectOptions {
+  /** Request headers (Cookie, Origin) for authenticated connection. Uses persist:main session. */
+  headers?: Record<string, string>
+}
+
 export class ChatWebSocket extends EventEmitter {
   private ws: WebSocket | null = null
   private url: string
@@ -187,6 +194,8 @@ export class ChatWebSocket extends EventEmitter {
   private connectionTimeout: NodeJS.Timeout | null = null
   private typeCounts: Map<string, number> = new Map()
   private seenTypes: Set<string> = new Set()
+  /** Stored headers (Cookie, Origin) for reconnects so session is preserved. */
+  private connectionHeaders: Record<string, string> | null = null
 
   constructor(url: string = 'wss://chat.destiny.gg/ws') {
     super()
@@ -194,12 +203,17 @@ export class ChatWebSocket extends EventEmitter {
   }
 
   /**
-   * Connect to the WebSocket server
+   * Connect to the WebSocket server.
+   * Pass headers (e.g. Cookie, Origin) from the Electron session for authenticated connection.
    */
-  connect(): void {
+  connect(options?: ChatWebSocketConnectOptions): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       console.log('[ChatWebSocket] Already connected or connecting')
       return
+    }
+
+    if (options?.headers) {
+      this.connectionHeaders = { ...options.headers }
     }
 
     this.isIntentionallyClosed = false
@@ -207,10 +221,16 @@ export class ChatWebSocket extends EventEmitter {
     fileLogger.writeWsDiscrepancy('chat', 'connect_attempt', {
       url: this.url,
       reconnectAttempts: this.reconnectAttempts,
+      hasCookies: Boolean(this.connectionHeaders?.Cookie),
     })
 
+    const headers: Record<string, string> = {
+      ...(this.connectionHeaders ?? {}),
+      Origin: this.connectionHeaders?.Origin ?? this.connectionHeaders?.origin ?? DESTINY_ORIGIN,
+    }
+
     try {
-      this.ws = new WebSocket(this.url)
+      this.ws = new WebSocket(this.url, [], { headers, origin: DESTINY_ORIGIN })
 
       // Set connection timeout
       this.connectionTimeout = setTimeout(() => {

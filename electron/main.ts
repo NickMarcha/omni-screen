@@ -2698,11 +2698,17 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
         safeSend('chat-websocket-broadcast', event)
       })
     }
-    
+
     if (!chatWebSocket.isConnected()) {
-      chatWebSocket.connect()
+      const cookieStr = await getCookiesForUrl('https://www.destiny.gg')
+      chatWebSocket.connect({
+        headers: {
+          Cookie: cookieStr,
+          Origin: 'https://www.destiny.gg',
+        },
+      })
     }
-    
+
     return { success: true }
   } catch (error) {
     console.error('[Main Process] Error connecting chat WebSocket:', error)
@@ -2727,6 +2733,20 @@ ipcMain.handle('chat-websocket-disconnect', async (_event) => {
 ipcMain.handle('chat-websocket-status', async (_event) => {
   return {
     connected: chatWebSocket?.isConnected() || false
+  }
+})
+
+ipcMain.handle('chat-websocket-send', async (_event, payload: { data?: string }) => {
+  if (!chatWebSocket?.isConnected()) {
+    return { success: false, error: 'Not connected' }
+  }
+  const text = typeof payload?.data === 'string' ? payload.data.trim() : ''
+  if (!text) return { success: false, error: 'Empty message' }
+  try {
+    const sent = chatWebSocket.send(`MSG ${JSON.stringify({ data: text })}`)
+    return { success: sent }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Send failed' }
   }
 })
 
