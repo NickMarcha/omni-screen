@@ -287,27 +287,35 @@ interface DggInputBarProps {
   value: string
   onChange: (value: string) => void
   onSend: () => void
-  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
   disabled?: boolean
   emotesMap: Map<string, string>
   dggNicks: string[]
   placeholder?: string
+  /** Shown on the right of the input when set (e.g. "Ctrl + Space"). */
+  shortcutLabel?: string
 }
 
-const DggInputBar = forwardRef<HTMLInputElement, DggInputBarProps>(function DggInputBar(
-  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder },
+const HISTORY_MAX = 50
+
+const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function DggInputBar(
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder, shortcutLabel },
   ref
 ) {
   const [cursorPosition, setCursorPosition] = useState(0)
   const [highlightIndex, setHighlightIndex] = useState(-1)
   const [lastInsertedWord, setLastInsertedWord] = useState<string | null>(null)
   const [lastSuggestions, setLastSuggestions] = useState<string[]>([])
-  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [messageHistory, setMessageHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+  const [focused, setFocused] = useState(false)
+  const savedCurrentRef = useRef('')
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const mergedRef = useCallback(
-    (el: HTMLInputElement | null) => {
+    (el: HTMLTextAreaElement | null) => {
       inputRef.current = el
       if (typeof ref === 'function') ref(el)
-      else if (ref) (ref as { current: HTMLInputElement | null }).current = el
+      else if (ref) (ref as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
     },
     [ref]
   )
@@ -342,7 +350,7 @@ const DggInputBar = forwardRef<HTMLInputElement, DggInputBarProps>(function DggI
   )
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       const cursor = e.currentTarget.selectionStart ?? 0
       setCursorPosition(cursor)
 
@@ -382,38 +390,143 @@ const DggInputBar = forwardRef<HTMLInputElement, DggInputBarProps>(function DggI
       if (e.key === 'Enter' && !e.shiftKey) {
         setHighlightIndex(-1)
         setLastInsertedWord(null)
+        const trimmed = value.trim()
+        if (trimmed) {
+          setMessageHistory((prev) => [...prev.slice(-(HISTORY_MAX - 1)), trimmed])
+          setHistoryIndex(-1)
+        }
         onSend()
         e.preventDefault()
         return
+      }
+      if (!showDropdown && messageHistory.length > 0) {
+        if (e.key === 'ArrowUp') {
+          const atStart = cursor === 0
+          if (atStart) {
+            e.preventDefault()
+            setHistoryIndex((prev) => {
+              if (prev === -1) {
+                savedCurrentRef.current = value
+                const next = messageHistory.length - 1
+                onChange(messageHistory[next] ?? '')
+                return next
+              }
+              if (prev <= 0) return 0
+              const next = prev - 1
+              onChange(messageHistory[next] ?? '')
+              return next
+            })
+            return
+          }
+        }
+        if (e.key === 'ArrowDown') {
+          const atEnd = cursor === value.length
+          if (atEnd) {
+            e.preventDefault()
+            setHistoryIndex((prev) => {
+              if (prev === -1) return -1
+              if (prev >= messageHistory.length - 1) {
+                onChange(savedCurrentRef.current)
+                return -1
+              }
+              const next = prev + 1
+              onChange(messageHistory[next] ?? '')
+              return next
+            })
+            return
+          }
+        }
       }
       setHighlightIndex(-1)
       setLastInsertedWord(null)
       onKeyDown?.(e)
     },
-    [showDropdown, suggestions, highlightIndex, fragment, start, end, lastInsertedWord, replaceWordWith, onSend, onKeyDown]
+    [showDropdown, suggestions, highlightIndex, fragment, start, end, lastInsertedWord, replaceWordWith, onSend, onKeyDown, messageHistory, value, onChange]
   )
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setCursorPosition(e.target.selectionStart ?? 0)
-    setHighlightIndex(-1)
-    setLastInsertedWord(null)
-    onChange(e.target.value)
-  }, [onChange])
+  const MIN_H = 36
+  const MAX_H = 160
+
+  const resize = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    el.style.overflow = 'hidden'
+    el.style.setProperty('min-height', '0', 'important')
+    el.style.setProperty('height', '0px', 'important')
+    const scrollH = el.scrollHeight
+    const h = Math.max(MIN_H, Math.min(scrollH, MAX_H))
+    el.style.removeProperty('min-height')
+    el.style.removeProperty('height')
+    el.style.height = `${h}px`
+    el.style.minHeight = `${MIN_H}px`
+    el.style.overflowY = h >= MAX_H ? 'auto' : 'hidden'
+    el.style.overflowX = 'hidden'
+  }, [])
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setCursorPosition(e.target.selectionStart ?? 0)
+      setHighlightIndex(-1)
+      setLastInsertedWord(null)
+      setHistoryIndex(-1)
+      onChange(e.target.value)
+    },
+    [onChange]
+  )
+
+  useLayoutEffect(() => {
+    resize(inputRef.current)
+  }, [value, resize])
+
+  const setRef = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      mergedRef(el)
+      if (el) resize(el)
+    },
+    [mergedRef, resize]
+  )
+
+  const inputContent = (
+    <>
+      <textarea
+        ref={setRef}
+        className={`min-h-0 resize-none py-2 block break-words border-0 bg-transparent focus:outline-none focus:ring-0 ${shortcutLabel ? 'flex-1 min-w-0' : 'input input-sm input-bordered w-full flex-1 min-w-0'}`}
+        style={{
+          maxHeight: MAX_H,
+          overflowX: 'hidden',
+          overflowWrap: 'break-word',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          textWrap: 'wrap',
+        }}
+        placeholder={placeholder}
+        value={value}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onSelect={() => setCursorPosition(inputRef.current?.selectionStart ?? 0)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        disabled={disabled}
+        rows={1}
+        wrap="soft"
+      />
+      {shortcutLabel && !focused ? (
+        <span className="shrink-0 text-base-content/50 text-xs pr-1" aria-hidden>
+          ({shortcutLabel})
+        </span>
+      ) : null}
+    </>
+  )
 
   return (
-    <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2 relative">
-      <div className="flex-1 min-w-0 relative">
-        <input
-          ref={mergedRef}
-          type="text"
-          className="input input-sm input-bordered w-full"
-          placeholder={placeholder}
-          value={value}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onSelect={() => setCursorPosition(inputRef.current?.selectionStart ?? 0)}
-          disabled={disabled}
-        />
+    <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2 relative shrink-0">
+      <div className="flex-1 min-w-0 relative flex flex-col">
+        {shortcutLabel ? (
+          <div className="input input-sm input-bordered flex flex-1 min-w-0 items-center gap-2 overflow-hidden w-full">
+            {inputContent}
+          </div>
+        ) : (
+          inputContent
+        )}
         {showDropdown && (
           <ul
             className="dgg-autocomplete-list absolute left-0 right-0 bottom-full mb-1 py-1 bg-base-300 border border-base-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
@@ -452,14 +565,6 @@ const DggInputBar = forwardRef<HTMLInputElement, DggInputBarProps>(function DggI
           </ul>
         )}
       </div>
-      <button
-        type="button"
-        className="btn btn-sm btn-primary"
-        onClick={onSend}
-        disabled={disabled || !value.trim()}
-      >
-        Send
-      </button>
     </div>
   )
 })
@@ -684,7 +789,10 @@ export default function CombinedChat({
   sortMode,
   highlightTerm,
   onCountChange,
+  onDggUserCountChange,
   onOpenLink: onOpenLinkProp,
+  dggInputRef: dggInputRefProp,
+  focusShortcutLabel,
 }: {
   enableDgg: boolean
   /** When false, DGG chat input is hidden. When true, shown only when authenticated (ME received). */
@@ -698,8 +806,14 @@ export default function CombinedChat({
   /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
   highlightTerm?: string
   onCountChange?: (count: number) => void
+  /** Called when DGG user count (from NAMES/JOIN/QUIT) changes, for header display. */
+  onDggUserCountChange?: (count: number) => void
   /** When set, called when user clicks a link; otherwise links open in browser. */
   onOpenLink?: (url: string) => void
+  /** Optional ref from parent to focus the DGG input (e.g. for keybind). */
+  dggInputRef?: React.RefObject<HTMLTextAreaElement | null>
+  /** Shortcut label for placeholder, e.g. "Ctrl + Space". */
+  focusShortcutLabel?: string
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
@@ -710,8 +824,17 @@ export default function CombinedChat({
   const [pinnedMessage, setPinnedMessage] = useState<DggChatMessage | null>(null)
   const [pinnedHidden, setPinnedHidden] = useState(false)
   const [showMoreMessagesBelow, setShowMoreMessagesBelow] = useState(false)
+  /** DGG nicks from NAMES/JOIN/QUIT (used for autocomplete and count). */
+  const [dggUserNicks, setDggUserNicks] = useState<string[]>([])
   const scrollerRef = useRef<HTMLDivElement | null>(null)
-  const dggInputRef = useRef<HTMLInputElement | null>(null)
+  const dggInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
+  const mergedDggInputRef = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      dggInputRefInternal.current = el
+      if (dggInputRefProp) (dggInputRefProp as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
+    },
+    [dggInputRefProp]
+  )
   const wasAtBottomRef = useRef(true)
   const shouldStickToBottomRef = useRef(false)
   const programmaticScrollRef = useRef(false)
@@ -881,6 +1004,7 @@ export default function CombinedChat({
     const handleDisconnected = () => {
       if (alive) setDggConnected(false)
       if (alive) setDggAuthenticated(false)
+      if (alive) setDggUserNicks([])
     }
     const handleMe = (_event: any, payload: { type?: string; data?: { nick?: string; id?: number } | null } | null) => {
       if (!alive) return
@@ -896,6 +1020,28 @@ export default function CombinedChat({
       if (msg != null) setPinnedHidden(false)
     }
 
+    const handleNames = (_event: any, payload: { type?: string; names?: { users?: Array<{ nick?: string }> } } | null) => {
+      if (!alive) return
+      const users = payload?.names?.users
+      if (!Array.isArray(users)) return
+      const nicks = users
+        .map((u) => (u?.nick ?? '').trim())
+        .filter(Boolean)
+      const unique = Array.from(new Set(nicks)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      setDggUserNicks(unique)
+    }
+
+    const handleUserEvent = (_event: any, payload: { type?: string; user?: { nick?: string } } | null) => {
+      if (!alive) return
+      const nick = payload?.user?.nick?.trim()
+      if (!nick) return
+      if (payload?.type === 'JOIN') {
+        setDggUserNicks((prev) => (prev.includes(nick) ? prev : [...prev, nick].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))))
+      } else if (payload?.type === 'QUIT') {
+        setDggUserNicks((prev) => prev.filter((n) => n !== nick))
+      }
+    }
+
     window.ipcRenderer.invoke('chat-websocket-connect').catch(() => {})
     window.ipcRenderer.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
       if (alive && r?.connected) setDggConnected(true)
@@ -906,6 +1052,8 @@ export default function CombinedChat({
     window.ipcRenderer.on('chat-websocket-message', handleMessage)
     window.ipcRenderer.on('chat-websocket-history', handleHistory)
     window.ipcRenderer.on('chat-websocket-pin', handlePin)
+    window.ipcRenderer.on('chat-websocket-names', handleNames)
+    window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
 
     return () => {
       alive = false
@@ -917,9 +1065,15 @@ export default function CombinedChat({
       window.ipcRenderer.off('chat-websocket-message', handleMessage)
       window.ipcRenderer.off('chat-websocket-history', handleHistory)
       window.ipcRenderer.off('chat-websocket-pin', handlePin)
+      window.ipcRenderer.off('chat-websocket-names', handleNames)
+      window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
       window.ipcRenderer.invoke('chat-websocket-disconnect').catch(() => {})
     }
   }, [enableDgg])
+
+  useEffect(() => {
+    onDggUserCountChange?.(dggUserNicks.length)
+  }, [dggUserNicks.length, onDggUserCountChange])
 
   // Kick chat messages forwarded from main process (Pusher)
   useEffect(() => {
@@ -1003,13 +1157,15 @@ export default function CombinedChat({
     }
   }, [])
 
+  /** DGG nicks for autocomplete: from NAMES/JOIN/QUIT (dggUserNicks). Falls back to nicks seen in messages if WS list empty. */
   const dggNicks = useMemo(() => {
-    const nicks = new Set<string>()
+    if (dggUserNicks.length > 0) return dggUserNicks
+    const fromItems = new Set<string>()
     items.forEach((m) => {
-      if (m.source === 'dgg' && m.nick?.trim()) nicks.add(m.nick.trim())
+      if (m.source === 'dgg' && m.nick?.trim()) fromItems.add(m.nick.trim())
     })
-    return Array.from(nicks).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-  }, [items])
+    return Array.from(fromItems).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  }, [dggUserNicks, items])
 
   const displayItems = useMemo(() => {
     if (sortMode === 'timestamp') {
@@ -1121,7 +1277,7 @@ export default function CombinedChat({
     }).catch(() => {})
   }, [dggInputValue])
 
-  const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendDggMessage()
@@ -1328,7 +1484,7 @@ export default function CombinedChat({
       </div>
       {enableDgg && showDggInput && dggAuthenticated && (
         <DggInputBar
-          ref={dggInputRef}
+          ref={mergedDggInputRef}
           value={dggInputValue}
           onChange={setDggInputValue}
           onSend={sendDggMessage}
@@ -1337,6 +1493,7 @@ export default function CombinedChat({
           emotesMap={emotesMap}
           dggNicks={dggNicks}
           placeholder={dggConnected ? 'Message destiny.gg...' : 'Connecting...'}
+          shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
         />
       )}
     </div>

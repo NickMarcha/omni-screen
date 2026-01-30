@@ -5,6 +5,8 @@ import TwitchEmbed from './embeds/TwitchEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import CombinedChat from './CombinedChat'
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
+import autoplayIcon from '../assets/icons/autoplay.png'
+import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 import { omniColorForKey, textColorOn, withAlpha } from '../utils/omniColors'
 import { getAppPreferences } from '../utils/appPreferences'
 
@@ -81,6 +83,16 @@ function makeViewTransitionNameForKey(key: string) {
   return `omni-embed-${String(key || '')
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')}`
+}
+
+function formatDggFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
+  const parts: string[] = []
+  if (kb.ctrl) parts.push('Ctrl')
+  if (kb.alt) parts.push('Alt')
+  if (kb.shift) parts.push('Shift')
+  const key = kb.key === ' ' ? 'Space' : kb.key
+  parts.push(key)
+  return parts.join(' + ')
 }
 
 function startViewTransitionIfSupported(run: () => void) {
@@ -368,7 +380,24 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === '0' || saved === 'false') return false
     return true
   })
-  const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
+  type DggFocusKeybind = { key: string; ctrl: boolean; shift: boolean; alt: boolean }
+  const [dggFocusKeybind, setDggFocusKeybind] = useState<DggFocusKeybind>(() => {
+    try {
+      const saved = localStorage.getItem('omni-screen:dgg-focus-keybind')
+      if (!saved) return { key: ' ', ctrl: true, shift: false, alt: false }
+      const parsed = JSON.parse(saved)
+      if (parsed && typeof parsed.key === 'string') {
+        return {
+          key: parsed.key === ' ' ? ' ' : parsed.key,
+          ctrl: Boolean(parsed.ctrl),
+          shift: Boolean(parsed.shift),
+          alt: Boolean(parsed.alt),
+        }
+      }
+    } catch {}
+    return { key: ' ', ctrl: true, shift: false, alt: false }
+  })
+  const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
     return saved === 'right' ? 'right' : 'left'
@@ -379,6 +408,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [chatEmbedReload, setChatEmbedReload] = useState(0)
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
+  const [combinedDggUserCount, setCombinedDggUserCount] = useState(0)
   const [destinyEmbedDetached, setDestinyEmbedDetached] = useState(false)
   const destinyEmbedSlotRef = useRef<HTMLDivElement | null>(null)
   const destinyEmbedResizeObserverRef = useRef<ResizeObserver | null>(null)
@@ -411,7 +441,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return []
     }
   })
-  const [pinnedStreamersModalOpen, setPinnedStreamersModalOpen] = useState(false)
+  type SettingsTab = 'pinned' | 'chat' | 'keybinds'
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('pinned')
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
   /** YouTube embed key -> pinned streamer ids that resolved to this video (multiple streamers can share same stream). */
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
@@ -756,8 +788,31 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [showDggInput])
 
   useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:dgg-focus-keybind', JSON.stringify(dggFocusKeybind))
+    } catch {
+      // ignore
+    }
+  }, [dggFocusKeybind])
+
+  useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
   }, [chatLinkOpenAction])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (settingsModalOpen) return
+      const target = e.target as Node
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
+      if (!chatPaneOpen || chatMode !== 'combined' || !combinedIncludeDgg || !showDggInput) return
+      const key = e.key === ' ' ? ' ' : e.key
+      if (dggFocusKeybind.key !== key || dggFocusKeybind.ctrl !== e.ctrlKey || dggFocusKeybind.shift !== e.shiftKey || dggFocusKeybind.alt !== e.altKey) return
+      e.preventDefault()
+      dggInputRef.current?.focus()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [settingsModalOpen, chatPaneOpen, chatMode, combinedIncludeDgg, showDggInput, dggFocusKeybind])
 
   useEffect(() => {
     const handler = (_: unknown, payload: { platform: string; id: string }) => {
@@ -1563,232 +1618,68 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       {chatMode === 'embedded' ? 'Chat (embedded)' : combinedHeaderText}
                     </div>
                     {chatMode === 'combined' ? (
-                      <div className="text-xs text-base-content/60 whitespace-nowrap">{combinedMsgCount} msgs</div>
-                    ) : null}
-                    <button className="btn btn-xs btn-ghost" onClick={() => setChatSettingsOpen((v) => !v)}>
-                      Settings
-                    </button>
-                  </div>
-                  {chatSettingsOpen ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <div className="join">
+                      <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
+                        {combinedMsgCount} msgs · {combinedDggUserCount} users
                         <button
-                          className={`btn btn-xs join-item ${chatMode === 'embedded' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setChatMode('embedded')}
+                          type="button"
+                          className="btn btn-xs btn-ghost btn-circle"
+                          title="Close chat"
+                          onClick={() => setChatPaneOpen(false)}
+                          aria-label="Close chat"
                         >
-                          Embedded
-                        </button>
-                        <button
-                          className={`btn btn-xs join-item ${chatMode === 'combined' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setChatMode('combined')}
-                        >
-                          Combined
+                          ×
                         </button>
                       </div>
-                      <button
-                        className="btn btn-xs btn-ghost"
-                        onClick={() => setChatPaneSide((s) => (s === 'left' ? 'right' : 'left'))}
-                        title="Move chat pane"
-                      >
-                        Side: Left
-                      </button>
-
-                      {chatMode === 'embedded' ? (
-                        <>
-                          <button className="btn btn-xs btn-primary" onClick={openDestinyLogin}>
-                            Login
-                          </button>
+                    ) : null}
+                    {chatMode === 'embedded' && (
+                      <>
+                        <div className="flex items-center gap-1">
                           <button
-                            className="btn btn-xs btn-ghost"
-                            onClick={() =>
-                              dggUtilitiesEnabled
-                                ? window.ipcRenderer.invoke('destiny-embed-reload')
-                                : setChatEmbedReload((v) => v + 1)
-                            }
+                            type="button"
+                            className="btn btn-xs btn-ghost btn-circle"
+                            title="Close chat"
+                            onClick={() => setChatPaneOpen(false)}
+                            aria-label="Close chat"
                           >
-                            Reload
+                            ×
                           </button>
-                          {dggUtilitiesEnabled ? (
-                            <>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                title="Open DevTools for the chat embed (inspect when docked)"
-                                onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
-                              >
-                                Inspect
-                              </button>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={() => {
-                                  setDestinyEmbedDetached(true)
-                                  window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
-                                }}
-                              >
-                                Detach
-                              </button>
-                            </>
-                          ) : null}
-                          <div className="text-xs text-base-content/60">Discord can’t auth inside an iframe.</div>
-                        </>
-                      ) : (
-                        <>
-                          <label className="btn btn-xs btn-ghost gap-2" title="Include Destiny.gg chat in combined view">
-                            <input
-                              type="checkbox"
-                              className="toggle toggle-sm"
-                              checked={combinedIncludeDgg}
-                              onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
-                            />
-                            DGG
-                          </label>
-
-                          <div className="w-full mt-2 flex flex-col gap-2">
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Max msgs</span>
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                pattern="[0-9]*"
-                                className="input input-sm w-24"
-                                value={combinedMaxMessagesDraft}
-                                onChange={(e) => {
-                                  const next = e.target.value
-                                  if (!/^\d*$/.test(next)) return
-                                  setCombinedMaxMessagesDraft(next)
-                                }}
-                                onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-                                }}
-                              />
-                            </label>
-
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Timestamps</span>
-                              <input
-                                type="checkbox"
-                                className="toggle toggle-sm"
-                                checked={combinedShowTimestamps}
-                                onChange={(e) => setCombinedShowTimestamps(e.target.checked)}
-                              />
-                            </label>
-
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Source labels</span>
-                              <input
-                                type="checkbox"
-                                className="toggle toggle-sm"
-                                checked={combinedShowLabels}
-                                onChange={(e) => setCombinedShowLabels(e.target.checked)}
-                              />
-                            </label>
-
-                            <label className="flex flex-col gap-1 text-sm">
-                              <span>Highlight term</span>
-                              <input
-                                type="text"
-                                className="input input-sm w-full"
-                                placeholder="e.g. username"
-                                value={combinedHighlightTerm}
-                                onChange={(e) => setCombinedHighlightTerm(e.target.value)}
-                              />
-                            </label>
-
-                            <div className="flex items-center justify-between gap-2 text-sm">
-                              <span>Order</span>
-                              <div className="join">
-                                <button
-                                  className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
-                                  onClick={() => setCombinedSortMode('timestamp')}
-                                >
-                                  Timestamp
-                                </button>
-                                <button
-                                  className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
-                                  onClick={() => setCombinedSortMode('arrival')}
-                                >
-                                  Arrival
-                                </button>
-                              </div>
-                            </div>
-
-                            <label className="flex flex-col gap-1 text-sm">
-                              <span className="font-semibold">Link click behavior</span>
-                              <select
-                                className="select select-bordered select-sm w-full"
-                                value={chatLinkOpenAction}
-                                onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
-                              >
-                                <option value="none">Don&apos;t open the link</option>
-                                <option value="clipboard">Copy link to clipboard</option>
-                                <option value="browser">Open in default browser</option>
-                                <option value="viewer">Open in Viewer window</option>
-                              </select>
-                              <span className="label-text-alt text-base-content/60">
-                                Applies to links in Destiny embed chat and combined chat.
-                              </span>
-                            </label>
-
-                            {combinedIncludeDgg && (
-                              <label className="flex items-center justify-between gap-2 text-sm">
-                                <span>Show DGG chat input</span>
-                                <input
-                                  type="checkbox"
-                                  className="toggle toggle-sm"
-                                  checked={showDggInput}
-                                  onChange={(e) => setShowDggInput(e.target.checked)}
-                                />
-                              </label>
-                            )}
-
-                            <label
-                              className="flex items-center justify-between gap-2 text-sm"
-                              title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
+                        </div>
+                        <button className="btn btn-xs btn-ghost" onClick={openDestinyLogin}>
+                          Login
+                        </button>
+                        <button
+                          className="btn btn-xs btn-ghost"
+                          onClick={() =>
+                            dggUtilitiesEnabled
+                              ? window.ipcRenderer.invoke('destiny-embed-reload')
+                              : setChatEmbedReload((v) => v + 1)
+                          }
+                        >
+                          Reload
+                        </button>
+                        {dggUtilitiesEnabled && (
+                          <>
+                            <button
+                              className="btn btn-xs btn-ghost"
+                              title="Open DevTools for the chat embed (inspect when docked)"
+                              onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
                             >
-                              <span>YT chat poll ×</span>
-                              <input
-                                type="number"
-                                step={0.25}
-                                className="input input-sm w-24"
-                                value={youTubePollMultiplier}
-                                min={0.25}
-                                max={5}
-                                onChange={(e) => {
-                                  const v = Number(e.target.value)
-                                  if (!Number.isFinite(v)) return
-                                  setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
-                                }}
-                              />
-                            </label>
-                            <div className="text-xs text-base-content/60">
-                              Unitless multiplier. Example: if YouTube says wait 1000ms, 1.5× → ~1500ms.
-                            </div>
-
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={openKickHistorySetup}
-                                title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests"
-                              >
-                                Kick history: open Kick
-                              </button>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={retryKickHistory}
-                                disabled={enabledKickSlugs.length === 0}
-                                title={enabledKickSlugs.length === 0 ? 'Enable at least one Kick chat toggle first' : 'Retry history fetch for enabled Kick chats'}
-                              >
-                                Retry history
-                              </button>
-                            </div>
-                            <div className="text-xs text-base-content/60">
-                              If Kick history fails, open Kick once (Cloudflare may appear), then retry.
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ) : null}
+                              Inspect
+                            </button>
+                            <button
+                              className="btn btn-xs btn-ghost"
+                              onClick={() => {
+                                setDestinyEmbedDetached(true)
+                                window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
+                              }}
+                            >
+                              Detach
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-hidden">
@@ -1826,6 +1717,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       sortMode={combinedSortMode}
                       highlightTerm={combinedHighlightTerm || undefined}
                       onCountChange={setCombinedMsgCount}
+                      onDggUserCountChange={setCombinedDggUserCount}
+                      dggInputRef={dggInputRef}
+                      focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
                     />
                   )}
                 </div>
@@ -1943,11 +1837,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </div>
             </div>
 
-            {/* Fixed controls (right side): + Link, cinema, settings, Back */}
+            {/* Fixed controls (right side): +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
             <div className="flex-none flex items-center gap-2">
               <div className="dropdown dropdown-top dropdown-end">
-                <label tabIndex={0} className="btn btn-sm btn-ghost btn-outline" title="Add embed from link (YouTube, Kick, Twitch)">
-                  + Link
+                <label tabIndex={0} className="btn btn-sm btn-ghost min-h-0 p-0 text-xl" title="Add embed from link (YouTube, Kick, Twitch)">
+                  ➕
                 </label>
                 <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
                   <div className="flex flex-col gap-2">
@@ -2054,76 +1948,66 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   </div>
                 </div>
               </div>
+              {!chatPaneOpen && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl"
+                  title="Chat pane"
+                  onClick={() => setChatPaneOpen(true)}
+                  aria-label="Show chat pane"
+                >
+                  💬
+                </button>
+              )}
               <button
                 type="button"
-                className="btn btn-sm btn-ghost btn-outline"
-                title="Manage pinned streamers"
-                onClick={() => setPinnedStreamersModalOpen(true)}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''}`}
+                title="Autoplay"
+                onClick={() => setAutoplay((v) => !v)}
+                aria-label="Toggle autoplay"
               >
-                📌
+                <span
+                  className="w-6 h-6 inline-block bg-base-content"
+                  style={{
+                    maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
+                    WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
+                    maskSize: 'contain',
+                    maskRepeat: 'no-repeat',
+                    maskPosition: 'center',
+                    WebkitMaskSize: 'contain',
+                    WebkitMaskRepeat: 'no-repeat',
+                    WebkitMaskPosition: 'center',
+                  }}
+                  aria-hidden
+                />
               </button>
               <button
                 type="button"
-                className={`btn btn-sm ${cinemaMode ? 'btn-primary' : 'btn-ghost btn-outline'}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''}`}
+                title="Mute"
+                onClick={() => setMute((v) => !v)}
+                aria-label="Toggle mute"
+              >
+                {mute ? '🔇' : '🔉'}
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary' : ''}`}
                 title="Cinema mode"
                 onClick={() => setCinemaMode((v) => !v)}
+                aria-label="Toggle cinema mode"
               >
                 📽️
               </button>
-              <div className="dropdown dropdown-top dropdown-hover dropdown-end">
-                <button type="button" tabIndex={0} className="btn btn-sm btn-ghost btn-outline" title="Settings">
-                  ⚙
-                </button>
-                <div tabIndex={0} className="dropdown-content z-[90] p-3 shadow bg-base-100 rounded-box w-56 border border-base-300">
-                  <div className="flex flex-col gap-2">
-                    <label className="flex items-center justify-between gap-2 text-sm">
-                      <span>Chat</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={chatPaneOpen}
-                        onChange={(e) => setChatPaneOpen(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm">
-                      <span>Autoplay</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={autoplay}
-                        onChange={(e) => setAutoplay(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm">
-                      <span>Mute</span>
-                      <input type="checkbox" className="toggle toggle-sm" checked={mute} onChange={(e) => setMute(e.target.checked)} />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm">
-                      <span>Cinema mode</span>
-                      <input type="checkbox" className="toggle toggle-sm" checked={cinemaMode} onChange={(e) => setCinemaMode(e.target.checked)} />
-                    </label>
-                    <div className="border-t border-base-300 pt-2 mt-1">
-                      <div className="text-xs font-semibold text-base-content/70 mb-1">Combined chat: YouTube</div>
-                      <label className="flex items-center justify-between gap-2 text-sm">
-                        <span>YT chat poll ×</span>
-                        <input
-                          type="number"
-                          step={0.25}
-                          className="input input-sm w-20"
-                          value={youTubePollMultiplier}
-                          min={0.25}
-                          max={5}
-                          onChange={(e) => {
-                            const v = Number(e.target.value)
-                            if (Number.isFinite(v)) setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
-                          }}
-                        />
-                      </label>
-                      <div className="text-xs text-base-content/50 mt-0.5">Chat fetch delay. Pinned live check: 📌 on the bar.</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl"
+                title="Settings"
+                onClick={() => setSettingsModalOpen(true)}
+                aria-label="Open settings"
+              >
+                ⚙️
+              </button>
 
               <button className="btn btn-sm btn-primary" onClick={onBackToMenu}>
                 Back
@@ -2333,232 +2217,68 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       {chatMode === 'embedded' ? 'Chat (embedded)' : combinedHeaderText}
                     </div>
                     {chatMode === 'combined' ? (
-                      <div className="text-xs text-base-content/60 whitespace-nowrap">{combinedMsgCount} msgs</div>
-                    ) : null}
-                    <button className="btn btn-xs btn-ghost" onClick={() => setChatSettingsOpen((v) => !v)}>
-                      Settings
-                    </button>
-                  </div>
-                  {chatSettingsOpen ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <div className="join">
+                      <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
+                        {combinedMsgCount} msgs · {combinedDggUserCount} users
                         <button
-                          className={`btn btn-xs join-item ${chatMode === 'embedded' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setChatMode('embedded')}
+                          type="button"
+                          className="btn btn-xs btn-ghost btn-circle"
+                          title="Close chat"
+                          onClick={() => setChatPaneOpen(false)}
+                          aria-label="Close chat"
                         >
-                          Embedded
-                        </button>
-                        <button
-                          className={`btn btn-xs join-item ${chatMode === 'combined' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setChatMode('combined')}
-                        >
-                          Combined
+                          ×
                         </button>
                       </div>
-                      <button
-                        className="btn btn-xs btn-ghost"
-                        onClick={() => setChatPaneSide((s) => (s === 'left' ? 'right' : 'left'))}
-                        title="Move chat pane"
-                      >
-                        Side: Right
-                      </button>
-
-                      {chatMode === 'embedded' ? (
-                        <>
-                          <button className="btn btn-xs btn-primary" onClick={openDestinyLogin}>
-                            Login
-                          </button>
+                    ) : null}
+                    {chatMode === 'embedded' && (
+                      <>
+                        <div className="flex items-center gap-1">
                           <button
-                            className="btn btn-xs btn-ghost"
-                            onClick={() =>
-                              dggUtilitiesEnabled
-                                ? window.ipcRenderer.invoke('destiny-embed-reload')
-                                : setChatEmbedReload((v) => v + 1)
-                            }
+                            type="button"
+                            className="btn btn-xs btn-ghost btn-circle"
+                            title="Close chat"
+                            onClick={() => setChatPaneOpen(false)}
+                            aria-label="Close chat"
                           >
-                            Reload
+                            ×
                           </button>
-                          {dggUtilitiesEnabled ? (
-                            <>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                title="Open DevTools for the chat embed (inspect when docked)"
-                                onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
-                              >
-                                Inspect
-                              </button>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={() => {
-                                  setDestinyEmbedDetached(true)
-                                  window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
-                                }}
-                              >
-                                Detach
-                              </button>
-                            </>
-                          ) : null}
-                          <div className="text-xs text-base-content/60">Discord can’t auth inside an iframe.</div>
-                        </>
-                      ) : (
-                        <>
-                          <label className="btn btn-xs btn-ghost gap-2" title="Include Destiny.gg chat in combined view">
-                            <input
-                              type="checkbox"
-                              className="toggle toggle-sm"
-                              checked={combinedIncludeDgg}
-                              onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
-                            />
-                            DGG
-                          </label>
-
-                          <div className="w-full mt-2 flex flex-col gap-2">
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Max msgs</span>
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                pattern="[0-9]*"
-                                className="input input-sm w-24"
-                                value={combinedMaxMessagesDraft}
-                                onChange={(e) => {
-                                  const next = e.target.value
-                                  if (!/^\d*$/.test(next)) return
-                                  setCombinedMaxMessagesDraft(next)
-                                }}
-                                onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-                                }}
-                              />
-                            </label>
-
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Timestamps</span>
-                              <input
-                                type="checkbox"
-                                className="toggle toggle-sm"
-                                checked={combinedShowTimestamps}
-                                onChange={(e) => setCombinedShowTimestamps(e.target.checked)}
-                              />
-                            </label>
-
-                            <label className="flex items-center justify-between gap-2 text-sm">
-                              <span>Source labels</span>
-                              <input
-                                type="checkbox"
-                                className="toggle toggle-sm"
-                                checked={combinedShowLabels}
-                                onChange={(e) => setCombinedShowLabels(e.target.checked)}
-                              />
-                            </label>
-
-                            <label className="flex flex-col gap-1 text-sm">
-                              <span>Highlight term</span>
-                              <input
-                                type="text"
-                                className="input input-sm w-full"
-                                placeholder="e.g. username"
-                                value={combinedHighlightTerm}
-                                onChange={(e) => setCombinedHighlightTerm(e.target.value)}
-                              />
-                            </label>
-
-                            <div className="flex items-center justify-between gap-2 text-sm">
-                              <span>Order</span>
-                              <div className="join">
-                                <button
-                                  className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
-                                  onClick={() => setCombinedSortMode('timestamp')}
-                                >
-                                  Timestamp
-                                </button>
-                                <button
-                                  className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
-                                  onClick={() => setCombinedSortMode('arrival')}
-                                >
-                                  Arrival
-                                </button>
-                              </div>
-                            </div>
-
-                            <label className="flex flex-col gap-1 text-sm">
-                              <span className="font-semibold">Link click behavior</span>
-                              <select
-                                className="select select-bordered select-sm w-full"
-                                value={chatLinkOpenAction}
-                                onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
-                              >
-                                <option value="none">Don&apos;t open the link</option>
-                                <option value="clipboard">Copy link to clipboard</option>
-                                <option value="browser">Open in default browser</option>
-                                <option value="viewer">Open in Viewer window</option>
-                              </select>
-                              <span className="label-text-alt text-base-content/60">
-                                Applies to links in Destiny embed chat and combined chat.
-                              </span>
-                            </label>
-
-                            {combinedIncludeDgg && (
-                              <label className="flex items-center justify-between gap-2 text-sm">
-                                <span>Show DGG chat input</span>
-                                <input
-                                  type="checkbox"
-                                  className="toggle toggle-sm"
-                                  checked={showDggInput}
-                                  onChange={(e) => setShowDggInput(e.target.checked)}
-                                />
-                              </label>
-                            )}
-
-                            <label
-                              className="flex items-center justify-between gap-2 text-sm"
-                              title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
+                        </div>
+                        <button className="btn btn-xs btn-ghost" onClick={openDestinyLogin}>
+                          Login
+                        </button>
+                        <button
+                          className="btn btn-xs btn-ghost"
+                          onClick={() =>
+                            dggUtilitiesEnabled
+                              ? window.ipcRenderer.invoke('destiny-embed-reload')
+                              : setChatEmbedReload((v) => v + 1)
+                          }
+                        >
+                          Reload
+                        </button>
+                        {dggUtilitiesEnabled && (
+                          <>
+                            <button
+                              className="btn btn-xs btn-ghost"
+                              title="Open DevTools for the chat embed (inspect when docked)"
+                              onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
                             >
-                              <span>YT chat poll ×</span>
-                              <input
-                                type="number"
-                                step={0.25}
-                                className="input input-sm w-24"
-                                value={youTubePollMultiplier}
-                                min={0.25}
-                                max={5}
-                                onChange={(e) => {
-                                  const v = Number(e.target.value)
-                                  if (!Number.isFinite(v)) return
-                                  setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
-                                }}
-                              />
-                            </label>
-                            <div className="text-xs text-base-content/60">
-                              Unitless multiplier. Example: if YouTube says wait 1000ms, 1.5× → ~1500ms.
-                            </div>
-
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={openKickHistorySetup}
-                                title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests"
-                              >
-                                Kick history: open Kick
-                              </button>
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={retryKickHistory}
-                                disabled={enabledKickSlugs.length === 0}
-                                title={enabledKickSlugs.length === 0 ? 'Enable at least one Kick chat toggle first' : 'Retry history fetch for enabled Kick chats'}
-                              >
-                                Retry history
-                              </button>
-                            </div>
-                            <div className="text-xs text-base-content/60">
-                              If Kick history fails, open Kick once (Cloudflare may appear), then retry.
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ) : null}
+                              Inspect
+                            </button>
+                            <button
+                              className="btn btn-xs btn-ghost"
+                              onClick={() => {
+                                setDestinyEmbedDetached(true)
+                                window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
+                              }}
+                            >
+                              Detach
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-hidden">
@@ -2596,6 +2316,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       sortMode={combinedSortMode}
                       highlightTerm={combinedHighlightTerm || undefined}
                       onCountChange={setCombinedMsgCount}
+                      onDggUserCountChange={setCombinedDggUserCount}
+                      dggInputRef={dggInputRef}
+                      focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
                     />
                   )}
                 </div>
@@ -2605,167 +2328,395 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )}
       </div>
 
-      {/* Pinned streamers modal */}
-      {pinnedStreamersModalOpen && (
+      {/* Unified Settings modal */}
+      {settingsModalOpen && (
         <div className="modal modal-open z-[100]">
-          <div className="modal-box max-w-lg max-h-[90vh] overflow-y-auto">
-            <h3 className="font-bold text-lg">Manage pinned streamers</h3>
-            <p className="text-sm text-base-content/60 mt-1">
-              Drag to reorder (order on the bar). Color sets the dock button. Each can link YouTube, Kick, and Twitch.
-            </p>
-
-            <div className="mt-4 flex flex-col gap-2">
-              {pinnedStreamers.map((s, index) => (
-                <div
-                  key={s.id}
-                  onDragOver={(e) => {
-                    e.preventDefault()
-                    e.dataTransfer.dropEffect = 'move'
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault()
-                    const from = Number(e.dataTransfer.getData('text/plain'))
-                    if (!Number.isFinite(from) || from === index) return
-                    setPinnedStreamers((prev) => {
-                      const next = [...prev]
-                      const [removed] = next.splice(from, 1)
-                      next.splice(index, 0, removed)
-                      return next
-                    })
-                  }}
-                  className="border border-base-300 rounded-lg p-3 flex flex-col gap-2"
-                >
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('text/plain', String(index))
-                        e.dataTransfer.effectAllowed = 'move'
-                      }}
-                      className="text-base-content/50 select-none cursor-grab active:cursor-grabbing touch-none"
-                      title="Drag to reorder"
+          <div className="modal-box max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <h3 className="font-bold text-lg mb-2">Settings</h3>
+            <div className="tabs tabs-bordered mb-3 flex-shrink-0">
+              <button
+                type="button"
+                className={`tab ${settingsTab === 'pinned' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('pinned')}
+              >
+                Pinned streamers
+              </button>
+              <button
+                type="button"
+                className={`tab ${settingsTab === 'chat' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('chat')}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('keybinds')}
+              >
+                Keybinds
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {settingsTab === 'pinned' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-base-content/60">
+                    Drag to reorder (order on the bar). Color sets the dock button. Each can link YouTube, Kick, and Twitch.
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {pinnedStreamers.map((s, index) => (
+                      <div
+                        key={s.id}
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          e.dataTransfer.dropEffect = 'move'
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          const from = Number(e.dataTransfer.getData('text/plain'))
+                          if (!Number.isFinite(from) || from === index) return
+                          setPinnedStreamers((prev) => {
+                            const next = [...prev]
+                            const [removed] = next.splice(from, 1)
+                            next.splice(index, 0, removed)
+                            return next
+                          })
+                        }}
+                        className="border border-base-300 rounded-lg p-3 flex flex-col gap-2"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/plain', String(index))
+                              e.dataTransfer.effectAllowed = 'move'
+                            }}
+                            className="text-base-content/50 select-none cursor-grab active:cursor-grabbing touch-none"
+                            title="Drag to reorder"
+                          >
+                            ⋮⋮
+                          </span>
+                          <label className="flex items-center gap-1.5 shrink-0" title="Dock button color">
+                            <input
+                              type="color"
+                              className="w-7 h-7 rounded border border-base-300 cursor-pointer"
+                              value={s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : '#7dcf67'}
+                              onChange={(e) => {
+                                const hex = e.target.value
+                                setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, color: hex } : x)))
+                              }}
+                            />
+                          </label>
+                          <span className="font-medium truncate flex-1 min-w-0">{s.nickname || 'Unnamed'}</span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              className="btn btn-xs btn-ghost"
+                              onClick={() => setEditingStreamerId(editingStreamerId === s.id ? null : s.id)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-xs btn-ghost text-error"
+                              onClick={() => {
+                                setPinnedStreamers((prev) => prev.filter((x) => x.id !== s.id))
+                                if (editingStreamerId === s.id) setEditingStreamerId(null)
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                        <div className="text-xs text-base-content/60 flex flex-wrap gap-x-3 gap-y-0">
+                          {s.youtubeChannelId ? <span>YT: {s.youtubeChannelId.slice(0, 12)}…</span> : null}
+                          {s.kickSlug ? <span>Kick: {s.kickSlug}</span> : null}
+                          {s.twitchLogin ? <span>Twitch: {s.twitchLogin}</span> : null}
+                          {!s.youtubeChannelId && !s.kickSlug && !s.twitchLogin ? <span>No platforms</span> : null}
+                        </div>
+                        {editingStreamerId === s.id && (
+                          <PinnedStreamerForm
+                            streamer={s}
+                            onSave={(next) => {
+                              setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? next : x)))
+                              setEditingStreamerId(null)
+                            }}
+                            onCancel={() => setEditingStreamerId(null)}
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {editingStreamerId === '__new__' ? (
+                    <div className="border border-base-300 rounded-lg p-3">
+                      <div className="text-sm font-medium mb-2">New streamer</div>
+                      <PinnedStreamerForm
+                        streamer={{
+                          id: '__new__',
+                          nickname: '',
+                          youtubeChannelId: undefined,
+                          kickSlug: undefined,
+                          twitchLogin: undefined,
+                          color: undefined,
+                        }}
+                        onSave={(next) => {
+                          setPinnedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
+                          setEditingStreamerId(null)
+                        }}
+                        onCancel={() => setEditingStreamerId(null)}
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost btn-outline"
+                      onClick={() => setEditingStreamerId('__new__')}
                     >
-                      ⋮⋮
-                    </span>
-                    <label className="flex items-center gap-1.5 shrink-0" title="Dock button color">
+                      + Add streamer
+                    </button>
+                  )}
+                  <div className="border-t border-base-300 pt-4">
+                    <div className="text-sm font-semibold text-base-content/70 mb-2">Pinned streamers: live check</div>
+                    <p className="text-xs text-base-content/60 mb-2">
+                      When live, pinned streamers appear in the dock. YouTube poll and chat delay are in the Chat tab.
+                    </p>
+                    <label className="flex items-center justify-between gap-2 text-sm">
+                      <span>YouTube live check ×</span>
                       <input
-                        type="color"
-                        className="w-7 h-7 rounded border border-base-300 cursor-pointer"
-                        value={s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : '#7dcf67'}
+                        type="number"
+                        step={0.25}
+                        className="input input-sm w-20"
+                        value={pinnedYoutubeCheckMultiplier}
+                        min={0.25}
+                        max={5}
                         onChange={(e) => {
-                          const hex = e.target.value
-                          setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, color: hex } : x)))
+                          const v = Number(e.target.value)
+                          if (Number.isFinite(v)) setPinnedYoutubeCheckMultiplier(Math.max(0.25, Math.min(5, v)))
                         }}
                       />
                     </label>
-                    <span className="font-medium truncate flex-1 min-w-0">{s.nickname || 'Unnamed'}</span>
-                    <div className="flex gap-1">
+                    <div className="text-xs text-base-content/50 mt-1">Interval = 60s × this (min 15s). Kick/Twitch: 60s.</div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost btn-outline mt-2"
+                      title="Check all pinned streamers for live now"
+                      onClick={() => setPinnedPollRefreshTrigger((n) => n + 1)}
+                    >
+                      Check now
+                    </button>
+                  </div>
+                </div>
+              )}
+              {settingsTab === 'chat' && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">Chat mode</span>
+                    <div className="join">
                       <button
                         type="button"
-                        className="btn btn-xs btn-ghost"
-                        onClick={() => setEditingStreamerId(editingStreamerId === s.id ? null : s.id)}
+                        className={`btn btn-xs join-item ${chatMode === 'embedded' ? 'btn-primary' : 'btn-ghost'}`}
+                        onClick={() => setChatMode('embedded')}
                       >
-                        Edit
+                        Embedded
                       </button>
                       <button
                         type="button"
-                        className="btn btn-xs btn-ghost text-error"
-                        onClick={() => {
-                          setPinnedStreamers((prev) => prev.filter((x) => x.id !== s.id))
-                          if (editingStreamerId === s.id) setEditingStreamerId(null)
-                        }}
+                        className={`btn btn-xs join-item ${chatMode === 'combined' ? 'btn-primary' : 'btn-ghost'}`}
+                        onClick={() => setChatMode('combined')}
                       >
-                        Remove
+                        Combined
                       </button>
                     </div>
                   </div>
-                  <div className="text-xs text-base-content/60 flex flex-wrap gap-x-3 gap-y-0">
-                    {s.youtubeChannelId ? <span>YT: {s.youtubeChannelId.slice(0, 12)}…</span> : null}
-                    {s.kickSlug ? <span>Kick: {s.kickSlug}</span> : null}
-                    {s.twitchLogin ? <span>Twitch: {s.twitchLogin}</span> : null}
-                    {!s.youtubeChannelId && !s.kickSlug && !s.twitchLogin ? <span>No platforms</span> : null}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">Chat pane side</span>
+                    <button
+                      type="button"
+                      className={`btn btn-xs ${chatPaneSide === 'left' ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => setChatPaneSide('left')}
+                    >
+                      Left
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn-xs ${chatPaneSide === 'right' ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => setChatPaneSide('right')}
+                    >
+                      Right
+                    </button>
                   </div>
-                  {editingStreamerId === s.id && (
-                    <PinnedStreamerForm
-                      streamer={s}
-                      onSave={(next) => {
-                        setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? next : x)))
-                        setEditingStreamerId(null)
-                      }}
-                      onCancel={() => setEditingStreamerId(null)}
-                    />
-                  )}
+                  <div className="border-t border-base-300 pt-4">
+                    <div className="text-sm font-semibold text-base-content/80 mb-2">Combined chat</div>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Include DGG</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm"
+                        checked={combinedIncludeDgg}
+                        onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Max messages</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className="input input-sm w-24"
+                        value={combinedMaxMessagesDraft}
+                        onChange={(e) => {
+                          const next = e.target.value
+                          if (!/^\d*$/.test(next)) return
+                          setCombinedMaxMessagesDraft(next)
+                        }}
+                        onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+                        }}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Show timestamps</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm"
+                        checked={combinedShowTimestamps}
+                        onChange={(e) => setCombinedShowTimestamps(e.target.checked)}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Source labels</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm"
+                        checked={combinedShowLabels}
+                        onChange={(e) => setCombinedShowLabels(e.target.checked)}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm mb-2">
+                      <span>Highlight term</span>
+                      <input
+                        type="text"
+                        className="input input-sm w-full"
+                        placeholder="e.g. username"
+                        value={combinedHighlightTerm}
+                        onChange={(e) => setCombinedHighlightTerm(e.target.value)}
+                      />
+                    </label>
+                    <div className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Order</span>
+                      <div className="join">
+                        <button
+                          type="button"
+                          className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
+                          onClick={() => setCombinedSortMode('timestamp')}
+                        >
+                          Timestamp
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
+                          onClick={() => setCombinedSortMode('arrival')}
+                        >
+                          Arrival
+                        </button>
+                      </div>
+                    </div>
+                    <label className="flex flex-col gap-1 text-sm mb-2">
+                      <span className="font-semibold">Link click behavior</span>
+                      <select
+                        className="select select-bordered select-sm w-full"
+                        value={chatLinkOpenAction}
+                        onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
+                      >
+                        <option value="none">Don&apos;t open the link</option>
+                        <option value="clipboard">Copy link to clipboard</option>
+                        <option value="browser">Open in default browser</option>
+                        <option value="viewer">Open in Viewer window</option>
+                      </select>
+                      <span className="label-text-alt text-base-content/60">Applies to links in Destiny embed chat and combined chat.</span>
+                    </label>
+                    {combinedIncludeDgg && (
+                      <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                        <span>Show DGG chat input</span>
+                        <input
+                          type="checkbox"
+                          className="toggle toggle-sm"
+                          checked={showDggInput}
+                          onChange={(e) => setShowDggInput(e.target.checked)}
+                        />
+                      </label>
+                    )}
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2" title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier.">
+                      <span>YT chat poll ×</span>
+                      <input
+                        type="number"
+                        step={0.25}
+                        className="input input-sm w-24"
+                        value={youTubePollMultiplier}
+                        min={0.25}
+                        max={5}
+                        onChange={(e) => {
+                          const v = Number(e.target.value)
+                          if (!Number.isFinite(v)) return
+                          setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
+                        }}
+                      />
+                    </label>
+                    <div className="text-xs text-base-content/60 mb-2">Chat fetch delay multiplier. Pinned live check: 📌 on the bar.</div>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      <button type="button" className="btn btn-xs btn-ghost" onClick={openKickHistorySetup} title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests">
+                        Kick history: open Kick
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost"
+                        onClick={retryKickHistory}
+                        disabled={enabledKickSlugs.length === 0}
+                        title={enabledKickSlugs.length === 0 ? 'Enable at least one Kick chat toggle first' : 'Retry history fetch for enabled Kick chats'}
+                      >
+                        Retry history
+                      </button>
+                    </div>
+                    <div className="text-xs text-base-content/60">If Kick history fails, open Kick once (Cloudflare may appear), then retry.</div>
+                  </div>
                 </div>
-              ))}
+              )}
+              {settingsTab === 'keybinds' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-base-content/60 mb-4">
+                    Focus DGG chat input when combined chat is open (not when using Destiny embed chat).
+                  </p>
+                  <div className="flex items-center gap-4">
+                    <label className="text-sm font-medium shrink-0">Focus DGG chat input</label>
+                    <input
+                      type="text"
+                      readOnly
+                      className="input input-bordered input-sm w-40 font-mono"
+                      value={formatDggFocusKeybind(dggFocusKeybind)}
+                      title="Click then press the keys you want"
+                      onKeyDown={(e) => {
+                        e.preventDefault()
+                        const key = e.key === ' ' ? ' ' : e.key
+                        setDggFocusKeybind({
+                          key,
+                          ctrl: e.ctrlKey,
+                          shift: e.shiftKey,
+                          alt: e.altKey,
+                        })
+                      }}
+                      onClick={(e) => (e.currentTarget as HTMLInputElement).focus()}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
-
-            {editingStreamerId === '__new__' ? (
-              <div className="border border-base-300 rounded-lg p-3 mt-3">
-                <div className="text-sm font-medium mb-2">New streamer</div>
-                <PinnedStreamerForm
-                  streamer={{
-                    id: '__new__',
-                    nickname: '',
-                    youtubeChannelId: undefined,
-                    kickSlug: undefined,
-                    twitchLogin: undefined,
-                    color: undefined,
-                  }}
-                  onSave={(next) => {
-                    setPinnedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
-                    setEditingStreamerId(null)
-                  }}
-                  onCancel={() => setEditingStreamerId(null)}
-                />
-              </div>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost btn-outline mt-3"
-                onClick={() => setEditingStreamerId('__new__')}
-              >
-                + Add streamer
-              </button>
-            )}
-
-            <div className="border-t border-base-300 pt-4 mt-4">
-              <div className="text-sm font-semibold text-base-content/70 mb-2">Pinned streamers: live check</div>
-              <p className="text-xs text-base-content/60 mb-2">
-                When live, pinned streamers appear in the dock (no DGG list required). YouTube chat poll is in Combined chat → Settings.
-              </p>
-              <label className="flex items-center justify-between gap-2 text-sm">
-                <span>YouTube live check ×</span>
-                <input
-                  type="number"
-                  step={0.25}
-                  className="input input-sm w-20"
-                  value={pinnedYoutubeCheckMultiplier}
-                  min={0.25}
-                  max={5}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    if (Number.isFinite(v)) setPinnedYoutubeCheckMultiplier(Math.max(0.25, Math.min(5, v)))
-                  }}
-                />
-              </label>
-              <div className="text-xs text-base-content/50 mt-1">Interval = 60s × this (min 15s). Kick/Twitch: 60s.</div>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost btn-outline mt-2"
-                title="Check all pinned streamers for live now"
-                onClick={() => setPinnedPollRefreshTrigger((n) => n + 1)}
-              >
-                Check now
-              </button>
-            </div>
-
-            <div className="modal-action mt-4">
-              <button className="btn btn-primary" onClick={() => setPinnedStreamersModalOpen(false)}>
+            <div className="modal-action mt-4 flex-shrink-0">
+              <button className="btn btn-primary" onClick={() => setSettingsModalOpen(false)}>
                 Close
               </button>
             </div>
           </div>
-          <div className="modal-backdrop" onClick={() => setPinnedStreamersModalOpen(false)} aria-hidden="true" />
+          <div className="modal-backdrop" onClick={() => setSettingsModalOpen(false)} aria-hidden="true" />
         </div>
       )}
 
