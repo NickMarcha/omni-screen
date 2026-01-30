@@ -329,6 +329,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [combinedHighlightTerm, setCombinedHighlightTerm] = useState<string>(() => {
     return localStorage.getItem('omni-screen:combined-highlight-term') ?? ''
   })
+  const [chatLinkOpenAction, setChatLinkOpenAction] = useState<'none' | 'clipboard' | 'browser' | 'viewer'>(() => {
+    const saved = localStorage.getItem('omni-screen:chat-link-open-action')
+    if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
+    return 'browser'
+  })
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
@@ -699,6 +704,18 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [combinedShowLabels, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
+    } catch {
+      // ignore
+    }
+  }, [chatLinkOpenAction])
+
+  useEffect(() => {
+    window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
+  }, [chatLinkOpenAction])
 
   useEffect(() => {
     try {
@@ -1154,6 +1171,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     [embedDisplayNameByKey],
   )
 
+  const handleChatOpenLink = useCallback(
+    (url: string) => {
+      if (chatLinkOpenAction === 'none') return
+      window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: chatLinkOpenAction }).catch(() => {})
+    },
+    [chatLinkOpenAction],
+  )
+
   const enabledKickSlugs = useMemo(() => {
     const slugs: string[] = []
     selectedEmbedChatKeys.forEach((k) => {
@@ -1607,6 +1632,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               </div>
                             </div>
 
+                            <label className="flex flex-col gap-1 text-sm">
+                              <span className="font-semibold">Link click behavior</span>
+                              <select
+                                className="select select-bordered select-sm w-full"
+                                value={chatLinkOpenAction}
+                                onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
+                              >
+                                <option value="none">Don&apos;t open the link</option>
+                                <option value="clipboard">Copy link to clipboard</option>
+                                <option value="browser">Open in default browser</option>
+                                <option value="viewer">Open in Viewer window</option>
+                              </select>
+                              <span className="label-text-alt text-base-content/60">
+                                Applies to links in Destiny embed chat and combined chat.
+                              </span>
+                            </label>
+
                             <label
                               className="flex items-center justify-between gap-2 text-sm"
                               title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
@@ -1684,6 +1726,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
                       getEmbedDisplayName={getEmbedDisplayName}
+                      onOpenLink={handleChatOpenLink}
                       maxMessages={combinedMaxMessages}
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}
@@ -1998,7 +2041,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           {/* Dock hover popup (rendered outside scroll container so it won't be clipped) */}
           {dockHoverItemId && hoveredDockItem && dockHoverRect ? (() => {
             const popupW = 260
-            const left = Math.max(8, Math.min(window.innerWidth - popupW - 8, dockHoverRect.left + dockHoverRect.width / 2 - popupW / 2))
+            const preferredLeft = dockHoverRect.left + dockHoverRect.width / 2 - popupW / 2
+            // Keep popup in embed area so it doesn't render under the Destiny chat (BrowserView layer).
+            const margin = 8
+            let minLeft = margin
+            let maxLeft = window.innerWidth - popupW - margin
+            if (chatPaneOpen && chatPaneWidth > 0) {
+              if (chatPaneSide === 'left') {
+                minLeft = chatPaneWidth + margin
+              } else {
+                maxLeft = window.innerWidth - chatPaneWidth - popupW - margin
+              }
+            }
+            const left = Math.max(minLeft, Math.min(maxLeft, preferredLeft))
             const top = Math.max(8, dockHoverRect.top - 8)
             const isGroup = hoveredDockItem.type === 'group'
             const keys = isGroup ? hoveredDockItem.keys : [hoveredDockItem.key]
@@ -2008,7 +2063,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             const accent = omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName })
             return (
               <div
-                className="fixed z-[200] p-3 shadow bg-base-100 rounded-box border border-base-300"
+                className="fixed z-[9999] p-3 shadow bg-base-100 rounded-box border border-base-300"
                 style={{ width: popupW, left, top, transform: 'translateY(-100%)' }}
                 onMouseEnter={() => {
                   clearDockCloseTimer()
@@ -2334,6 +2389,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               </div>
                             </div>
 
+                            <label className="flex flex-col gap-1 text-sm">
+                              <span className="font-semibold">Link click behavior</span>
+                              <select
+                                className="select select-bordered select-sm w-full"
+                                value={chatLinkOpenAction}
+                                onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
+                              >
+                                <option value="none">Don&apos;t open the link</option>
+                                <option value="clipboard">Copy link to clipboard</option>
+                                <option value="browser">Open in default browser</option>
+                                <option value="viewer">Open in Viewer window</option>
+                              </select>
+                              <span className="label-text-alt text-base-content/60">
+                                Applies to links in Destiny embed chat and combined chat.
+                              </span>
+                            </label>
+
                             <label
                               className="flex items-center justify-between gap-2 text-sm"
                               title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
@@ -2411,6 +2483,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
                       getEmbedDisplayName={getEmbedDisplayName}
+                      onOpenLink={handleChatOpenLink}
                       maxMessages={combinedMaxMessages}
                       showTimestamps={combinedShowTimestamps}
                       showSourceLabels={combinedShowLabels}

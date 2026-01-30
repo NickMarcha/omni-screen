@@ -5,7 +5,7 @@
  * Supports detach: move the one view to a separate window; closing that window re-attaches to main.
  */
 
-import { BrowserView, BrowserWindow, session } from 'electron'
+import { BrowserView, BrowserWindow, session, WebContents } from 'electron'
 
 const EMBED_URL = 'https://www.destiny.gg/embed/chat?omni=1'
 const DGG_UTILITIES_SCRIPT_URL =
@@ -251,4 +251,12 @@ export function openDevTools(): void {
   if (embedView?.webContents && !embedView.webContents.isDestroyed()) {
     embedView.webContents.openDevTools()
   }
+}
+
+/** Return the embed's webContents so main can attach link handlers (will-navigate, setWindowOpenHandler). */
+export function getEmbedWebContents(): WebContents | null {
+  if (embedView?.webContents && !embedView.webContents.isDestroyed()) {
+    return embedView.webContents
+  }
+  return null
 }

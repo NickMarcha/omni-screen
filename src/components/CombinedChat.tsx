@@ -435,6 +435,7 @@ export default function CombinedChat({
   sortMode,
   highlightTerm,
   onCountChange,
+  onOpenLink: onOpenLinkProp,
 }: {
   enableDgg: boolean
   /** Lookup display name for a channel key (e.g. youtube:videoId); canonicalizes key so casing matches. */
@@ -446,6 +447,8 @@ export default function CombinedChat({
   /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
   highlightTerm?: string
   onCountChange?: (count: number) => void
+  /** When set, called when user clicks a link; otherwise links open in browser. */
+  onOpenLink?: (url: string) => void
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
@@ -733,10 +736,9 @@ export default function CombinedChat({
     wasAtBottomRef.current = true
   }, [updateSeq])
 
-  const onOpenLink = (url: string) => {
-    // Reuse the existing "open link" IPC handler (opens in browser).
+  const onOpenLink = onOpenLinkProp ?? ((url: string) => {
     window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: 'browser' }).catch(() => {})
-  }
+  })
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">

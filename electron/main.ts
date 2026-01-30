@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell, WebContents } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
@@ -830,33 +830,54 @@ function createWindow() {
     contextMenu.popup()
   })
 
-  // Handle external links - open in default browser
-  // Intercept navigation to external URLs
+  // Handle external links (e.g. from Destiny embed chat) per chat link-open setting
   win.webContents.on('will-navigate', (event, navigationUrl) => {
     const parsedUrl = new URL(navigationUrl)
     const currentUrl = win?.webContents.getURL()
-    
-    // Allow navigation within the app (localhost, file://, etc.)
     if (currentUrl) {
       const currentParsed = new URL(currentUrl)
-      // Same origin navigation is allowed
-      if (parsedUrl.origin === currentParsed.origin) {
-        return
-      }
+      if (parsedUrl.origin === currentParsed.origin) return
     }
-    
-    // Block navigation to external URLs and open in default browser instead
     event.preventDefault()
-    shell.openExternal(navigationUrl)
+    const action = chatLinkOpenAction || 'browser'
+    if (action === 'none') return
+    if (action === 'clipboard') {
+      clipboard.writeText(navigationUrl)
+      return
+    }
+    if (action === 'browser') {
+      shell.openExternal(navigationUrl).catch(() => {})
+      return
+    }
+    if (action === 'viewer') {
+      const v = getOrCreateViewerWindow()
+      v.show()
+      v.focus()
+      if (isHttpUrl(navigationUrl)) v.loadURL(navigationUrl).catch(() => {})
+      else shell.openExternal(navigationUrl).catch(() => {})
+    }
   })
 
-  // Handle new window requests (e.g., target="_blank" links)
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // Check if this is a Twitter login window (opened via IPC)
-    // Twitter login windows are handled separately via 'open-login-window' IPC
-    // All other links should open in default browser
-    shell.openExternal(url)
-    return { action: 'deny' } // Deny creating a new window, we opened it externally instead
+    const action = chatLinkOpenAction || 'browser'
+    if (action === 'none') return { action: 'deny' }
+    if (action === 'clipboard') {
+      clipboard.writeText(url)
+      return { action: 'deny' }
+    }
+    if (action === 'browser') {
+      shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    if (action === 'viewer') {
+      const v = getOrCreateViewerWindow()
+      v.show()
+      v.focus()
+      if (isHttpUrl(url)) v.loadURL(url).catch(() => {})
+      else shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    return { action: 'deny' }
   })
 
   // Test active push message to Renderer-process.
@@ -936,6 +957,69 @@ function createWindow() {
 }
 
 type LinkOpenAction = 'none' | 'clipboard' | 'browser' | 'viewer'
+
+/** Chat link click behavior (Destiny embed + combined chat). Set via IPC from OmniScreen. */
+let chatLinkOpenAction: LinkOpenAction = 'browser'
+
+/** WebContents IDs we've already attached embed link handlers to (avoid duplicate listeners). */
+const embedLinkHandlersAttached = new Set<number>()
+
+function attachEmbedLinkHandlers(wc: WebContents): void {
+  if (wc.isDestroyed() || embedLinkHandlersAttached.has(wc.id)) return
+  embedLinkHandlersAttached.add(wc.id)
+  wc.on('will-navigate', (event, navigationUrl) => {
+    try {
+      const parsedUrl = new URL(navigationUrl)
+      const currentUrl = wc.getURL()
+      if (currentUrl) {
+        const currentParsed = new URL(currentUrl)
+        if (parsedUrl.origin === currentParsed.origin) return
+      }
+    } catch {
+      return
+    }
+    event.preventDefault()
+    const action = chatLinkOpenAction || 'browser'
+    if (action === 'none') return
+    if (action === 'clipboard') {
+      clipboard.writeText(navigationUrl)
+      return
+    }
+    if (action === 'browser') {
+      shell.openExternal(navigationUrl).catch(() => {})
+      return
+    }
+    if (action === 'viewer') {
+      const v = getOrCreateViewerWindow()
+      v.show()
+      v.focus()
+      if (isHttpUrl(navigationUrl)) v.loadURL(navigationUrl).catch(() => {})
+      else shell.openExternal(navigationUrl).catch(() => {})
+    }
+  })
+  wc.setWindowOpenHandler(({ url }) => {
+    const action = chatLinkOpenAction || 'browser'
+    if (action === 'none') return { action: 'deny' }
+    if (action === 'clipboard') {
+      clipboard.writeText(url)
+      return { action: 'deny' }
+    }
+    if (action === 'browser') {
+      shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    if (action === 'viewer') {
+      const v = getOrCreateViewerWindow()
+      v.show()
+      v.focus()
+      if (isHttpUrl(url)) v.loadURL(url).catch(() => {})
+      else shell.openExternal(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    return { action: 'deny' }
+  })
+  wc.on('destroyed', () => { embedLinkHandlersAttached.delete(wc.id) })
+}
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -1090,6 +1174,12 @@ ipcMain.handle('link-scroller-handle-link', async (_event, payload: { url: strin
     const msg = e instanceof Error ? e.message : 'Unknown error'
     console.error(`Error occurred in handler for 'link-scroller-handle-link':`, e)
     return { success: false, error: msg }
+  }
+})
+
+ipcMain.handle('set-chat-link-open-action', (_event, action: LinkOpenAction) => {
+  if (action === 'none' || action === 'clipboard' || action === 'browser' || action === 'viewer') {
+    chatLinkOpenAction = action
   }
 })
 
@@ -1385,6 +1475,8 @@ ipcMain.handle('destiny-embed-set-bounds', (_event, payload: unknown) => {
       finalH = Math.max(1, Math.round(height * scaleY))
     }
     destinyEmbedView.setBounds(w, { x: finalX, y: finalY, width: finalW, height: finalH })
+    const embedWc = destinyEmbedView.getEmbedWebContents()
+    if (embedWc) attachEmbedLinkHandlers(embedWc)
   } catch (e) {
     console.error('destiny-embed-set-bounds failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
   }
