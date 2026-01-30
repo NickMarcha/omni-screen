@@ -964,10 +964,29 @@ let chatLinkOpenAction: LinkOpenAction = 'browser'
 /** WebContents IDs we've already attached embed link handlers to (avoid duplicate listeners). */
 const embedLinkHandlersAttached = new Set<number>()
 
+/** Destiny # link: #kick/..., #twitch/..., #youtube/... — open in OmniScreen embed split instead of browser. */
+function parseDestinyHashFromUrl(url: string): { platform: string; id: string } | null {
+  try {
+    const u = new URL(url)
+    const hash = (u.hash || '').replace(/^#/, '').trim()
+    const m = hash.match(/^(kick|twitch|youtube)\/(.+)$/i)
+    if (!m) return null
+    return { platform: m[1].toLowerCase(), id: m[2].trim() }
+  } catch {
+    return null
+  }
+}
+
 function attachEmbedLinkHandlers(wc: WebContents): void {
   if (wc.isDestroyed() || embedLinkHandlersAttached.has(wc.id)) return
   embedLinkHandlersAttached.add(wc.id)
   wc.on('will-navigate', (event, navigationUrl) => {
+    const destinyLink = parseDestinyHashFromUrl(navigationUrl)
+    if (destinyLink && win && !win.isDestroyed()) {
+      event.preventDefault()
+      win.webContents.send('add-embed-from-destiny-link', { platform: destinyLink.platform, id: destinyLink.id })
+      return
+    }
     try {
       const parsedUrl = new URL(navigationUrl)
       const currentUrl = wc.getURL()
@@ -998,6 +1017,11 @@ function attachEmbedLinkHandlers(wc: WebContents): void {
     }
   })
   wc.setWindowOpenHandler(({ url }) => {
+    const destinyLink = parseDestinyHashFromUrl(url)
+    if (destinyLink && win && !win.isDestroyed()) {
+      win.webContents.send('add-embed-from-destiny-link', { platform: destinyLink.platform, id: destinyLink.id })
+      return { action: 'deny' }
+    }
     const action = chatLinkOpenAction || 'browser'
     if (action === 'none') return { action: 'deny' }
     if (action === 'clipboard') {

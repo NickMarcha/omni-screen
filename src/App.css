@@ -19,6 +19,26 @@ body {
   flex-direction: column;
 }
 
+/* Base scrollbar app-wide: Destiny-style thin, rounded, transparent track, semi-transparent thumb */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 /* OmniScreen bottom dock: thin, unobtrusive horizontal scrollbar */
 .embed-dock-scroll::-webkit-scrollbar {
   height: 0px; /* hide horizontal scrollbar track while keeping scroll behavior */
@@ -40,6 +60,18 @@ body {
 /* Combined chat: base .emote styles to match destiny.gg/embed/chat (chat.vendor.css).
    We load cdn.destiny.gg/emotes/emotes.css for per-emote images; this base rule ensures
    inline-block, overflow, and alignment match the embed. */
+/* Embed tile shake when # link is clicked for an already-selected embed */
+.embed-tile-shake {
+  animation: embed-tile-shake 0.5s ease-in-out;
+}
+@keyframes embed-tile-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
 .msg-chat .emote {
   display: inline-block;
   position: relative;

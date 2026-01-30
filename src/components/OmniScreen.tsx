@@ -193,10 +193,31 @@ function isLikelyYouTubeId(id: string) {
   return /^[a-zA-Z0-9_-]{8,20}$/.test(id)
 }
 
+/** Destiny-style # links: #kick/dggjams, #twitch/whatever, #youtube/videoId */
+function parseDestinyHashLink(s: string): { platform: string; id: string } | null {
+  const m = String(s || '').trim().match(/^#(kick|twitch|youtube)\/([^\s]+)$/i)
+  if (!m) return null
+  const platform = m[1].toLowerCase()
+  const id = m[2].trim()
+  return id ? { platform, id } : null
+}
+
+/** Build canonical embed URL from platform + id (for addEmbedFromUrl). */
+function buildEmbedUrl(platform: string, id: string): string {
+  const p = platform.toLowerCase()
+  const cleanId = id.trim()
+  if (p === 'youtube') return `https://www.youtube.com/watch?v=${cleanId}`
+  if (p === 'kick') return `https://kick.com/${cleanId}`
+  if (p === 'twitch') return `https://www.twitch.tv/${cleanId}`
+  return `https://${p}.com/${cleanId}`
+}
+
 /** Parse supported embed URLs into platform + id. Returns null if not supported. */
 function parseEmbedUrl(url: string): { platform: string; id: string } | null {
   const s = String(url || '').trim()
   if (!s) return null
+  const hashParsed = parseDestinyHashLink(s)
+  if (hashParsed) return hashParsed
   try {
     const u = new URL(s.startsWith('http') ? s : `https://${s}`)
     const host = (u.hostname || '').toLowerCase()
@@ -277,6 +298,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return new Set()
     }
   })
+
+  /** When set, the embed tile with this key shows a short shake (e.g. after clicking # link for already-selected embed). */
+  const [shakeEmbedKey, setShakeEmbedKey] = useState<string | null>(null)
+  const selectedEmbedKeysRef = useRef(selectedEmbedKeys)
+  const handleDestinyLinkRef = useRef<(platform: string, id: string) => void>(() => {})
+  useEffect(() => {
+    selectedEmbedKeysRef.current = selectedEmbedKeys
+  }, [selectedEmbedKeys])
 
   const [autoplay, setAutoplay] = useState(true)
   const [mute, setMute] = useState(true)
@@ -716,6 +745,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
   }, [chatLinkOpenAction])
+
+  useEffect(() => {
+    const handler = (_: unknown, payload: { platform: string; id: string }) => {
+      if (payload?.platform && payload?.id) handleDestinyLinkRef.current?.(payload.platform, payload.id)
+    }
+    window.ipcRenderer?.on('add-embed-from-destiny-link', handler)
+    return () => {
+      window.ipcRenderer?.off('add-embed-from-destiny-link', handler)
+    }
+  }, [])
 
   useEffect(() => {
     try {
@@ -1171,12 +1210,39 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     [embedDisplayNameByKey],
   )
 
+  /** Destiny # link: add embed to split or shake if already selected. Used by combined chat and DGG embed IPC. */
+  const handleDestinyLink = useCallback(
+    (platform: string, id: string) => {
+      const key = makeEmbedKey(platform, id)
+      const canonical = canonicalEmbedKey(key)
+      if (selectedEmbedKeysRef.current.has(canonical)) {
+        setShakeEmbedKey(canonical)
+        const t = setTimeout(() => setShakeEmbedKey(null), 500)
+        return () => clearTimeout(t)
+      }
+      addEmbedFromUrl(buildEmbedUrl(platform, id))
+    },
+    [addEmbedFromUrl],
+  )
+
+  useEffect(() => {
+    handleDestinyLinkRef.current = handleDestinyLink
+  }, [handleDestinyLink])
+
   const handleChatOpenLink = useCallback(
     (url: string) => {
+      const trimmed = String(url || '').trim()
+      if (trimmed.startsWith('#')) {
+        const parsed = parseDestinyHashLink(trimmed)
+        if (parsed) {
+          handleDestinyLink(parsed.platform, parsed.id)
+          return
+        }
+      }
       if (chatLinkOpenAction === 'none') return
       window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: chatLinkOpenAction }).catch(() => {})
     },
-    [chatLinkOpenAction],
+    [chatLinkOpenAction, handleDestinyLink],
   )
 
   const enabledKickSlugs = useMemo(() => {
@@ -1254,11 +1320,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )
       }
 
+      const isShaking = shakeEmbedKey != null && canonicalEmbedKey(item.key) === shakeEmbedKey
       // Single structure so toggling cinema mode only changes wrapper classes/header visibility; embed iframe does not remount.
       return (
         <div
           key={item.key}
-          className={cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0'}
+          className={`${cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0'} ${isShaking ? 'embed-tile-shake' : ''}`}
           style={{ borderTop: cinemaMode ? undefined : `4px solid ${accent}`, viewTransitionName: makeViewTransitionNameForKey(item.key) } as any}
         >
           {!cinemaMode && (
@@ -1287,7 +1354,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         </div>
       )
     },
-    [autoplay, bannedEmbeds, cinemaMode, mute, toggleEmbed],
+    [autoplay, bannedEmbeds, cinemaMode, mute, shakeEmbedKey, toggleEmbed],
   )
 
   /** Dock item: merged pinned group (same keys = one button) or single embed. */

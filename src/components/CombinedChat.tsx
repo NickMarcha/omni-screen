@@ -185,20 +185,22 @@ function processGreentext(
   return parts.length > 0 ? parts : [text]
 }
 
+/** Matches http(s) URLs and Destiny-style # links: #kick/..., #twitch/..., #youtube/... */
+const LINK_REGEX = /(https?:\/\/[^\s]+|#(?:kick|twitch|youtube)\/[^\s]+)/gi
+
 function renderTextWithLinks(
   text: string,
   emotePattern: RegExp | null,
   emotesMap: Map<string, string>,
   onOpenLink?: (url: string) => void,
 ): JSX.Element {
-  const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
   let hasLinks = false
   let keyCounter = 0
 
-  while ((match = urlRegex.exec(text)) !== null) {
+  while ((match = LINK_REGEX.exec(text)) !== null) {
     hasLinks = true
     if (match.index > lastIndex) {
       const textSegment = text.substring(lastIndex, match.index)
@@ -210,12 +212,13 @@ function renderTextWithLinks(
     }
 
     const url = match[0]
+    const isDestinyLink = url.startsWith('#')
     parts.push(
       <a
         key={`link-${keyCounter++}`}
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
+        href={isDestinyLink ? '#' : url}
+        target={isDestinyLink ? undefined : '_blank'}
+        rel={isDestinyLink ? undefined : 'noopener noreferrer'}
         className="link link-primary break-words overflow-wrap-anywhere"
         onClick={(e) => {
           e.preventDefault()
