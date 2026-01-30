@@ -363,6 +363,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
     return 'browser'
   })
+  const [showDggInput, setShowDggInput] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:show-dgg-input')
+    if (saved === '0' || saved === 'false') return false
+    return true
+  })
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false)
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
@@ -741,6 +746,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [chatLinkOpenAction])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:show-dgg-input', showDggInput ? '1' : '0')
+    } catch {
+      // ignore
+    }
+  }, [showDggInput])
 
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
@@ -1716,6 +1729,18 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               </span>
                             </label>
 
+                            {combinedIncludeDgg && (
+                              <label className="flex items-center justify-between gap-2 text-sm">
+                                <span>Show DGG chat input</span>
+                                <input
+                                  type="checkbox"
+                                  className="toggle toggle-sm"
+                                  checked={showDggInput}
+                                  onChange={(e) => setShowDggInput(e.target.checked)}
+                                />
+                              </label>
+                            )}
+
                             <label
                               className="flex items-center justify-between gap-2 text-sm"
                               title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
@@ -1792,6 +1817,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
+                      showDggInput={showDggInput}
                       getEmbedDisplayName={getEmbedDisplayName}
                       onOpenLink={handleChatOpenLink}
                       maxMessages={combinedMaxMessages}
@@ -2473,6 +2499,18 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               </span>
                             </label>
 
+                            {combinedIncludeDgg && (
+                              <label className="flex items-center justify-between gap-2 text-sm">
+                                <span>Show DGG chat input</span>
+                                <input
+                                  type="checkbox"
+                                  className="toggle toggle-sm"
+                                  checked={showDggInput}
+                                  onChange={(e) => setShowDggInput(e.target.checked)}
+                                />
+                              </label>
+                            )}
+
                             <label
                               className="flex items-center justify-between gap-2 text-sm"
                               title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier."
@@ -2549,6 +2587,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   ) : (
                     <CombinedChat
                       enableDgg={combinedIncludeDgg}
+                      showDggInput={showDggInput}
                       getEmbedDisplayName={getEmbedDisplayName}
                       onOpenLink={handleChatOpenLink}
                       maxMessages={combinedMaxMessages}

@@ -79,3 +79,13 @@ body {
   text-indent: -999em;
   vertical-align: middle;
 }
+
+/* DGG autocomplete dropdown: render emote images same as chat */
+.dgg-autocomplete-list .emote {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  text-indent: -999em;
+  vertical-align: middle;
+  flex-shrink: 0;
+}

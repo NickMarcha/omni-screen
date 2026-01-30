@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 
 interface DggChatMessage {
@@ -252,10 +252,217 @@ function renderTextWithLinks(
 }
 
 const SCROLL_THRESHOLD_PX = 40
+const DGG_AUTOCOMPLETE_LIMIT = 20
 
 function isAtBottom(el: HTMLElement) {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_THRESHOLD_PX
 }
+
+function getWordAtCursor(value: string, cursor: number): { start: number; end: number; fragment: string } {
+  const before = value.slice(0, cursor)
+  const lastSpace = Math.max(before.lastIndexOf(' '), before.lastIndexOf('\n'))
+  const start = lastSpace + 1
+  const end = cursor
+  const fragment = value.slice(start, end)
+  return { start, end, fragment }
+}
+
+function getAutocompleteSuggestions(
+  fragment: string,
+  emotesMap: Map<string, string>,
+  dggNicks: string[]
+): string[] {
+  if (!fragment) return []
+  const lower = fragment.toLowerCase()
+  const emotes: string[] = []
+  emotesMap.forEach((_, prefix) => {
+    if (prefix.toLowerCase().startsWith(lower)) emotes.push(prefix)
+  })
+  const nicks = dggNicks.filter((n) => n.toLowerCase().startsWith(lower))
+  const combined = [...new Set([...emotes, ...nicks])].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  return combined.slice(0, DGG_AUTOCOMPLETE_LIMIT)
+}
+
+interface DggInputBarProps {
+  value: string
+  onChange: (value: string) => void
+  onSend: () => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  disabled?: boolean
+  emotesMap: Map<string, string>
+  dggNicks: string[]
+  placeholder?: string
+}
+
+const DggInputBar = forwardRef<HTMLInputElement, DggInputBarProps>(function DggInputBar(
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder },
+  ref
+) {
+  const [cursorPosition, setCursorPosition] = useState(0)
+  const [highlightIndex, setHighlightIndex] = useState(-1)
+  const [lastInsertedWord, setLastInsertedWord] = useState<string | null>(null)
+  const [lastSuggestions, setLastSuggestions] = useState<string[]>([])
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const mergedRef = useCallback(
+    (el: HTMLInputElement | null) => {
+      inputRef.current = el
+      if (typeof ref === 'function') ref(el)
+      else if (ref) (ref as { current: HTMLInputElement | null }).current = el
+    },
+    [ref]
+  )
+
+  const { start, end, fragment } = getWordAtCursor(value, cursorPosition)
+  const suggestionsFromFragment = useMemo(
+    () => getAutocompleteSuggestions(fragment, emotesMap, dggNicks),
+    [fragment, emotesMap, dggNicks]
+  )
+  const suggestions = fragment.length >= 1 ? suggestionsFromFragment : lastInsertedWord ? lastSuggestions : []
+  const showDropdown = suggestions.length > 0 && (fragment.length >= 1 || lastInsertedWord != null)
+
+  useEffect(() => {
+    if (fragment.length >= 1 && suggestionsFromFragment.length > 0) {
+      setLastSuggestions(suggestionsFromFragment)
+    }
+  }, [fragment, suggestionsFromFragment])
+
+  const replaceWordWith = useCallback(
+    (suggestion: string, replaceStart: number, replaceEnd: number) => {
+      const newValue = value.slice(0, replaceStart) + suggestion + ' ' + value.slice(replaceEnd)
+      onChange(newValue)
+      const newCursor = replaceStart + suggestion.length + 1
+      setCursorPosition(newCursor)
+      setLastInsertedWord(suggestion)
+      requestAnimationFrame(() => {
+        inputRef.current?.setSelectionRange(newCursor, newCursor)
+        inputRef.current?.focus()
+      })
+    },
+    [value, onChange]
+  )
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      const cursor = e.currentTarget.selectionStart ?? 0
+      setCursorPosition(cursor)
+
+      if (e.key === 'Tab' && showDropdown && suggestions.length > 0) {
+        e.preventDefault()
+        const forward = !e.shiftKey
+        const next = forward
+          ? (highlightIndex < 0 ? 0 : (highlightIndex + 1) % suggestions.length)
+          : (highlightIndex <= 0 ? suggestions.length - 1 : (highlightIndex - 1 + suggestions.length) % suggestions.length)
+        setHighlightIndex(next)
+        const suggestion = suggestions[next]
+        if (fragment.length >= 1) {
+          replaceWordWith(suggestion, start, end)
+        } else if (lastInsertedWord != null) {
+          const lastStart = Math.max(0, cursor - lastInsertedWord.length - 1)
+          const lastEnd = cursor - 1
+          if (lastEnd >= lastStart) replaceWordWith(suggestion, lastStart, lastEnd + 1)
+        }
+        return
+      }
+      if (e.key === 'ArrowDown' && showDropdown) {
+        e.preventDefault()
+        setHighlightIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0))
+        return
+      }
+      if (e.key === 'ArrowUp' && showDropdown) {
+        e.preventDefault()
+        setHighlightIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1))
+        return
+      }
+      if (e.key === 'Escape' && showDropdown) {
+        e.preventDefault()
+        setHighlightIndex(-1)
+        setLastInsertedWord(null)
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        setHighlightIndex(-1)
+        setLastInsertedWord(null)
+        onSend()
+        e.preventDefault()
+        return
+      }
+      setHighlightIndex(-1)
+      setLastInsertedWord(null)
+      onKeyDown?.(e)
+    },
+    [showDropdown, suggestions, highlightIndex, fragment, start, end, lastInsertedWord, replaceWordWith, onSend, onKeyDown]
+  )
+
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setCursorPosition(e.target.selectionStart ?? 0)
+    setHighlightIndex(-1)
+    setLastInsertedWord(null)
+    onChange(e.target.value)
+  }, [onChange])
+
+  return (
+    <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2 relative">
+      <div className="flex-1 min-w-0 relative">
+        <input
+          ref={mergedRef}
+          type="text"
+          className="input input-sm input-bordered w-full"
+          placeholder={placeholder}
+          value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onSelect={() => setCursorPosition(inputRef.current?.selectionStart ?? 0)}
+          disabled={disabled}
+        />
+        {showDropdown && (
+          <ul
+            className="dgg-autocomplete-list absolute left-0 right-0 bottom-full mb-1 py-1 bg-base-300 border border-base-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
+            style={{ listStyle: 'none' }}
+          >
+            {suggestions.map((s, idx) => {
+              const isEmote = emotesMap.has(s)
+              return (
+                <li
+                  key={s}
+                  data-index={idx}
+                  className={`px-2 py-1 text-sm cursor-pointer flex items-center gap-2 min-h-[28px] ${idx === highlightIndex ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    replaceWordWith(s, start, end)
+                    setHighlightIndex(-1)
+                  }}
+                >
+                  {isEmote ? (
+                    <>
+                      <div
+                        className={`emote ${s} shrink-0`}
+                        style={{ width: 28, height: 28 }}
+                        title={s}
+                        role="img"
+                        aria-label={s}
+                      />
+                      <span>{s}</span>
+                    </>
+                  ) : (
+                    <span>{s}</span>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        onClick={onSend}
+        disabled={disabled || !value.trim()}
+      >
+        Send
+      </button>
+    </div>
+  )
+})
 
 type CombinedItem =
   | {
@@ -295,6 +502,36 @@ type CombinedItem =
     }
 
 type CombinedItemWithSeq = CombinedItem & { seq: number }
+
+/** True only if the message is solely a single emote (nothing else). Combo grouping applies only to these. */
+function isSingleEmoteMessage(m: CombinedItem, emotesMap: Map<string, string>): boolean {
+  if (m.source === 'dgg') {
+    const trimmed = (m.content ?? '').trim()
+    if (!trimmed) return false
+    if (/\s/.test(trimmed)) return false
+    return emotesMap.has(trimmed)
+  }
+  if (m.source === 'kick') {
+    const text = String((m as any).raw?.content ?? m.content ?? '').trim()
+    return /^\[emote:(\d+):([^\]]+)\]$/.test(text)
+  }
+  return false
+}
+
+/** Emote key for combo grouping: same key = same emote. Returns null if not a single-emote message. */
+function getEmoteKey(m: CombinedItem, emotesMap: Map<string, string>): string | null {
+  if (!isSingleEmoteMessage(m, emotesMap)) return null
+  if (m.source === 'dgg') {
+    const trimmed = (m.content ?? '').trim()
+    return emotesMap.has(trimmed) ? trimmed : null
+  }
+  if (m.source === 'kick') {
+    const text = String((m as any).raw?.content ?? m.content ?? '').trim()
+    const match = text.match(/^\[emote:(\d+):([^\]]+)\]$/)
+    return match ? `kick:${match[1]}:${match[2]}` : null
+  }
+  return null
+}
 
 function renderKickEmote(id: number, name?: string, key?: string) {
   const src = `https://files.kick.com/emotes/${encodeURIComponent(String(id))}/fullsize`
@@ -439,6 +676,7 @@ function renderYouTubeContent(msg: YouTubeChatMessage): ReactNode {
 
 export default function CombinedChat({
   enableDgg,
+  showDggInput = true,
   getEmbedDisplayName,
   maxMessages,
   showTimestamps,
@@ -449,6 +687,8 @@ export default function CombinedChat({
   onOpenLink: onOpenLinkProp,
 }: {
   enableDgg: boolean
+  /** When false, DGG chat input is hidden. When true, shown only when authenticated (ME received). */
+  showDggInput?: boolean
   /** Lookup display name for a channel key (e.g. youtube:videoId); canonicalizes key so casing matches. */
   getEmbedDisplayName: (key: string) => string
   maxMessages: number
@@ -466,6 +706,10 @@ export default function CombinedChat({
   const [updateSeq, setUpdateSeq] = useState(0)
   const [dggInputValue, setDggInputValue] = useState('')
   const [dggConnected, setDggConnected] = useState(false)
+  const [dggAuthenticated, setDggAuthenticated] = useState(false)
+  const [pinnedMessage, setPinnedMessage] = useState<DggChatMessage | null>(null)
+  const [pinnedHidden, setPinnedHidden] = useState(false)
+  const [showMoreMessagesBelow, setShowMoreMessagesBelow] = useState(false)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const dggInputRef = useRef<HTMLInputElement | null>(null)
   const wasAtBottomRef = useRef(true)
@@ -473,18 +717,31 @@ export default function CombinedChat({
   const programmaticScrollRef = useRef(false)
   const seqRef = useRef(0)
 
+  /** Hard cap so the list never grows unbounded (e.g. if left open for days). ~5k messages ≈ 15k DOM nodes. */
+  const HARD_MAX = 5000
+
   const maxKeep = useMemo(() => {
     const v = Number.isFinite(maxMessages) ? Math.floor(maxMessages) : 600
-    return Math.max(50, Math.min(5000, v))
+    return Math.max(50, Math.min(HARD_MAX, v))
   }, [maxMessages])
 
-  const cap = (arr: CombinedItemWithSeq[]) => {
-    if (arr.length <= maxKeep) return arr
-    return arr.slice(arr.length - maxKeep)
-  }
+  const effectiveCap = Math.min(maxKeep, HARD_MAX)
+
+  /** Trim only when at bottom (soft limit). When scrolled up, only trim if over hard max. */
+  const trimToLimit = useCallback(
+    (arr: CombinedItemWithSeq[], atBottom: boolean): CombinedItemWithSeq[] => {
+      const limit = atBottom ? effectiveCap : HARD_MAX
+      if (arr.length <= limit) return arr
+      return arr.slice(arr.length - limit)
+    },
+    [effectiveCap]
+  )
+
+  const trimToLimitRef = useRef(trimToLimit)
+  trimToLimitRef.current = trimToLimit
 
   useEffect(() => {
-    setItems((prev) => cap(prev))
+    setItems((prev) => trimToLimit(prev, wasAtBottomRef.current))
     setUpdateSeq((v) => v + 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maxKeep])
@@ -492,7 +749,7 @@ export default function CombinedChat({
   const appendItems = (newItems: CombinedItemWithSeq[]) => {
     if (newItems.length === 0) return
     markStickIfAtBottom()
-    setItems((prev) => cap([...prev, ...newItems]))
+    setItems((prev) => trimToLimit([...prev, ...newItems], wasAtBottomRef.current))
     setUpdateSeq((v) => v + 1)
   }
 
@@ -544,7 +801,9 @@ export default function CombinedChat({
 
     const onScroll = () => {
       if (programmaticScrollRef.current) return
-      wasAtBottomRef.current = isAtBottom(el)
+      const atBottom = isAtBottom(el)
+      wasAtBottomRef.current = atBottom
+      setShowMoreMessagesBelow((prev) => (prev !== !atBottom ? !atBottom : prev))
     }
 
     el.addEventListener('scroll', onScroll)
@@ -598,7 +857,7 @@ export default function CombinedChat({
     const handleHistory = (_event: any, history: DggChatWsHistory) => {
       if (!alive) return
       if (!history || history.type !== 'HISTORY' || !Array.isArray(history.messages)) return
-      const slice = history.messages.slice(-maxKeep)
+      const slice = history.messages.slice(-HARD_MAX)
       const mapped: CombinedItemWithSeq[] = slice.map((m) => ({
         source: 'dgg',
         tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
@@ -611,7 +870,7 @@ export default function CombinedChat({
       markStickIfAtBottom()
       setItems((prev) => {
         const nonDgg = prev.filter((m) => m.source !== 'dgg')
-        return cap([...nonDgg, ...mapped])
+        return trimToLimitRef.current([...nonDgg, ...mapped], wasAtBottomRef.current)
       })
       setUpdateSeq((v) => v + 1)
     }
@@ -621,6 +880,20 @@ export default function CombinedChat({
     }
     const handleDisconnected = () => {
       if (alive) setDggConnected(false)
+      if (alive) setDggAuthenticated(false)
+    }
+    const handleMe = (_event: any, payload: { type?: string; data?: { nick?: string; id?: number } | null } | null) => {
+      if (!alive) return
+      const me = payload?.data ?? payload
+      const nick = me && 'nick' in me ? me.nick : undefined
+      setDggAuthenticated(Boolean(nick))
+    }
+
+    const handlePin = (_event: any, payload: { type?: string; pin?: DggChatMessage } | null) => {
+      if (!alive) return
+      const msg = payload?.pin ?? (payload as DggChatMessage | null)
+      setPinnedMessage(msg ?? null)
+      if (msg != null) setPinnedHidden(false)
     }
 
     window.ipcRenderer.invoke('chat-websocket-connect').catch(() => {})
@@ -629,16 +902,21 @@ export default function CombinedChat({
     }).catch(() => {})
     window.ipcRenderer.on('chat-websocket-connected', handleConnected)
     window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
+    window.ipcRenderer.on('chat-websocket-me', handleMe)
     window.ipcRenderer.on('chat-websocket-message', handleMessage)
     window.ipcRenderer.on('chat-websocket-history', handleHistory)
+    window.ipcRenderer.on('chat-websocket-pin', handlePin)
 
     return () => {
       alive = false
       setDggConnected(false)
+      setDggAuthenticated(false)
       window.ipcRenderer.off('chat-websocket-connected', handleConnected)
       window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
+      window.ipcRenderer.off('chat-websocket-me', handleMe)
       window.ipcRenderer.off('chat-websocket-message', handleMessage)
       window.ipcRenderer.off('chat-websocket-history', handleHistory)
+      window.ipcRenderer.off('chat-websocket-pin', handlePin)
       window.ipcRenderer.invoke('chat-websocket-disconnect').catch(() => {})
     }
   }, [enableDgg])
@@ -725,6 +1003,14 @@ export default function CombinedChat({
     }
   }, [])
 
+  const dggNicks = useMemo(() => {
+    const nicks = new Set<string>()
+    items.forEach((m) => {
+      if (m.source === 'dgg' && m.nick?.trim()) nicks.add(m.nick.trim())
+    })
+    return Array.from(nicks).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  }, [items])
+
   const displayItems = useMemo(() => {
     if (sortMode === 'timestamp') {
       const copy = [...items]
@@ -741,6 +1027,64 @@ export default function CombinedChat({
     history.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
     return [...history, ...live]
   }, [items, sortMode])
+
+  type RenderEntry =
+    | { type: 'message'; index: number; item: CombinedItemWithSeq }
+    | { type: 'combo'; index: number; count: number; emoteKey: string; source: string; tsMs: number }
+
+  const renderList = useMemo((): RenderEntry[] => {
+    const list: RenderEntry[] = []
+    const comboSkip = new Set<number>()
+    const comboAt = new Map<number, { count: number; emoteKey: string; source: string; tsMs: number }>()
+
+    const sources = ['dgg', 'kick', 'youtube', 'twitch'] as const
+    for (const source of sources) {
+      const indices = displayItems
+        .map((m, i) => (m.source === source ? i : -1))
+        .filter((i) => i >= 0)
+      if (indices.length === 0) continue
+      let runStart = 0
+      let runEmoteKey: string | null = null
+      for (let j = 0; j <= indices.length; j++) {
+        const idx = j < indices.length ? indices[j]! : -1
+        const m = idx >= 0 ? displayItems[idx] : undefined
+        const key = m && isSingleEmoteMessage(m, emotesMap) ? getEmoteKey(m, emotesMap) : null
+        const sameRun = key != null && key === runEmoteKey
+        if (sameRun && j < indices.length) continue
+        if (runEmoteKey != null && runStart < j) {
+          const runLength = j - runStart
+          if (runLength >= 2) {
+            const lastIdx = indices[j - 1]!
+            const lastItem = displayItems[lastIdx]!
+            for (let k = runStart; k < j - 1; k++) comboSkip.add(indices[k]!)
+            comboAt.set(lastIdx, {
+              count: runLength,
+              emoteKey: runEmoteKey,
+              source,
+              tsMs: lastItem.tsMs,
+            })
+          }
+        }
+        if (j < indices.length && key != null) {
+          runStart = j
+          runEmoteKey = key
+        } else {
+          runEmoteKey = null
+        }
+      }
+    }
+
+    for (let i = 0; i < displayItems.length; i++) {
+      if (comboSkip.has(i)) continue
+      const combo = comboAt.get(i)
+      if (combo) {
+        list.push({ type: 'combo', index: i, count: combo.count, emoteKey: combo.emoteKey, source: combo.source, tsMs: combo.tsMs })
+      } else {
+        list.push({ type: 'message', index: i, item: displayItems[i] })
+      }
+    }
+    return list
+  }, [displayItems, emotesMap])
 
   useEffect(() => {
     onCountChange?.(displayItems.length)
@@ -784,91 +1128,216 @@ export default function CombinedChat({
     }
   }, [sendDggMessage])
 
+  const scrollToBottom = useCallback(() => {
+    const el = scrollerRef.current
+    if (el) {
+      programmaticScrollRef.current = true
+      el.scrollTop = el.scrollHeight
+      wasAtBottomRef.current = true
+      setShowMoreMessagesBelow(false)
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false
+      })
+    }
+  }, [])
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
-        {displayItems.map((m, idx) => {
-          const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
-          const colorKey =
-            m.source === 'dgg'
-              ? 'dgg'
-              : m.source === 'kick'
-                ? `kick:${m.slug}`
-                : m.source === 'youtube'
-                  ? `youtube:${m.videoId}`
-                  : `twitch:${m.channel}`
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        {enableDgg && pinnedMessage && !pinnedHidden && (
+          <div className="absolute top-0 left-0 right-0 z-10 p-2 pointer-events-none">
+            <div
+              id="chat-pinned-message"
+              className="active bg-base-300 rounded-lg shadow-sm pointer-events-auto"
+            >
+              <div
+                id="chat-pinned-show-btn"
+                className="hidden"
+                title="Show Pinned Message"
+              />
+              <div
+                className="msg-chat msg-pinned text-sm rounded-md flex flex-nowrap items-start gap-2 bg-base-100 m-2 p-2"
+                data-username={pinnedMessage.nick}
+                id="msg-pinned"
+              >
+                <button
+                  id="close-pin-btn"
+                  type="button"
+                  className="chat-tool-btn btn btn-ghost btn-xs btn-circle shrink-0 text-base-content/80 hover:text-base-content hover:bg-base-200"
+                  title="Close Pinned Message"
+                  onClick={() => setPinnedHidden(true)}
+                  aria-label="Close pinned message"
+                >
+                  <span className="text-lg leading-none select-none">×</span>
+                </button>
+                {showTimestamps && (
+                  <time
+                    className="time text-base-content/60 text-xs shrink-0"
+                    title={pinnedMessage.createdDate ?? new Date(pinnedMessage.timestamp).toLocaleString()}
+                    data-unixtimestamp={pinnedMessage.timestamp}
+                  >
+                    {new Date(pinnedMessage.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                  </time>
+                )}
+                <span className="flex-1 min-w-0">
+                  <span className="font-semibold shrink-0" style={{ color: omniColorForKey('dgg') }}>
+                    {pinnedMessage.nick}
+                  </span>
+                  <span className="ctrl">: </span>
+                  <span className="text whitespace-pre-wrap break-words">
+                    {renderTextWithLinks(pinnedMessage.data ?? '', emotePattern, emotesMap, onOpenLink)}
+                  </span>
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+        {enableDgg && pinnedMessage && pinnedHidden && (
+          <div
+            id="chat-pinned-show-btn"
+            className="active absolute top-2 right-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
+            title="Show Pinned Message"
+            onClick={() => setPinnedHidden(false)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && setPinnedHidden(false)}
+            aria-label="Show pinned message"
+          >
+            <span aria-hidden>📍</span>
+          </div>
+        )}
+        <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+        {renderList.map((entry) => {
+          if (entry.type === 'message') {
+            const m = entry.item
+            const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
+            const colorKey =
+              m.source === 'dgg'
+                ? 'dgg'
+                : m.source === 'kick'
+                  ? `kick:${m.slug}`
+                  : m.source === 'youtube'
+                    ? `youtube:${m.videoId}`
+                    : `twitch:${m.channel}`
+            const displayName = getEmbedDisplayName(colorKey)
+            const accent =
+              m.source === 'dgg'
+                ? omniColorForKey(colorKey)
+                : omniColorForKey(colorKey, { displayName })
+            const badgeText = textColorOn(accent)
+            const term = highlightTerm?.trim() ?? ''
+            const isHighlighted =
+              term.length > 0 && (m.content?.toLowerCase().includes(term.toLowerCase()) ?? false)
+            return (
+              <div
+                key={`msg-${entry.index}-${m.source}-${m.tsMs}-${m.nick}`}
+                className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
+              >
+                {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+                {showSourceLabels ? (
+                  <span
+                    className="badge badge-sm mr-2 align-middle"
+                    style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
+                  >
+                    {m.source === 'dgg'
+                      ? 'DGG'
+                      : (displayName ||
+                          (m.source === 'kick'
+                            ? `K:${m.slug}`
+                            : m.source === 'youtube'
+                              ? `Y:${m.videoId}`
+                              : `T:${m.channel}`))}
+                  </span>
+                ) : null}
+                <span className="font-semibold mr-2" style={{ color: accent }}>
+                  {m.nick}
+                </span>
+                <span className="whitespace-pre-wrap break-words">
+                  {m.source === 'dgg' ? (
+                    <span
+                      className="msg-chat"
+                      style={{ position: 'relative', display: 'inline', overflow: 'visible' }}
+                    >
+                      {renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)}
+                    </span>
+                  ) : m.source === 'kick'
+                    ? renderKickContent(m.raw)
+                    : m.source === 'youtube'
+                      ? renderYouTubeContent(m.raw)
+                      : m.content ?? ''}
+                </span>
+              </div>
+            )
+          }
+          const { count, emoteKey, source, tsMs } = entry
+          const ts = Number.isFinite(tsMs) ? new Date(tsMs).toLocaleTimeString() : ''
+          const isDgg = source === 'dgg'
+          const colorKey = isDgg ? 'dgg' : 'kick'
           const displayName = getEmbedDisplayName(colorKey)
-          const accent =
-            m.source === 'dgg'
-              ? omniColorForKey(colorKey)
-              : omniColorForKey(colorKey, { displayName })
+          const accent = isDgg ? omniColorForKey('dgg') : omniColorForKey(colorKey, { displayName })
           const badgeText = textColorOn(accent)
-          const term = highlightTerm?.trim() ?? ''
-          const isHighlighted =
-            term.length > 0 && (m.content?.toLowerCase().includes(term.toLowerCase()) ?? false)
+          const prefix = isDgg ? emoteKey : null
+          const kickParts = !isDgg && emoteKey.startsWith('kick:') ? emoteKey.slice(5).split(':') : []
+          const kickId = kickParts.length >= 1 ? Number(kickParts[0]) : 0
+          const kickName = kickParts.length >= 2 ? kickParts.slice(1).join(':') : undefined
           return (
             <div
-              key={`${m.source}-${m.tsMs}-${m.nick}-${idx}`}
-              className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
+              key={`combo-${entry.index}-${source}-${emoteKey}-${count}`}
+              className="msg-chat msg-emote text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-2"
+              data-combo={count}
             >
-              {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+              {showTimestamps ? <span className="text-xs text-base-content/50">{ts}</span> : null}
               {showSourceLabels ? (
                 <span
-                  className="badge badge-sm mr-2 align-middle"
+                  className="badge badge-sm align-middle"
                   style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                 >
-                  {m.source === 'dgg'
-                    ? 'DGG'
-                    : (displayName ||
-                        (m.source === 'kick'
-                          ? `K:${m.slug}`
-                          : m.source === 'youtube'
-                            ? `Y:${m.videoId}`
-                            : `T:${m.channel}`))}
+                  {source === 'dgg' ? 'DGG' : displayName || 'Kick'}
                 </span>
               ) : null}
-              <span className="font-semibold mr-2" style={{ color: accent }}>
-                {m.nick}
+              <span className="inline-flex items-center gap-1">
+                {isDgg && prefix && emotesMap.has(prefix) ? (
+                  <div className={`emote ${prefix}`} title={prefix} role="img" aria-label={prefix} style={{ width: 28, height: 28 }} />
+                ) : Number.isFinite(kickId) && kickId > 0 ? (
+                  renderKickEmote(kickId, kickName, `combo-kick-${entry.index}`)
+                ) : null}
               </span>
-              <span className="whitespace-pre-wrap break-words">
-                {m.source === 'dgg' ? (
-                  <span
-                    className="msg-chat"
-                    style={{ position: 'relative', display: 'inline', overflow: 'visible' }}
-                  >
-                    {renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)}
-                  </span>
-                ) : m.source === 'kick'
-                  ? renderKickContent(m.raw)
-                  : m.source === 'youtube'
-                    ? renderYouTubeContent(m.raw)
-                    : m.content ?? ''}
+              <span className="chat-combo combo-complete inline-flex items-center gap-1 text-base-content/70 text-xs">
+                <i className="count font-semibold">{count}</i>
+                <i className="x">×</i>
+                <i className="hit">Hits</i>
+                <i className="combo font-semibold text-primary">C-C-C-COMBO</i>
               </span>
             </div>
           )
         })}
-      </div>
-      {enableDgg && (
-        <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2">
-          <input
-            ref={dggInputRef}
-            type="text"
-            className="input input-sm input-bordered flex-1 min-w-0"
-            placeholder={dggConnected ? 'Message destiny.gg...' : 'Connecting...'}
-            value={dggInputValue}
-            onChange={(e) => setDggInputValue(e.target.value)}
-            onKeyDown={onDggInputKeyDown}
-            disabled={!dggConnected}
-          />
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            onClick={sendDggMessage}
-            disabled={!dggConnected || !dggInputValue.trim()}
-          >
-            Send
-          </button>
         </div>
+        {showMoreMessagesBelow && (
+          <div className="chat-scroll-notify absolute bottom-0 left-0 right-0 z-10 p-2 pointer-events-none">
+            <div
+              className="text-sm text-center text-primary font-medium hover:underline rounded-lg bg-base-300 shadow-sm m-2 p-2 cursor-pointer pointer-events-auto hover:bg-base-200"
+              onClick={scrollToBottom}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === 'Enter' && scrollToBottom()}
+            >
+              More messages below
+            </div>
+          </div>
+        )}
+      </div>
+      {enableDgg && showDggInput && dggAuthenticated && (
+        <DggInputBar
+          ref={dggInputRef}
+          value={dggInputValue}
+          onChange={setDggInputValue}
+          onSend={sendDggMessage}
+          onKeyDown={onDggInputKeyDown}
+          disabled={!dggConnected}
+          emotesMap={emotesMap}
+          dggNicks={dggNicks}
+          placeholder={dggConnected ? 'Message destiny.gg...' : 'Connecting...'}
+        />
       )}
     </div>
   )
