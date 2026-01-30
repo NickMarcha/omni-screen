@@ -19,6 +19,18 @@ import {
   type AppPreferences,
 } from '../utils/appPreferences'
 
+const STORAGE_KEY_UPDATE_LAST_CHECKED = 'omni-screen:update-last-checked'
+
+function formatLastCheckedAgo(ts: number): string {
+  const now = Date.now()
+  const d = Math.floor((now - ts) / 1000)
+  if (d < 60) return 'just now'
+  if (d < 3600) return `${Math.floor(d / 60)} min ago`
+  if (d < 86400) return `${Math.floor(d / 3600)} h ago`
+  if (d < 604800) return `${Math.floor(d / 86400)} days ago`
+  return `${Math.floor(d / 86400)} days ago`
+}
+
 interface MenuProps {
   onNavigate: (page: 'link-scroller' | 'omni-screen') => void
 }
@@ -56,12 +68,24 @@ function Menu({ onNavigate }: MenuProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
 
-  const checkUpdate = async () => {
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_UPDATE_LAST_CHECKED)
+      if (raw == null) return null
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : null
+    } catch {
+      return null
+    }
+  })
+  const [, setTick] = useState(0)
+
+  const checkUpdate = async (silent = false) => {
     setChecking(true)
     const result = await window.ipcRenderer.invoke('check-update')
     setProgressInfo({ percent: 0 })
     setChecking(false)
-    setModalOpen(true)
+    if (!silent) setModalOpen(true)
     if (result?.error) {
       setUpdateAvailable(false)
       setUpdateError(result?.error)
@@ -71,6 +95,13 @@ function Menu({ onNavigate }: MenuProps) {
   const onUpdateCanAvailable = useCallback((_event: any, arg1: any) => {
     setVersionInfo(arg1)
     setUpdateError(undefined)
+    const now = Date.now()
+    setLastCheckedAt(now)
+    try {
+      localStorage.setItem(STORAGE_KEY_UPDATE_LAST_CHECKED, String(now))
+    } catch {
+      // ignore
+    }
     if (arg1.update) {
       setModalBtn(state => ({
         ...state,
@@ -115,6 +146,16 @@ function Menu({ onNavigate }: MenuProps) {
       window.ipcRenderer.off('update-downloaded', onUpdateDownloaded)
     }
   }, [onUpdateCanAvailable, onUpdateError, onDownloadProgress, onUpdateDownloaded])
+
+  useEffect(() => {
+    checkUpdate(true)
+  }, [])
+
+  useEffect(() => {
+    if (lastCheckedAt == null) return
+    const id = setInterval(() => setTick((t) => t + 1), 60_000)
+    return () => clearInterval(id)
+  }, [lastCheckedAt])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -177,9 +218,12 @@ function Menu({ onNavigate }: MenuProps) {
       {/* Update Button */}
       <div className="card bg-base-200 shadow-xl p-6 max-w-md w-full">
         <div className="flex flex-col gap-3">
-          <button className="btn btn-secondary w-full" disabled={checking} onClick={checkUpdate}>
-            {checking ? 'Checking...' : 'Check for Updates'}
+          <button className="btn btn-secondary w-full" disabled={checking} onClick={() => checkUpdate(false)}>
+            {checking ? 'Checking...' : updateAvailable ? 'Update available' : 'Check for Updates'}
           </button>
+          <p className="text-base-content/50 text-xs text-center">
+            {lastCheckedAt == null ? 'Last checked: never' : `Last checked: ${formatLastCheckedAgo(lastCheckedAt)}`}
+          </p>
           <button className="btn btn-outline w-full" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
@@ -188,7 +232,7 @@ function Menu({ onNavigate }: MenuProps) {
 
       {/* Acknowledgements */}
       <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
-        Thanks to polecat.me, Rustlesearch, d.gg utilities (vyneer), and Kickstiny for tolerating my misuse of their APIs and scripts.
+        Thanks to polecat.me, Rustlesearch, d.gg utilities (vyneer), and Kickstiny for (unwittingly) tolerating my abuse of their APIs and scripts.
       </p>
 
       {/* Update Modal */}

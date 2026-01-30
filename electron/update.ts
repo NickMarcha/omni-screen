@@ -35,8 +35,14 @@ export function update(win: Electron.BrowserWindow) {
 
     try {
       return await autoUpdater.checkForUpdatesAndNotify()
-    } catch (error) {
-      return { message: 'Network error', error }
+    } catch {
+      // YAML missing (release still in progress), network error, etc. — treat as no update available
+      win.webContents.send('update-can-available', {
+        update: false,
+        version: app.getVersion(),
+        newVersion: undefined,
+      })
+      return { update: false, version: app.getVersion() }
     }
   })
 
