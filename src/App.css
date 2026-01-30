@@ -39,6 +39,20 @@ body {
   background: rgba(255, 255, 255, 0.4);
 }
 
+/* Poll timer: animate transform (scaleX) for 60fps; width triggers layout and is choppy */
+@keyframes poll-timer-shrink {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+.poll-timer-bar {
+  right: 0;
+  left: auto;
+  width: 100%;
+  transform-origin: right;
+  will-change: transform;
+  animation: poll-timer-shrink var(--poll-duration) linear calc(-1 * var(--poll-elapsed)) both;
+}
+
 /* OmniScreen bottom dock: thin, unobtrusive horizontal scrollbar */
 .embed-dock-scroll::-webkit-scrollbar {
   height: 0px; /* hide horizontal scrollbar track while keeping scroll behavior */

@@ -78,7 +78,7 @@ interface ImgurAlbumData {
   is_album: boolean
 }
 
-interface LinkCard {
+export interface LinkCard {
   id: string
   messageId: string // platform:channel:date:nick for banning whole message
   url: string
@@ -244,7 +244,7 @@ function cleanupExpiredMutes(mutedUsers: MutedUser[] | undefined): MutedUser[] {
 }
 
 // Check if platform is disabled
-type PlatformDisplayMode = 'filter' | 'text' | 'embed'
+export type PlatformDisplayMode = 'filter' | 'text' | 'embed'
 
 // Get platform display mode for a given link type
 function getPlatformDisplayMode(linkType: string | undefined, platformSettings: Record<string, PlatformDisplayMode> | undefined): PlatformDisplayMode {
@@ -877,19 +877,255 @@ function getYouTubeEmbedUrl(url: string): string | null {
   }
 }
 
-// Helpers for card footer platform label and color
-function getPlatformLabel(card: LinkCard): string {
+// Helpers for card footer platform label and color (exported for DebugPage and shared card components)
+export function getPlatformLabel(card: LinkCard): string {
   if (card.platform === 'kick') return `Kick • ${card.channel || '?'}`
   if (card.platform === 'dgg') return 'd.gg'
   if (card.channel) return `${card.platform || 'Chat'} • ${card.channel}`
   return card.platform || ''
 }
 
-function getPlatformFooterColor(platform: string | undefined, style: 'tint' | 'subtle' | 'none' | undefined): string {
+export function getPlatformFooterColor(platform: string | undefined, style: 'tint' | 'subtle' | 'none' | undefined): string {
   if (!style || style === 'none' || !platform) return ''
   if (platform === 'dgg') return style === 'tint' ? 'border-l-4 border-l-primary bg-primary/5' : 'border-l-4 border-l-primary/40 bg-primary/5'
   if (platform === 'kick') return style === 'tint' ? 'border-l-4 border-l-success bg-success/5' : 'border-l-4 border-l-success/40 bg-success/5'
   return style === 'tint' ? 'border-l-4 border-l-secondary bg-secondary/5' : 'border-l-4 border-l-secondary/40 bg-secondary/5'
+}
+
+
+// Shared overview card content (used by MasonryGrid and DebugPage)
+function renderLinkCardOverviewContent(
+  card: LinkCard,
+  onCardClick: (cardId: string) => void,
+  onOpenLink: ((url: string) => void) | undefined,
+  onContextMenu: ((e: React.MouseEvent, card: LinkCard) => void) | undefined,
+  _getEmbedTheme: () => 'light' | 'dark',
+  platformSettings: Record<string, PlatformDisplayMode>,
+  emotesMap: Map<string, string>,
+  footerDisplay: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' } | undefined,
+  embedReloadKey: number
+) {
+  const handleAnchorClick = (e: React.MouseEvent, url: string) => { e.preventDefault(); e.stopPropagation(); onOpenLink?.(url) }
+  const reloadKey = embedReloadKey
+  // Check platform display mode (calculate outside IIFE so we can use it for hasEmbed check)
+  const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
+  const twitterMode = getPlatformDisplayMode('Twitter', platformSettings)
+  const tiktokMode = getPlatformDisplayMode('TikTok', platformSettings)
+  const redditMode = getPlatformDisplayMode('Reddit', platformSettings)
+  const streamableMode = getPlatformDisplayMode('Streamable', platformSettings)
+  const wikipediaMode = getPlatformDisplayMode('Wikipedia', platformSettings)
+  const blueskyMode = getPlatformDisplayMode('Bluesky', platformSettings)
+  const kickMode = getPlatformDisplayMode('Kick', platformSettings)
+  const lsfMode = getPlatformDisplayMode('LSF', platformSettings)
+  const imgurMode = getPlatformDisplayMode('Imgur', platformSettings)
+  
+  // Check if card has an embed to show
+  const hasEmbed = card.isDirectMedia || 
+    (card.isYouTube && youtubeMode === 'embed' && card.embedUrl) ||
+    (card.isTwitter && twitterMode === 'embed') ||
+    (card.isTikTok && tiktokMode === 'embed') ||
+    (card.isReddit && redditMode === 'embed') ||
+    (card.isStreamable && streamableMode === 'embed') ||
+    (card.isWikipedia && wikipediaMode === 'embed') ||
+    (card.isBluesky && blueskyMode === 'embed') ||
+    (card.isKick && kickMode === 'embed') ||
+    (card.isLSF && lsfMode === 'embed') ||
+    (card.isImgur && imgurMode === 'embed')
+  
+  return (
+    <>
+      {/* Embed content above - constrained to prevent overflow */}
+      <div className="flex-shrink-0 overflow-hidden">
+        {card.isDirectMedia ? (
+          <div>
+            {card.mediaType === 'image' ? (
+              <ImageEmbed 
+                key={`image-${card.id}-${reloadKey}`}
+                url={card.url} 
+                alt={card.text}
+                className="w-full object-contain rounded-t-lg"
+              />
+            ) : (
+              <VideoEmbed 
+                key={`video-${card.id}-${reloadKey}`}
+                url={card.url}
+                autoplay={false}
+                muted={true}
+                controls={true}
+                className="w-full rounded-t-lg"
+              />
+            )}
+          </div>
+        ) : null}
+      </div>
+      {/* Text content and metadata at bottom - always visible */}
+      <div className="flex-shrink-0">
+        <div className="bg-base-300 rounded-lg p-3" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
+          <div className="break-words overflow-wrap-anywhere mb-2">
+            <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+              {renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink, card.kickEmotes)}
+            </p>
+          </div>
+          <div
+            className={`flex items-center justify-between pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(card.platform, footerDisplay?.platformColorStyle ?? 'tint')}`}
+            onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
+          >
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(card) && (
+                  <span className="text-xs text-base-content/50 mr-2" data-platform={card.platform}>{getPlatformLabel(card)}</span>
+                )}
+                <span className="text-xs text-base-content/70">Posted by</span>
+                <a
+                  href={card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : '#')}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-2 text-sm font-bold text-primary hover:underline"
+                  onClick={(e) => {
+                    const url = card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : card.url || '#')
+                    handleAnchorClick(e, url)
+                  }}
+                >
+                  {card.nick}
+                </a>
+              </div>
+              {footerDisplay?.timestampDisplay !== 'none' && (
+                <div className="text-xs text-base-content/50">
+                  {footerDisplay?.timestampDisplay === 'timestamp'
+                    ? new Date(card.date).toLocaleTimeString()
+                    : new Date(card.date).toLocaleString()}
+                </div>
+              )}
+            </div>
+            {hasEmbed ? (
+              <button
+                onClick={() => onCardClick(card.id)}
+                className="btn btn-sm btn-circle btn-primary flex-shrink-0"
+                title="Expand"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export function LinkCardOverviewCard(props: {
+  card: LinkCard
+  onCardClick: (cardId: string) => void
+  onOpenLink?: (url: string) => void
+  onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void
+  getEmbedTheme: () => 'light' | 'dark'
+  platformSettings: Record<string, PlatformDisplayMode>
+  emotesMap: Map<string, string>
+  footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' }
+  embedReloadKey?: number
+}) {
+  return renderLinkCardOverviewContent(props.card, props.onCardClick, props.onOpenLink, props.onContextMenu, props.getEmbedTheme, props.platformSettings, props.emotesMap, props.footerDisplay, props.embedReloadKey ?? 0)
+}
+
+/** Expanded modal content (left panel + embed area). Used by LinkScroller modal and DebugPage. */
+export function LinkCardExpandedContent(props: {
+  card: LinkCard
+  getEmbedTheme: () => 'light' | 'dark'
+  emotesMap: Map<string, string>
+  onOpenLink?: (url: string) => void
+  footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' }
+}) {
+  const { card, getEmbedTheme, emotesMap, onOpenLink, footerDisplay } = props
+  const handleOpenLink = (e: React.MouseEvent, url: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onOpenLink?.(url)
+  }
+  return (
+    <div className="flex-1 flex overflow-hidden relative">
+      <div className="w-80 border-r border-base-300 overflow-y-auto p-4 flex-shrink-0">
+        <div className="space-y-4">
+          <div>
+            <div className="text-xs text-base-content/50 mb-1">User</div>
+            <div className="font-semibold">{card.nick}</div>
+          </div>
+          <div>
+            <div className="text-xs text-base-content/50 mb-1">Message</div>
+            <div className="text-sm whitespace-pre-wrap break-words">
+              {renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink, card.kickEmotes)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-base-content/50 mb-1">Link</div>
+            <a
+              href={card.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link link-primary text-sm break-all"
+              onClick={(e) => handleOpenLink(e, card.url)}
+            >
+              {card.url}
+            </a>
+          </div>
+          {card.date && footerDisplay?.timestampDisplay !== 'none' && (
+            <div>
+              <div className="text-xs text-base-content/50 mb-1">Time</div>
+              <div className="text-sm">
+                {footerDisplay?.timestampDisplay === 'timestamp'
+                  ? new Date(card.date).toLocaleTimeString()
+                  : new Date(card.date).toLocaleString()}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-6 flex items-center justify-center">
+        <div className="w-full max-w-4xl">
+          {card.isDirectMedia ? (
+            <div>
+              {card.mediaType === 'image' ? (
+                <ImageEmbed url={card.url} alt={card.text} />
+              ) : (
+                <VideoEmbed url={card.url} autoplay={false} muted={false} controls={true} />
+              )}
+            </div>
+          ) : card.isYouTube && card.embedUrl ? (
+            <YouTubeEmbed url={card.url} embedUrl={card.embedUrl as string} autoplay={false} mute={false} />
+          ) : card.isTwitter ? (
+            <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
+          ) : card.isTikTok ? (
+            <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
+          ) : card.isReddit ? (
+            <RedditEmbed url={card.url} theme={getEmbedTheme()} />
+          ) : card.isStreamable ? (
+            <StreamableEmbed url={card.url} autoplay={false} mute={false} loop={false} />
+          ) : card.isWikipedia ? (
+            <WikipediaEmbed url={card.url} />
+          ) : card.isBluesky ? (
+            <BlueskyEmbed url={card.url} />
+          ) : card.isKick ? (
+            <KickEmbed url={card.url} autoplay={false} mute={true} />
+          ) : card.isLSF ? (
+            <LSFEmbed url={card.url} autoplay={false} mute={false} />
+          ) : (
+            <div className="bg-base-200 rounded-lg p-6">
+              <a
+                href={card.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="link link-primary break-all"
+                onClick={(e) => handleOpenLink(e, card.url)}
+              >
+                {card.url}
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
@@ -1037,12 +1273,6 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
     setColumns(newColumns)
   }, [cardsKey, columnCount, stackDirection, cards])
 
-  const handleAnchorClick = useCallback((e: React.MouseEvent, url: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    onOpenLink?.(url)
-  }, [onOpenLink])
-  
   return (
     <div className={`flex gap-4 ${stackDirection === 'up' ? 'items-end' : ''}`}>
       {columns.map((columnCards, columnIndex) => (
@@ -1057,361 +1287,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
               className={`card shadow-xl flex flex-col border-2 transition-all duration-200 ease-out p-0 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-content/20'}`}
               onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
             >
-              {(() => {
-                // Check platform display mode (calculate outside IIFE so we can use it for hasEmbed check)
-                const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
-                const twitterMode = getPlatformDisplayMode('Twitter', platformSettings)
-                const tiktokMode = getPlatformDisplayMode('TikTok', platformSettings)
-                const redditMode = getPlatformDisplayMode('Reddit', platformSettings)
-                const streamableMode = getPlatformDisplayMode('Streamable', platformSettings)
-                const wikipediaMode = getPlatformDisplayMode('Wikipedia', platformSettings)
-                const blueskyMode = getPlatformDisplayMode('Bluesky', platformSettings)
-                const kickMode = getPlatformDisplayMode('Kick', platformSettings)
-                const lsfMode = getPlatformDisplayMode('LSF', platformSettings)
-                const imgurMode = getPlatformDisplayMode('Imgur', platformSettings)
-                
-                // Check if card has an embed to show
-                const hasEmbed = card.isDirectMedia || 
-                  (card.isYouTube && youtubeMode === 'embed' && card.embedUrl) ||
-                  (card.isTwitter && twitterMode === 'embed') ||
-                  (card.isTikTok && tiktokMode === 'embed') ||
-                  (card.isReddit && redditMode === 'embed') ||
-                  (card.isStreamable && streamableMode === 'embed') ||
-                  (card.isWikipedia && wikipediaMode === 'embed') ||
-                  (card.isBluesky && blueskyMode === 'embed') ||
-                  (card.isKick && kickMode === 'embed') ||
-                  (card.isLSF && lsfMode === 'embed') ||
-                  (card.isImgur && imgurMode === 'embed')
-                
-                // Get reload key for this card
-                const reloadKey = embedReloadKeys?.get(card.id) || 0
-                
-                return (
-                  <>
-                    {/* Embed content above - constrained to prevent overflow */}
-                    <div className="flex-shrink-0 overflow-hidden">
-                      {card.isDirectMedia ? (
-                        <div>
-                          {card.mediaType === 'image' ? (
-                            <ImageEmbed 
-                              key={`image-${card.id}-${reloadKey}`}
-                              url={card.url} 
-                              alt={card.text}
-                              className="w-full object-contain rounded-t-lg"
-                            />
-                          ) : (
-                            <VideoEmbed 
-                              key={`video-${card.id}-${reloadKey}`}
-                              url={card.url}
-                              autoplay={false}
-                              muted={true}
-                              controls={true}
-                              className="w-full rounded-t-lg"
-                            />
-                          )}
-                        </div>
-                      ) : (() => {
-                  
-                  // Show text version if platform setting is 'text'
-                  if (card.isYouTube && youtubeMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isTwitter && twitterMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isTikTok && tiktokMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'TikTok link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isReddit && redditMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isStreamable && streamableMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isWikipedia && wikipediaMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isBluesky && blueskyMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isKick && kickMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isLSF && lsfMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  if (card.isImgur && imgurMode === 'text') {
-                    return (
-                      <div className="card-body break-words overflow-wrap-anywhere p-4" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                        <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                          {renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink, card.kickEmotes)}
-                        </p>
-                        <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-xs break-all mt-2 block" onClick={(e) => handleAnchorClick(e, card.url)}>
-                          {card.url}
-                        </a>
-                      </div>
-                    )
-                  }
-                  
-                  // Show embed version if platform setting is 'embed'
-                  if (card.isYouTube && youtubeMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`youtube-${card.id}-${reloadKey}`}>
-                        <YouTubeEmbed 
-                          url={card.url} 
-                          embedUrl={card.embedUrl!}
-                          autoplay={false}
-                          mute={false}
-                          showLink={false}
-                        />
-                      </div>
-                    )
-                  }
-                  if (card.isTwitter && twitterMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`twitter-${card.id}-${reloadKey}`}>
-                        <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
-                      </div>
-                    )
-                  }
-                  if (card.isTikTok && tiktokMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`tiktok-${card.id}-${reloadKey}`}>
-                        <TikTokEmbed url={card.url} autoplay={false} mute={false} loop={false} />
-                      </div>
-                    )
-                  }
-                  if (card.isReddit && redditMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`reddit-${card.id}-${reloadKey}`}>
-                        <RedditEmbed url={card.url} theme={getEmbedTheme()} />
-                      </div>
-                    )
-                  }
-                  if (card.isStreamable && streamableMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`streamable-${card.id}-${reloadKey}`}>
-                        <StreamableEmbed url={card.url} autoplay={false} mute={false} />
-                      </div>
-                    )
-                  }
-                  if (card.isWikipedia && wikipediaMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`wikipedia-${card.id}-${reloadKey}`}>
-                        <WikipediaEmbed url={card.url} />
-                      </div>
-                    )
-                  }
-                  if (card.isBluesky && blueskyMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`bluesky-${card.id}-${reloadKey}`}>
-                        <BlueskyEmbed url={card.url} />
-                      </div>
-                    )
-                  }
-                  if (card.isKick && kickMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`kick-${card.id}-${reloadKey}`}>
-                        <KickEmbed url={card.url} autoplay={false} mute={true} useIframeOnly />
-                      </div>
-                    )
-                  }
-                  if (card.isLSF && lsfMode === 'embed') {
-                    return (
-                      <div className="p-0" key={`lsf-${card.id}-${reloadKey}`}>
-                        <LSFEmbed url={card.url} autoplay={false} mute={false} />
-                      </div>
-                    )
-                  }
-                  if (card.isImgur && imgurMode === 'embed') {
-                    return (
-                      <div className="p-0">
-                        <div className="bg-base-200 rounded-lg p-4 text-center">
-                          <img 
-                            src={imgurIcon} 
-                            alt="Imgur" 
-                            className="w-8 h-8 mx-auto mb-2"
-                          />
-                          <p className="text-sm text-base-content/70">Imgur Album</p>
-                          <a
-                            href={card.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="link link-primary text-xs break-all"
-                            onClick={(e) => handleAnchorClick(e, card.url)}
-                          >
-                            {card.url}
-                          </a>
-                        </div>
-                      </div>
-                    )
-                  }
-                  
-                  // Fallback for other cases - no embed to show
-                  return null
-                })()}
-              </div>
-              
-              {/* Text content and metadata at bottom - always visible */}
-              <div className="flex-shrink-0">
-                {/* Message text with rounded dark grey background */}
-                <div className="bg-base-300 rounded-lg p-3" onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}>
-                  <div className="break-words overflow-wrap-anywhere mb-2">
-                    <p className="text-sm break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                      {card.isYouTube 
-                        ? renderTextWithLinks(card.text, card.url, 'YouTube link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isReddit
-                        ? renderTextWithLinks(card.text, card.url, 'Reddit link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isTwitter
-                        ? renderTextWithLinks(card.text, card.url, 'Twitter link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isStreamable
-                        ? renderTextWithLinks(card.text, card.url, 'Streamable link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isImgur
-                        ? renderTextWithLinks(card.text, card.url, 'Imgur link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isWikipedia
-                        ? renderTextWithLinks(card.text, card.url, 'Wikipedia link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isBluesky
-                        ? renderTextWithLinks(card.text, card.url, 'Bluesky link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isKick
-                        ? renderTextWithLinks(card.text, card.url, 'Kick link', emotesMap, onOpenLink, card.kickEmotes)
-                        : card.isLSF
-                        ? renderTextWithLinks(card.text, card.url, 'LSF link', emotesMap, onOpenLink, card.kickEmotes)
-                        : renderTextWithLinks(card.text, undefined, undefined, emotesMap, onOpenLink, card.kickEmotes)
-                      }
-                    </p>
-                  </div>
-                  
-                  {/* User info and expand button - stretch to card edges */}
-                  <div
-                    className={`flex items-center justify-between pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(card.platform, footerDisplay?.platformColorStyle ?? 'tint')}`}
-                    onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
-                  >
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <div>
-                        {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(card) && (
-                          <span className="text-xs text-base-content/50 mr-2" data-platform={card.platform}>{getPlatformLabel(card)}</span>
-                        )}
-                        <span className="text-xs text-base-content/70">Posted by</span>
-                        <a
-                          href={card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : '#')}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-2 text-sm font-bold text-primary hover:underline"
-                          onClick={(e) => {
-                            const url = card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : card.url || '#')
-                            handleAnchorClick(e, url)
-                          }}
-                        >
-                          {card.nick}
-                        </a>
-                      </div>
-                      {footerDisplay?.timestampDisplay !== 'none' && (
-                        <div className="text-xs text-base-content/50">
-                          {footerDisplay?.timestampDisplay === 'timestamp'
-                            ? new Date(card.date).toLocaleTimeString()
-                            : new Date(card.date).toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-                    {/* Only show expand button if there's an embed to expand */}
-                    {hasEmbed ? (
-                      <button
-                        onClick={() => onCardClick(card.id)}
-                        className="btn btn-sm btn-circle btn-primary flex-shrink-0"
-                        title="Expand"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                        </svg>
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-                  </>
-                )
-              })()}
+              {renderLinkCardOverviewContent(card, onCardClick, onOpenLink, onContextMenu, getEmbedTheme, platformSettings, emotesMap, footerDisplay, embedReloadKeys?.get(card.id) || 0)}
             </div>
           ))}
         </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import yeeCharmGif from '../assets/media/YeeCharm.gif'
 import logoPng from '../assets/logo.png'
 import abaGrinchPng from '../assets/media/AbaGrinch.png'
@@ -32,7 +32,7 @@ function formatLastCheckedAgo(ts: number): string {
 }
 
 interface MenuProps {
-  onNavigate: (page: 'link-scroller' | 'omni-screen') => void
+  onNavigate: (page: 'link-scroller' | 'omni-screen' | 'debug') => void
 }
 
 function Menu({ onNavigate }: MenuProps) {
@@ -79,6 +79,18 @@ function Menu({ onNavigate }: MenuProps) {
     }
   })
   const [, setTick] = useState(0)
+
+  // Spam-click "StrawWaffle" 10 times in 5 seconds to open debug page
+  const debugClickTimesRef = useRef<number[]>([])
+  const handleStrawWaffleClick = useCallback(() => {
+    const now = Date.now()
+    const cutoff = now - 5000
+    debugClickTimesRef.current = [...debugClickTimesRef.current.filter(t => t > cutoff), now]
+    if (debugClickTimesRef.current.length >= 10) {
+      debugClickTimesRef.current = []
+      onNavigate('debug')
+    }
+  }, [onNavigate])
 
   const checkUpdate = async (silent = false) => {
     setChecking(true)
@@ -179,7 +191,15 @@ function Menu({ onNavigate }: MenuProps) {
         Omni Screen
         <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
       </h1>
-      <p className="text-base-content/60 text-sm mb-12">Vibed by StrawWaffle</p>
+      <p
+        role="button"
+        tabIndex={0}
+        className="text-base-content/60 text-sm mb-12 cursor-default select-none"
+        onClick={handleStrawWaffleClick}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleStrawWaffleClick() }}
+      >
+        Vibed by StrawWaffle
+      </p>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl w-full mb-8">
         {/* Link Scroller - Active */}

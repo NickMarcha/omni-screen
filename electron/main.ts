@@ -2742,18 +2742,27 @@ ipcMain.handle('chat-websocket-status', async (_event) => {
   }
 })
 
-ipcMain.handle('chat-websocket-send', async (_event, payload: { data?: string }) => {
-  if (!chatWebSocket?.isConnected()) {
-    return { success: false, error: 'Not connected' }
+function sendChatRaw(line: string): boolean {
+  if (!chatWebSocket?.isConnected()) return false
+  try {
+    return chatWebSocket.send(line)
+  } catch {
+    return false
   }
+}
+
+ipcMain.handle('chat-websocket-send', async (_event, payload: { data?: string }) => {
   const text = typeof payload?.data === 'string' ? payload.data.trim() : ''
   if (!text) return { success: false, error: 'Empty message' }
-  try {
-    const sent = chatWebSocket.send(`MSG ${JSON.stringify({ data: text })}`)
-    return { success: sent }
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Send failed' }
-  }
+  const sent = sendChatRaw(`MSG ${JSON.stringify({ data: text })}`)
+  return { success: sent }
+})
+
+ipcMain.handle('chat-websocket-cast-poll-vote', async (_event, payload: { option: number }) => {
+  const option = typeof payload?.option === 'number' ? payload.option : 0
+  if (option < 1) return { success: false, error: 'Invalid option' }
+  const sent = sendChatRaw(`CASTVOTE ${JSON.stringify({ vote: String(option) })}`)
+  return { success: sent }
 })
 
 // Live (embeds) WebSocket IPC handlers

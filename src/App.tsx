@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import LinkScroller from './components/LinkScroller'
 import Menu from './components/Menu'
 import OmniScreen from './components/OmniScreen'
+import DebugPage from './components/DebugPage'
 import TitleBar from './components/TitleBar'
 import { applyThemeToDocument, getAppPreferences } from './utils/appPreferences'
 import './App.css'
 
-type Page = 'menu' | 'link-scroller' | 'omni-screen'
+type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('menu')
@@ -49,7 +50,7 @@ function App() {
     }
   }, [])
 
-  const handleNavigate = (page: 'link-scroller' | 'omni-screen') => {
+  const handleNavigate = (page: 'link-scroller' | 'omni-screen' | 'debug') => {
     setCurrentPage(page)
   }
 
@@ -62,6 +63,8 @@ function App() {
       <LinkScroller onBackToMenu={handleBackToMenu} />
     ) : currentPage === 'omni-screen' ? (
       <OmniScreen onBackToMenu={handleBackToMenu} />
+    ) : currentPage === 'debug' ? (
+      <DebugPage onBackToMenu={handleBackToMenu} />
     ) : (
       <Menu onNavigate={handleNavigate} />
     )

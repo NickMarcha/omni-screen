@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
+import PollView, { type PollData } from './PollView'
 
 interface DggChatMessage {
   id: number
@@ -307,7 +308,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
   const [lastInsertedWord, setLastInsertedWord] = useState<string | null>(null)
   const [lastSuggestions, setLastSuggestions] = useState<string[]>([])
   const [messageHistory, setMessageHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
+  const [, setHistoryIndex] = useState(-1)
   const [focused, setFocused] = useState(false)
   const savedCurrentRef = useRef('')
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -837,6 +838,8 @@ export default function CombinedChat({
   const [showMoreMessagesBelow, setShowMoreMessagesBelow] = useState(false)
   /** DGG nicks from NAMES/JOIN/QUIT (used for autocomplete and count). */
   const [dggUserNicks, setDggUserNicks] = useState<string[]>([])
+  const [currentPoll, setCurrentPoll] = useState<PollData | null>(null)
+  const [pollOver, setPollOver] = useState(false)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const dggInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
   const mergedDggInputRef = useCallback(
@@ -1082,6 +1085,40 @@ export default function CombinedChat({
     }
   }, [enableDgg])
 
+  // DGG poll events: POLLSTART, POLLSTOP, VOTECAST – drive PollView; results visible 15s after poll over
+  useEffect(() => {
+    if (!enableDgg) return
+    const handlePollStart = (_event: any, data: { type: 'POLLSTART'; poll: PollData }) => {
+      if (data?.type === 'POLLSTART' && data.poll) setCurrentPoll(data.poll)
+      setPollOver(false)
+    }
+    const handleVoteCast = (_event: any, data: { type: 'VOTECAST'; vote: { vote: string; quantity: number } }) => {
+      if (data?.type !== 'VOTECAST' || !data.vote) return
+      setCurrentPoll((prev) => {
+        if (!prev) return prev
+        const optIndex = Math.max(0, parseInt(data.vote.vote, 10) - 1)
+        const quantity = Number.isFinite(data.vote.quantity) ? data.vote.quantity : 0
+        if (optIndex >= prev.options.length || quantity <= 0) return prev
+        const totals = [...prev.totals]
+        while (totals.length <= optIndex) totals.push(0)
+        totals[optIndex] = (totals[optIndex] ?? 0) + quantity
+        return { ...prev, totals, totalvotes: prev.totalvotes + quantity }
+      })
+    }
+    const handlePollStop = (_event: any, data: { type: 'POLLSTOP'; poll: PollData }) => {
+      if (data?.type === 'POLLSTOP' && data.poll) setCurrentPoll(data.poll)
+      setPollOver(true)
+    }
+    window.ipcRenderer.on('chat-websocket-poll-start', handlePollStart)
+    window.ipcRenderer.on('chat-websocket-vote-cast', handleVoteCast)
+    window.ipcRenderer.on('chat-websocket-poll-stop', handlePollStop)
+    return () => {
+      window.ipcRenderer.off('chat-websocket-poll-start', handlePollStart)
+      window.ipcRenderer.off('chat-websocket-vote-cast', handleVoteCast)
+      window.ipcRenderer.off('chat-websocket-poll-stop', handlePollStop)
+    }
+  }, [enableDgg])
+
   useEffect(() => {
     onDggUserCountChange?.(dggUserNicks.length)
   }, [dggUserNicks.length, onDggUserCountChange])
@@ -1308,6 +1345,10 @@ export default function CombinedChat({
     }
   }, [])
 
+  const handlePollVote = useCallback((optionIndex: number) => {
+    window.ipcRenderer.invoke('chat-websocket-cast-poll-vote', { option: optionIndex }).catch(() => {})
+  }, [])
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       <div className="relative flex-1 min-h-0 flex flex-col">
@@ -1371,6 +1412,16 @@ export default function CombinedChat({
             aria-label="Show pinned message"
           >
             <span aria-hidden>📍</span>
+          </div>
+        )}
+        {enableDgg && currentPoll && (
+          <div className="flex-shrink-0 p-2">
+            <PollView
+              poll={currentPoll}
+              pollOver={pollOver}
+              onVote={handlePollVote}
+              onDismiss={() => { setCurrentPoll(null); setPollOver(false) }}
+            />
           </div>
         )}
         <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
