@@ -85,6 +85,43 @@ function makeViewTransitionNameForKey(key: string) {
     .replace(/[^a-z0-9_-]+/g, '-')}`
 }
 
+const CHANNEL_LABEL_MAX = 20
+
+/** Short label for pinned streamer channel: e.g. "destiny" from "https://www.youtube.com/destiny". Up to CHANNEL_LABEL_MAX chars. */
+function shortChannelLabel(value: string, kind: 'yt' | 'kick' | 'twitch'): string {
+  const v = (value || '').trim()
+  if (!v) return ''
+  if (kind === 'kick' || kind === 'twitch') return v.length <= CHANNEL_LABEL_MAX ? v : v.slice(0, CHANNEL_LABEL_MAX) + '…'
+  if (v.includes('youtube.com/') || v.includes('youtu.be/')) {
+    try {
+      const url = v.startsWith('http') ? v : `https://${v}`
+      const path = new URL(url).pathname.replace(/^\/+|\/+$/g, '')
+      const segments = path.split('/').filter(Boolean)
+      const last = segments[segments.length - 1] || ''
+      if (last === 'channel' || last === 'c' || last === 'user') return last
+      if (/^UC[\w-]{20,}$/i.test(last)) return 'channel'
+      const label = last || v.slice(0, CHANNEL_LABEL_MAX)
+      return label.length <= CHANNEL_LABEL_MAX ? label : label.slice(0, CHANNEL_LABEL_MAX) + '…'
+    } catch {
+      return v.slice(0, CHANNEL_LABEL_MAX) + (v.length > CHANNEL_LABEL_MAX ? '…' : '')
+    }
+  }
+  if (/^UC[\w-]{20,}$/i.test(v)) return 'channel'
+  return v.slice(0, CHANNEL_LABEL_MAX) + (v.length > CHANNEL_LABEL_MAX ? '…' : '')
+}
+
+/** Full URL for a pinned streamer platform value (YouTube channel, Kick streamer, Twitch channel). */
+function platformChannelUrl(value: string, kind: 'yt' | 'kick' | 'twitch'): string {
+  const v = (value || '').trim()
+  if (!v) return '#'
+  if (kind === 'kick') return `https://kick.com/${v}`
+  if (kind === 'twitch') return `https://twitch.tv/${v}`
+  if (v.startsWith('http://') || v.startsWith('https://')) return v
+  if (v.includes('youtube.com') || v.includes('youtu.be')) return v.startsWith('http') ? v : `https://${v}`
+  if (/^UC[\w-]+$/i.test(v)) return `https://www.youtube.com/channel/${v}`
+  return `https://www.youtube.com/${v}`
+}
+
 function formatDggFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
   const parts: string[] = []
   if (kb.ctrl) parts.push('Ctrl')
@@ -444,6 +481,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   type SettingsTab = 'pinned' | 'chat' | 'keybinds'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('pinned')
+  const [tabContentMinHeight, setTabContentMinHeight] = useState(320)
+  const settingsTabContentRef = useRef<HTMLDivElement>(null)
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
   /** YouTube embed key -> pinned streamer ids that resolved to this video (multiple streamers can share same stream). */
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
@@ -460,6 +499,26 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [pinnedStreamers])
+
+  // Prevent layout shift (gap on right) when modal opens: body may get overflow hidden and scrollbar disappears
+  useEffect(() => {
+    if (!settingsModalOpen) {
+      setTabContentMinHeight(320)
+      return
+    }
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
+    const prevPadding = document.body.style.paddingRight
+    document.body.style.paddingRight = `${scrollbarWidth}px`
+    return () => {
+      document.body.style.paddingRight = prevPadding
+    }
+  }, [settingsModalOpen])
+
+  useLayoutEffect(() => {
+    if (!settingsModalOpen || !settingsTabContentRef.current) return
+    const h = settingsTabContentRef.current.scrollHeight
+    setTabContentMinHeight((prev) => Math.max(prev, h))
+  }, [settingsModalOpen, settingsTab, pinnedStreamers.length, editingStreamerId])
 
   const dggUtilitiesEnabled = (() => {
     try {
@@ -2330,8 +2389,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
       {/* Unified Settings modal */}
       {settingsModalOpen && (
-        <div className="modal modal-open z-[100]">
-          <div className="modal-box max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="modal modal-open z-[100]" role="dialog" aria-modal="true">
+          <div className="modal-box max-w-4xl max-h-[90vh] overflow-hidden flex flex-col w-11/12">
             <h3 className="font-bold text-lg mb-2">Settings</h3>
             <div className="tabs tabs-bordered mb-3 flex-shrink-0">
               <button
@@ -2356,7 +2415,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 Keybinds
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            <div
+              ref={settingsTabContentRef}
+              className="flex-1 min-h-0 overflow-y-auto"
+              style={{ minHeight: tabContentMinHeight }}
+            >
               {settingsTab === 'pinned' && (
                 <div className="space-y-4">
                   <p className="text-sm text-base-content/60">
@@ -2383,14 +2446,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         }}
                         className="border border-base-300 rounded-lg p-3 flex flex-col gap-2"
                       >
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex flex-row items-center gap-2 flex-wrap min-w-0">
                           <span
                             draggable
                             onDragStart={(e) => {
                               e.dataTransfer.setData('text/plain', String(index))
                               e.dataTransfer.effectAllowed = 'move'
                             }}
-                            className="text-base-content/50 select-none cursor-grab active:cursor-grabbing touch-none"
+                            className="text-base-content/50 select-none cursor-grab active:cursor-grabbing touch-none shrink-0"
                             title="Drag to reorder"
                           >
                             ⋮⋮
@@ -2406,8 +2469,59 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               }}
                             />
                           </label>
-                          <span className="font-medium truncate flex-1 min-w-0">{s.nickname || 'Unnamed'}</span>
-                          <div className="flex gap-1">
+                          <span className="font-medium truncate min-w-0 flex-1" title={s.nickname || 'Unnamed'}>
+                            {s.nickname || 'Unnamed'}
+                          </span>
+                          <div className="text-xs text-base-content/60 flex items-center gap-x-1.5 shrink-0 flex-wrap">
+                            {[
+                              s.youtubeChannelId && {
+                                platform: 'YT',
+                                label: shortChannelLabel(s.youtubeChannelId, 'yt'),
+                                url: platformChannelUrl(s.youtubeChannelId, 'yt'),
+                                title: s.youtubeChannelId,
+                              },
+                              s.kickSlug && {
+                                platform: 'Kick',
+                                label: shortChannelLabel(s.kickSlug, 'kick'),
+                                url: platformChannelUrl(s.kickSlug, 'kick'),
+                                title: s.kickSlug,
+                              },
+                              s.twitchLogin && {
+                                platform: 'Twitch',
+                                label: shortChannelLabel(s.twitchLogin, 'twitch'),
+                                url: platformChannelUrl(s.twitchLogin, 'twitch'),
+                                title: s.twitchLogin,
+                              },
+                            ]
+                              .filter(Boolean)
+                              .map((item, i) => (
+                                <span key={i} className="inline-flex items-center">
+                                  {i > 0 && <span className="text-base-content/40 mx-0.5">·</span>}
+                                  <a
+                                    href={(item as { url: string }).url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="link link-hover text-inherit"
+                                    title={(item as { title: string }).title}
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      const url = (item as { url: string }).url
+                                      if (window.ipcRenderer) {
+                                        window.ipcRenderer.invoke('open-external-url', url).catch(() => {
+                                          window.open(url, '_blank', 'noopener,noreferrer')
+                                        })
+                                      } else {
+                                        window.open(url, '_blank', 'noopener,noreferrer')
+                                      }
+                                    }}
+                                  >
+                                    <span className="font-medium text-base-content/70">{(item as { platform: string }).platform}:</span>{' '}
+                                    {(item as { label: string }).label}
+                                  </a>
+                                </span>
+                              ))}
+                          </div>
+                          <div className="flex gap-1 shrink-0">
                             <button
                               type="button"
                               className="btn btn-xs btn-ghost"
@@ -2426,12 +2540,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               Remove
                             </button>
                           </div>
-                        </div>
-                        <div className="text-xs text-base-content/60 flex flex-wrap gap-x-3 gap-y-0">
-                          {s.youtubeChannelId ? <span>YT: {s.youtubeChannelId.slice(0, 12)}…</span> : null}
-                          {s.kickSlug ? <span>Kick: {s.kickSlug}</span> : null}
-                          {s.twitchLogin ? <span>Twitch: {s.twitchLogin}</span> : null}
-                          {!s.youtubeChannelId && !s.kickSlug && !s.twitchLogin ? <span>No platforms</span> : null}
                         </div>
                         {editingStreamerId === s.id && (
                           <PinnedStreamerForm

@@ -653,9 +653,14 @@ function renderKickEmote(id: number, name?: string, key?: string) {
   )
 }
 
-function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
+function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => void): (string | JSX.Element)[] {
   const text = String(msg?.content ?? '')
   if (!text) return ['']
+
+  const pushText = (segment: string, parts: (string | JSX.Element)[]) => {
+    if (!segment) return
+    parts.push(renderTextWithLinks(segment, null, new Map(), onOpenLink))
+  }
 
   // 1) If we ever embed explicit tokens, handle them.
   const tokenRe = /\[emote:(\d+):([^\]]+)\]/g
@@ -667,19 +672,19 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
     let k = 0
     while ((match = tokenRe.exec(text)) !== null) {
       const start = match.index
-      if (start > last) parts.push(text.slice(last, start))
+      if (start > last) pushText(text.slice(last, start), parts)
       const id = Number(match[1])
       const name = match[2] || undefined
       if (Number.isFinite(id) && id > 0) parts.push(renderKickEmote(id, name, `kick-emote-token-${k++}`))
       else parts.push(match[0])
       last = start + match[0].length
     }
-    if (last < text.length) parts.push(text.slice(last))
-    return parts.length ? parts : [text]
+    if (last < text.length) pushText(text.slice(last), parts)
+    return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
   }
 
   const emotes = Array.isArray(msg?.emotes) ? msg.emotes : []
-  if (emotes.length === 0) return [text]
+  if (emotes.length === 0) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
 
   // 2) If Kick provides positions, use them (most accurate).
   const withRanges = emotes
@@ -702,12 +707,12 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
       if (s < last) continue // overlap, skip
       if (s > text.length) continue
       if (en > text.length) continue
-      if (s > last) parts.push(text.slice(last, s))
+      if (s > last) pushText(text.slice(last, s), parts)
       parts.push(renderKickEmote(e.id, e.name, `kick-emote-pos-${k++}`))
       last = en
     }
-    if (last < text.length) parts.push(text.slice(last))
-    return parts.length ? parts : [text]
+    if (last < text.length) pushText(text.slice(last), parts)
+    return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
   }
 
   // 3) Fallback: replace emote names in-message.
@@ -718,7 +723,7 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
     if (!name || !Number.isFinite(id) || id <= 0) continue
     if (!nameToId.has(name)) nameToId.set(name, id)
   }
-  if (nameToId.size === 0) return [text]
+  if (nameToId.size === 0) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
 
   const names = Array.from(nameToId.keys()).sort((a, b) => b.length - a.length).slice(0, 50)
   const pattern = `:?(${names.map(escapeRegexLiteral).join('|')}):?`
@@ -733,7 +738,7 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
       re = null
     }
   }
-  if (!re) return [text]
+  if (!re) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
 
   const parts: (string | JSX.Element)[] = []
   let last = 0
@@ -741,25 +746,28 @@ function renderKickContent(msg: KickChatMessage): (string | JSX.Element)[] {
   let k = 0
   while ((match = re.exec(text)) !== null) {
     const start = match.index
-    if (start > last) parts.push(text.slice(last, start))
+    if (start > last) pushText(text.slice(last, start), parts)
     const name = match[1]
     const id = nameToId.get(name)
     if (id) parts.push(renderKickEmote(id, name, `kick-emote-name-${k++}`))
     else parts.push(match[0])
     last = start + match[0].length
   }
-  if (last < text.length) parts.push(text.slice(last))
-  return parts.length ? parts : [text]
+  if (last < text.length) pushText(text.slice(last), parts)
+  return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
 }
 
-function renderYouTubeContent(msg: YouTubeChatMessage): ReactNode {
+function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string) => void): ReactNode {
   const runs = msg.runs
-  if (!runs || runs.length === 0) return msg.message ?? ''
+  if (!runs || runs.length === 0) {
+    const raw = msg.message ?? ''
+    return raw ? renderTextWithLinks(raw, null, new Map(), onOpenLink) : ''
+  }
 
   const parts: (string | JSX.Element)[] = []
   runs.forEach((run, i) => {
     if ('text' in run && run.text) {
-      parts.push(run.text)
+      parts.push(renderTextWithLinks(run.text, null, new Map(), onOpenLink))
       return
     }
     if ('emojiId' in run && run.imageUrl) {
@@ -776,7 +784,10 @@ function renderYouTubeContent(msg: YouTubeChatMessage): ReactNode {
       )
     }
   })
-  return parts.length ? <>{parts}</> : (msg.message ?? '')
+  return parts.length ? <>{parts}</> : (() => {
+    const raw = msg.message ?? ''
+    return raw ? renderTextWithLinks(raw, null, new Map(), onOpenLink) : ''
+  })()
 }
 
 export default function CombinedChat({
@@ -1417,10 +1428,10 @@ export default function CombinedChat({
                       {renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)}
                     </span>
                   ) : m.source === 'kick'
-                    ? renderKickContent(m.raw)
+                    ? renderKickContent(m.raw, onOpenLink)
                     : m.source === 'youtube'
-                      ? renderYouTubeContent(m.raw)
-                      : m.content ?? ''}
+                      ? renderYouTubeContent(m.raw, onOpenLink)
+                      : renderTextWithLinks(m.content ?? '', null, new Map(), onOpenLink)}
                 </span>
               </div>
             )

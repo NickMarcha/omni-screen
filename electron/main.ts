@@ -1201,6 +1201,12 @@ ipcMain.handle('link-scroller-handle-link', async (_event, payload: { url: strin
   }
 })
 
+ipcMain.handle('open-external-url', async (_event, url: string) => {
+  if (typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))) {
+    await shell.openExternal(url)
+  }
+})
+
 ipcMain.handle('set-chat-link-open-action', (_event, action: LinkOpenAction) => {
   if (action === 'none' || action === 'clipboard' || action === 'browser' || action === 'viewer') {
     chatLinkOpenAction = action
