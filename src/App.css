@@ -36,3 +36,14 @@ body {
   /* Hide scrollbar for Firefox while keeping scrolling enabled */
   scrollbar-width: none;
 }
+
+/* Combined chat: base .emote styles to match destiny.gg/embed/chat (chat.vendor.css).
+   We load cdn.destiny.gg/emotes/emotes.css for per-emote images; this base rule ensures
+   inline-block, overflow, and alignment match the embed. */
+.msg-chat .emote {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  text-indent: -999em;
+  vertical-align: middle;
+}

@@ -119,7 +119,15 @@ function processTextWithEmotes(
       if (beforeText) parts.push(beforeText)
     }
 
-    parts.push(<span key={`emote-${keyCounter++}`} className={`emote ${matchedPrefix}`} style={{ display: 'inline-block' }} />)
+    parts.push(
+      <div
+        key={`emote-${keyCounter++}`}
+        className={`emote ${matchedPrefix}`}
+        title={matchedPrefix}
+        role="img"
+        aria-label={matchedPrefix}
+      />,
+    )
     lastIndex = match.index + match[0].length
   }
 
