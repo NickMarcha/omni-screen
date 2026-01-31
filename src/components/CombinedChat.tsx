@@ -15,6 +15,32 @@ interface DggChatMessage {
   uuid?: string
 }
 
+/** Inbox message from GET /api/messages/usr/:username/inbox */
+interface DggInboxMessage {
+  id: number
+  userid: number
+  targetuserid: number
+  message: string
+  timestamp: string
+  isread: number
+  deletedbysender: number
+  deletedbyreceiver: number
+  from: string
+  to: string
+}
+
+const DGG_WHISPER_USERS_KEY = 'omni-screen:dgg-whisper-usernames'
+
+/** Format whisper timestamp: same day → hh:mm, else → date + hh:mm */
+function formatWhisperTimestamp(ts: string): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  if (sameDay) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 type DggChatWsMessage = { type: 'MSG'; message: DggChatMessage }
 type DggChatWsHistory = { type: 'HISTORY'; messages: DggChatMessage[] }
 
@@ -840,7 +866,46 @@ export default function CombinedChat({
   const [dggUserNicks, setDggUserNicks] = useState<string[]>([])
   const [currentPoll, setCurrentPoll] = useState<PollData | null>(null)
   const [pollOver, setPollOver] = useState(false)
+  /** Server time offset (serverNow - clientNow) at POLLSTART; used so timer uses server time. */
+  const [pollServerOffsetMs, setPollServerOffsetMs] = useState<number | null>(null)
+  const [pollVoteError, setPollVoteError] = useState<string | null>(null)
+  const [votePending, setVotePending] = useState(false)
+  /** Usernames who have whispered us (from PRIVMSG + unread API); persisted locally. */
+  const [whisperUsernames, setWhisperUsernames] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(DGG_WHISPER_USERS_KEY)
+      if (!raw) return []
+      const parsed = JSON.parse(raw) as unknown
+      return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : []
+    } catch {
+      return []
+    }
+  })
+  /** Usernames with unread whispers (from unread API + PRIVMSG); cleared when we open that conversation. */
+  const [unreadUsernames, setUnreadUsernames] = useState<Set<string>>(() => new Set())
+  /** Per-user unread count (incremented on PRIVMSG, zeroed when opening conversation). Total unread = sum of values. */
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(() => ({}))
+  /** True when we're showing the private messages view (list of users) instead of main chat. */
+  const [privViewOpen, setPrivViewOpen] = useState(false)
+  /** When set, we're viewing conversation with this user; input sends whisper. */
+  const [activeWhisperUsername, setActiveWhisperUsername] = useState<string | null>(null)
+  /** Messages for activeWhisperUsername (from inbox API). */
+  const [inboxMessages, setInboxMessages] = useState<DggInboxMessage[] | null>(null)
+  /** Error from last whisper send attempt (e.g. not logged in, chat not connected). */
+  const [whisperSendError, setWhisperSendError] = useState<string | null>(null)
+  /** When in list view: recipient for "send to new person" (combobox value; can be any username). */
+  const [composeRecipient, setComposeRecipient] = useState('')
+  /** Show dropdown for compose recipient suggestions. */
+  const [composeRecipientDropdownOpen, setComposeRecipientDropdownOpen] = useState(false)
+  const composeRecipientInputRef = useRef<HTMLInputElement | null>(null)
+  /** Have we done the initial unread fetch when combined chat first loads. */
+  const unreadFetchedRef = useRef(false)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+
+  const totalUnread = useMemo(
+    () => Object.values(unreadCounts).reduce((a, b) => a + b, 0),
+    [unreadCounts]
+  )
   const dggInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
   const mergedDggInputRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
@@ -1069,10 +1134,38 @@ export default function CombinedChat({
     window.ipcRenderer.on('chat-websocket-names', handleNames)
     window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
 
+    const handlePrivmsg = (_event: any, data: { type?: string; privmsg?: { nick?: string } } | null) => {
+      if (!alive) return
+      const nick = data?.privmsg?.nick?.trim()
+      if (!nick) return
+      setWhisperUsernames((prev) => {
+        const next = prev.includes(nick) ? prev : [...prev, nick]
+        try {
+          localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+        } catch {
+          // ignore
+        }
+        return next
+      })
+      setUnreadUsernames((prev) => new Set(prev).add(nick))
+      setUnreadCounts((prev) => ({ ...prev, [nick]: (prev[nick] ?? 0) + 1 }))
+    }
+
+    window.ipcRenderer.on('chat-websocket-privmsg', handlePrivmsg)
+
+    const handleChatErr = (_event: any, data: { description?: string } | null) => {
+      if (!alive) return
+      const desc = data?.description?.trim()
+      if (desc && desc !== 'alreadyvoted') setWhisperSendError(desc)
+    }
+    window.ipcRenderer.on('chat-websocket-err', handleChatErr)
+
     return () => {
       alive = false
       setDggConnected(false)
+      window.ipcRenderer.off('chat-websocket-err', handleChatErr)
       setDggAuthenticated(false)
+      window.ipcRenderer.off('chat-websocket-privmsg', handlePrivmsg)
       window.ipcRenderer.off('chat-websocket-connected', handleConnected)
       window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
       window.ipcRenderer.off('chat-websocket-me', handleMe)
@@ -1085,12 +1178,133 @@ export default function CombinedChat({
     }
   }, [enableDgg])
 
-  // DGG poll events: POLLSTART, POLLSTOP, VOTECAST – drive PollView; results visible 15s after poll over
+  // When combined chat first loads with DGG authenticated, fetch unread private messages once.
+  useEffect(() => {
+    if (!enableDgg || !dggAuthenticated || unreadFetchedRef.current) return
+    unreadFetchedRef.current = true
+    window.ipcRenderer.invoke('dgg-messages-unread').then((r: { success?: boolean; data?: Array<{ username?: string }> }) => {
+      if (!r?.success || !Array.isArray(r.data)) return
+      const usernames = r.data.map((u) => u?.username?.trim()).filter((s): s is string => Boolean(s))
+      if (usernames.length === 0) return
+      setWhisperUsernames((prev) => {
+        const next = [...new Set([...prev, ...usernames])]
+        try {
+          localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+        } catch {
+          // ignore
+        }
+        return next
+      })
+      setUnreadUsernames((prev) => {
+        const next = new Set(prev)
+        usernames.forEach((u) => next.add(u))
+        return next
+      })
+      setUnreadCounts((prev) => {
+        const next = { ...prev }
+        usernames.forEach((u) => { next[u] = (next[u] ?? 0) + 1 })
+        return next
+      })
+    }).catch(() => {})
+  }, [enableDgg, dggAuthenticated])
+
+  // When we open a conversation, clear unread for that user and fetch inbox.
+  useEffect(() => {
+    if (!activeWhisperUsername) {
+      setInboxMessages(null)
+      return
+    }
+    setUnreadUsernames((prev) => {
+      const next = new Set(prev)
+      next.delete(activeWhisperUsername)
+      return next
+    })
+    setUnreadCounts((prev) => {
+      const next = { ...prev }
+      delete next[activeWhisperUsername]
+      return next
+    })
+    setInboxMessages(null)
+    window.ipcRenderer.invoke('dgg-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+      if (r?.success && Array.isArray(r.data)) setInboxMessages(r.data)
+    }).catch(() => {})
+  }, [activeWhisperUsername])
+
+  // Keep whisper conversation scrolled to bottom when messages change
+  useEffect(() => {
+    if (!privViewOpen || !activeWhisperUsername || !inboxMessages?.length) return
+    const el = scrollerRef.current
+    if (!el) return
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [privViewOpen, activeWhisperUsername, inboxMessages])
+
+  const removeWhisperUsername = useCallback((username: string) => {
+    setWhisperUsernames((prev) => {
+      const next = prev.filter((u) => u !== username)
+      try {
+        localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+    setUnreadUsernames((prev) => {
+      const next = new Set(prev)
+      next.delete(username)
+      return next
+    })
+    setUnreadCounts((prev) => {
+      const next = { ...prev }
+      delete next[username]
+      return next
+    })
+    if (activeWhisperUsername === username) {
+      setActiveWhisperUsername(null)
+      setInboxMessages(null)
+      setWhisperSendError(null)
+    }
+  }, [activeWhisperUsername])
+
+  const handlePollDismiss = useCallback(() => {
+    setCurrentPoll(null)
+    setPollOver(false)
+    setPollServerOffsetMs(null)
+    setPollVoteError(null)
+  }, [])
+
+  // DGG poll events: POLLSTART, POLLSTOP, VOTECAST, vote-counted, poll-vote-error
   useEffect(() => {
     if (!enableDgg) return
     const handlePollStart = (_event: any, data: { type: 'POLLSTART'; poll: PollData }) => {
-      if (data?.type === 'POLLSTART' && data.poll) setCurrentPoll(data.poll)
-      setPollOver(false)
+      if (data?.type === 'POLLSTART' && data.poll) {
+        const poll = data.poll
+        const serverNow =
+          typeof poll.now === 'number'
+            ? (poll.now < 1e12 ? poll.now * 1000 : poll.now)
+            : new Date(poll.now as string).getTime()
+        const startMs =
+          typeof poll.start === 'number'
+            ? (poll.start < 1e12 ? poll.start * 1000 : poll.start)
+            : new Date(poll.start).getTime()
+        const alreadyEnded = Number.isFinite(startMs) && poll.time > 0 && startMs + poll.time <= (Number.isFinite(serverNow) ? serverNow : Date.now())
+        setPollServerOffsetMs(Number.isFinite(serverNow) ? serverNow - Date.now() : null)
+        setCurrentPoll(poll)
+        setPollOver(alreadyEnded)
+        try {
+          window.ipcRenderer?.invoke('log-to-file', 'info', '[CombinedChat] POLLSTART', [
+            { question: poll.question?.slice(0, 40), alreadyEnded, startMs, time: poll.time, serverNow },
+          ])
+        } catch {
+          // ignore
+        }
+      } else {
+        setPollOver(false)
+      }
+      setPollVoteError(null)
+      setVotePending(false)
     }
     const handleVoteCast = (_event: any, data: { type: 'VOTECAST'; vote: { vote: string; quantity: number } }) => {
       if (data?.type !== 'VOTECAST' || !data.vote) return
@@ -1108,14 +1322,45 @@ export default function CombinedChat({
     const handlePollStop = (_event: any, data: { type: 'POLLSTOP'; poll: PollData }) => {
       if (data?.type === 'POLLSTOP' && data.poll) setCurrentPoll(data.poll)
       setPollOver(true)
+      setVotePending(false)
+      try {
+        window.ipcRenderer?.invoke('log-to-file', 'info', '[CombinedChat] POLLSTOP', [{}])
+      } catch {
+        // ignore
+      }
+    }
+    const handleVoteCounted = (_event: any, data: { vote: string }) => {
+      const vote = data?.vote != null ? parseInt(String(data.vote), 10) : 0
+      if (!Number.isFinite(vote) || vote < 1) return
+      setCurrentPoll((prev) => (prev ? { ...prev, myvote: vote } : prev))
+      setPollVoteError(null)
+      setVotePending(false)
+      try {
+        window.ipcRenderer?.invoke('log-to-file', 'info', '[CombinedChat] Vote counted', [{ vote }])
+      } catch {
+        // ignore
+      }
+    }
+    const handlePollVoteError = (_event: any, data: { description?: string }) => {
+      setPollVoteError(data?.description === 'alreadyvoted' ? 'Already voted' : data?.description || 'Vote failed')
+      setVotePending(false)
+      try {
+        window.ipcRenderer?.invoke('log-to-file', 'info', '[CombinedChat] Poll vote error', [{ description: data?.description }])
+      } catch {
+        // ignore
+      }
     }
     window.ipcRenderer.on('chat-websocket-poll-start', handlePollStart)
     window.ipcRenderer.on('chat-websocket-vote-cast', handleVoteCast)
     window.ipcRenderer.on('chat-websocket-poll-stop', handlePollStop)
+    window.ipcRenderer.on('chat-websocket-vote-counted', handleVoteCounted)
+    window.ipcRenderer.on('chat-websocket-poll-vote-error', handlePollVoteError)
     return () => {
       window.ipcRenderer.off('chat-websocket-poll-start', handlePollStart)
       window.ipcRenderer.off('chat-websocket-vote-cast', handleVoteCast)
       window.ipcRenderer.off('chat-websocket-poll-stop', handlePollStop)
+      window.ipcRenderer.off('chat-websocket-vote-counted', handleVoteCounted)
+      window.ipcRenderer.off('chat-websocket-poll-vote-error', handlePollVoteError)
     }
   }, [enableDgg])
 
@@ -1214,6 +1459,14 @@ export default function CombinedChat({
     })
     return Array.from(fromItems).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
   }, [dggUserNicks, items])
+
+  /** Suggestions for "Send to" combobox: whisper list + DGG nicks, filtered by composeRecipient, unique. */
+  const composeRecipientSuggestions = useMemo(() => {
+    const combined = [...new Set([...whisperUsernames, ...dggNicks])]
+    const q = composeRecipient.trim().toLowerCase()
+    if (!q) return combined.slice(0, 25)
+    return combined.filter((n) => n.toLowerCase().includes(q)).slice(0, 25)
+  }, [whisperUsernames, dggNicks, composeRecipient])
 
   const displayItems = useMemo(() => {
     if (sortMode === 'timestamp') {
@@ -1320,10 +1573,62 @@ export default function CombinedChat({
   const sendDggMessage = useCallback(() => {
     const text = dggInputValue.trim()
     if (!text) return
+    // Conversation with one user: send whisper to that user
+    if (activeWhisperUsername) {
+      setWhisperSendError(null)
+      window.ipcRenderer
+        .invoke('dgg-send-whisper', { recipient: activeWhisperUsername, message: text })
+        .then((result: { success?: boolean; error?: string }) => {
+          if (result?.success) {
+            setDggInputValue('')
+            setWhisperSendError(null)
+            window.ipcRenderer.invoke('dgg-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+              if (r?.success && Array.isArray(r.data)) setInboxMessages(r.data)
+            }).catch(() => {})
+          } else {
+            setWhisperSendError(result?.error ?? 'Send failed')
+          }
+        })
+        .catch((err) => {
+          setWhisperSendError(err instanceof Error ? err.message : 'Send failed')
+        })
+      return
+    }
+    // List view: send whisper, then GET /api/messages/usr/:username/inbox. Only add to list and open conversation when that inbox fetch succeeds.
+    const recipient = composeRecipient.trim()
+    if (privViewOpen) {
+      if (!recipient) return
+      setWhisperSendError(null)
+      window.ipcRenderer.invoke('dgg-send-whisper', { recipient, message: text }).catch(() => {})
+      window.ipcRenderer
+        .invoke('dgg-messages-inbox', { username: recipient })
+        .then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+          if (r?.success) {
+            setDggInputValue('')
+            setWhisperSendError(null)
+            setComposeRecipient('')
+            setWhisperUsernames((prev) => {
+              const next = prev.includes(recipient) ? prev : [...prev, recipient]
+              try { localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+              return next
+            })
+            setActiveWhisperUsername(recipient)
+          } else {
+            setDggInputValue('')
+            setComposeRecipient('')
+          }
+        })
+        .catch(() => {
+          setDggInputValue('')
+          setComposeRecipient('')
+        })
+      return
+    }
+    // Public chat
     window.ipcRenderer.invoke('chat-websocket-send', { data: text }).then((result: { success?: boolean }) => {
       if (result?.success) setDggInputValue('')
     }).catch(() => {})
-  }, [dggInputValue])
+  }, [dggInputValue, activeWhisperUsername, privViewOpen, composeRecipient])
 
   const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1346,7 +1651,24 @@ export default function CombinedChat({
   }, [])
 
   const handlePollVote = useCallback((optionIndex: number) => {
-    window.ipcRenderer.invoke('chat-websocket-cast-poll-vote', { option: optionIndex }).catch(() => {})
+    setPollVoteError(null)
+    setVotePending(true)
+    try {
+      window.ipcRenderer?.invoke('log-to-file', 'info', '[CombinedChat] Poll vote sent', [{ option: optionIndex }])
+    } catch {
+      // ignore
+    }
+    window.ipcRenderer
+      .invoke('chat-websocket-cast-poll-vote', { option: optionIndex })
+      .catch((err) => {
+        setVotePending(false)
+        setPollVoteError('Send failed')
+        try {
+          window.ipcRenderer?.invoke('log-to-file', 'warn', '[CombinedChat] Poll vote send failed', [String(err)])
+        } catch {
+          // ignore
+        }
+      })
   }, [])
 
   return (
@@ -1416,15 +1738,132 @@ export default function CombinedChat({
         )}
         {enableDgg && currentPoll && (
           <div className="flex-shrink-0 p-2">
+            {votePending && (
+              <div className="text-xs text-base-content/70 mb-1">Sending vote…</div>
+            )}
+            {pollVoteError && (
+              <div className="text-xs text-warning mb-1" role="alert">
+                {pollVoteError}
+              </div>
+            )}
             <PollView
               poll={currentPoll}
               pollOver={pollOver}
+              serverOffsetMs={pollServerOffsetMs}
               onVote={handlePollVote}
-              onDismiss={() => { setCurrentPoll(null); setPollOver(false) }}
+              onDismiss={handlePollDismiss}
+              onPollTimeExpired={() => setPollOver(true)}
+              votePending={votePending}
             />
           </div>
         )}
         <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+        {privViewOpen ? (
+          activeWhisperUsername ? (
+            /* Inbox conversation with one user */
+            <>
+              <div className="sticky top-0 z-10 flex items-center gap-2 mb-2 pb-2 border-b border-base-300 bg-base-100/95 backdrop-blur-sm">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { setActiveWhisperUsername(null); setInboxMessages(null); setWhisperSendError(null) }}
+                  aria-label="Back to list"
+                >
+                  ← Back
+                </button>
+                <span className="font-semibold">{activeWhisperUsername}</span>
+              </div>
+              {whisperSendError && (
+                <div className="text-xs text-warning mb-2" role="alert">
+                  {whisperSendError}
+                </div>
+              )}
+              {inboxMessages === null ? (
+                <div className="text-sm text-base-content/50">Loading…</div>
+              ) : inboxMessages.length === 0 ? (
+                <div className="text-sm text-base-content/50">No messages yet.</div>
+              ) : (
+                <div className="flex flex-col justify-end min-h-full space-y-2">
+                  {[...inboxMessages]
+                    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                    .map((msg) => {
+                      const isFromThem = msg.from.toLowerCase() === activeWhisperUsername?.toLowerCase()
+                      const ts = formatWhisperTimestamp(msg.timestamp ?? '')
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`msg-chat text-sm rounded-md px-2 py-1 ${isFromThem ? 'bg-base-300' : 'bg-primary/15'}`}
+                        >
+                          {ts ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+                          <span className="font-semibold mr-2">{msg.from}</span>
+                          <span className="whitespace-pre-wrap break-words inline-flex flex-wrap items-baseline gap-0.5">
+                            {renderTextWithLinks(msg.message ?? '', emotePattern, emotesMap, onOpenLink)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                </div>
+              )}
+            </>
+          ) : (
+            /* List of users who have whispered us */
+            <>
+              <div className="flex items-center gap-2 mb-2 pb-2 border-b border-base-300">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setPrivViewOpen(false)}
+                  aria-label="Back to chat"
+                >
+                  ← Back to chat
+                </button>
+                <span className="font-semibold">Private messages</span>
+              </div>
+              {whisperUsernames.length === 0 ? (
+                <div className="text-sm text-base-content/50">No private messages yet.</div>
+              ) : (
+                <ul className="space-y-1" style={{ listStyle: 'none' }}>
+                  {whisperUsernames.map((username) => (
+                    <li
+                      key={username}
+                      role="button"
+                      tabIndex={0}
+                      className="flex items-center justify-between gap-2 rounded-md px-2 py-2 hover:bg-base-300 group cursor-pointer"
+                      onClick={() => setActiveWhisperUsername(username)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveWhisperUsername(username) } }}
+                    >
+                      <span className="flex-1 min-w-0 font-medium truncate inline-flex items-center gap-2">
+                        {unreadUsernames.has(username) ? (
+                          <span className="inline-flex items-center gap-1">
+                            <span aria-hidden>📬</span>
+                            {username}
+                          </span>
+                        ) : (
+                          username
+                        )}
+                        {(unreadCounts[username] ?? 0) > 0 && (
+                          <span className="text-xs text-base-content/70 tabular-nums" aria-label={`${unreadCounts[username]} unread`}>
+                            ({unreadCounts[username]})
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100"
+                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); removeWhisperUsername(username) }}
+                        title="Remove from list"
+                        aria-label={`Remove ${username} from list`}
+                      >
+                        Clear
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )
+        ) : (
+        <>
         {renderList.map((entry) => {
           if (entry.type === 'message') {
             const m = entry.item
@@ -1513,9 +1952,14 @@ export default function CombinedChat({
                   {source === 'dgg' ? 'DGG' : displayName || 'Kick'}
                 </span>
               ) : null}
-              <span className="inline-flex items-center gap-1">
-                {isDgg && prefix && emotesMap.has(prefix) ? (
-                  <div className={`emote ${prefix}`} title={prefix} role="img" aria-label={prefix} style={{ width: 28, height: 28 }} />
+              <span className="inline-flex items-center gap-1 shrink-0">
+                {isDgg && prefix ? (
+                  <div
+                    className={`emote ${prefix}`}
+                    title={prefix}
+                    role="img"
+                    aria-label={prefix}
+                  />
                 ) : Number.isFinite(kickId) && kickId > 0 ? (
                   renderKickEmote(kickId, kickName, `combo-kick-${entry.index}`)
                 ) : null}
@@ -1529,8 +1973,9 @@ export default function CombinedChat({
             </div>
           )
         })}
-        </div>
-        {showMoreMessagesBelow && (
+        </>
+        )}
+        {!privViewOpen && showMoreMessagesBelow && (
           <div className="chat-scroll-notify absolute bottom-0 left-0 right-0 z-10 p-2 pointer-events-none">
             <div
               className="text-sm text-center text-primary font-medium hover:underline rounded-lg bg-base-300 shadow-sm m-2 p-2 cursor-pointer pointer-events-auto hover:bg-base-200"
@@ -1543,20 +1988,101 @@ export default function CombinedChat({
             </div>
           </div>
         )}
+        </div>
       </div>
       {enableDgg && showDggInput && dggAuthenticated && (
-        <DggInputBar
-          ref={mergedDggInputRef}
-          value={dggInputValue}
-          onChange={setDggInputValue}
-          onSend={sendDggMessage}
-          onKeyDown={onDggInputKeyDown}
-          disabled={!dggConnected}
-          emotesMap={emotesMap}
-          dggNicks={dggNicks}
-          placeholder={dggConnected ? 'Message destiny.gg...' : 'Connecting...'}
-          shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
-        />
+        <div className="flex flex-col gap-1 min-w-0 flex-none">
+          {privViewOpen && !activeWhisperUsername && (
+            <>
+              {whisperSendError && (
+                <div className="text-xs text-warning px-1" role="alert">
+                  {whisperSendError}
+                </div>
+              )}
+              <div className="relative min-w-0">
+                <input
+                  ref={composeRecipientInputRef}
+                  type="text"
+                  value={composeRecipient}
+                  onChange={(e) => { setComposeRecipient(e.target.value); setComposeRecipientDropdownOpen(true) }}
+                  onFocus={() => setComposeRecipientDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setComposeRecipientDropdownOpen(false), 150)}
+                  placeholder="Whisper To"
+                  className="input input-bordered input-sm w-full"
+                  autoComplete="off"
+                  aria-autocomplete="list"
+                  aria-expanded={composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0}
+                  aria-controls="compose-recipient-list"
+                  id="compose-recipient-input"
+                />
+                {composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0 && (
+                  <ul
+                    id="compose-recipient-list"
+                    role="listbox"
+                    className="absolute z-20 left-0 right-0 bottom-full mb-1 max-h-48 overflow-y-auto rounded-md border border-base-300 bg-base-100 shadow-lg py-1"
+                  >
+                    {composeRecipientSuggestions.map((nick) => (
+                      <li
+                        key={nick}
+                        role="option"
+                        className="px-3 py-2 cursor-pointer hover:bg-base-300 text-sm truncate"
+                        onMouseDown={(e) => { e.preventDefault(); setComposeRecipient(nick); setComposeRecipientDropdownOpen(false); composeRecipientInputRef.current?.blur() }}
+                      >
+                        {nick}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+          <div className="flex items-center gap-1 min-w-0 flex-1">
+          <div className="flex-1 min-w-0">
+            <DggInputBar
+            ref={mergedDggInputRef}
+            value={dggInputValue}
+            onChange={setDggInputValue}
+            onSend={sendDggMessage}
+            onKeyDown={onDggInputKeyDown}
+            disabled={privViewOpen && !activeWhisperUsername ? !dggConnected || !composeRecipient.trim() : !dggConnected}
+            emotesMap={emotesMap}
+            dggNicks={dggNicks}
+            placeholder={
+              activeWhisperUsername
+                ? (dggConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
+                : privViewOpen
+                  ? (dggConnected ? 'whisper message..' : 'Connecting...')
+                  : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
+            }
+            shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
+          />
+          </div>
+          <button
+            type="button"
+            className={`btn btn-ghost btn-sm shrink-0 min-w-0 w-8 h-8 p-0 flex items-center justify-center text-base relative ${(whisperUsernames.length > 0 || privViewOpen) ? 'opacity-100' : 'opacity-50'}`}
+            title={privViewOpen ? 'Back to chat' : totalUnread > 0 ? `Private messages (${totalUnread} unread)` : 'Private messages'}
+            aria-label={privViewOpen ? 'Back to chat' : 'Private messages'}
+            disabled={false}
+            onClick={() => {
+              setPrivViewOpen((prev) => {
+                if (prev) {
+                  setActiveWhisperUsername(null)
+                  setInboxMessages(null)
+                  setWhisperSendError(null)
+                }
+                return !prev
+              })
+            }}
+          >
+            {totalUnread > 0 ? '📬' : '📫'}
+            {totalUnread > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[1rem] h-4 px-1 flex items-center justify-center text-[10px] font-medium rounded-full bg-primary text-primary-content" aria-hidden>
+                {totalUnread > 99 ? '99+' : totalUnread}
+              </span>
+            )}
+          </button>
+          </div>
+        </div>
       )}
     </div>
   )

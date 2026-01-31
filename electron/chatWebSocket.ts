@@ -21,6 +21,19 @@ export interface ChatMessage {
   uuid?: string // Optional, present in PIN messages
 }
 
+/** Private message (whisper) from chat WebSocket: PRIVMSG { messageid, timestamp, nick, data }. */
+export interface ChatPrivMsg {
+  messageid: number
+  timestamp: number
+  nick: string
+  data: string
+}
+
+export interface ChatPrivMsgEvent {
+  type: 'PRIVMSG'
+  privmsg: ChatPrivMsg
+}
+
 export interface ChatPinMessage extends ChatMessage {
   uuid: string
 }
@@ -461,6 +474,13 @@ export class ChatWebSocket extends EventEmitter {
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse MSG in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
                   }
+                } else if (msgStr.startsWith('PRIVMSG ')) {
+                  try {
+                    const privmsgData = JSON.parse(msgStr.substring(8)) as ChatPrivMsg
+                    this.emit('privmsg', { type: 'PRIVMSG', privmsg: privmsgData } as ChatPrivMsgEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse PRIVMSG in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
                 } else if (msgStr.startsWith('PAIDEVENTS')) {
                 try {
                   // PAIDEVENTS can be "PAIDEVENTS []" or "PAIDEVENTS[]"
@@ -626,6 +646,18 @@ export class ChatWebSocket extends EventEmitter {
           })
           // Continue processing - don't crash
         }
+      } else if (message.startsWith('PRIVMSG ')) {
+        // PRIVMSG { messageid, timestamp, nick, data }
+        try {
+          const privmsgData = JSON.parse(message.substring(8)) as ChatPrivMsg
+          this.emit('privmsg', { type: 'PRIVMSG', privmsg: privmsgData } as ChatPrivMsgEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse PRIVMSG:', e, 'Message:', message.substring(0, 100))
+          fileLogger.writeWsDiscrepancy('chat', 'privmsg_parse_error', {
+            preview: message.substring(0, 500),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
       } else if (message.startsWith('JOIN ')) {
         // JOIN {...}
         try {
@@ -779,6 +811,25 @@ export class ChatWebSocket extends EventEmitter {
         } catch (e) {
           console.error('[ChatWebSocket] Failed to parse POLLSTOP:', e, 'Message:', message.substring(0, 100))
           // Continue processing - don't crash
+        }
+      } else if (message.startsWith('VOTECOUNTED ')) {
+        try {
+          const data = JSON.parse(message.substring(12)) as { vote?: string }
+          this.emit('voteCounted', { vote: data?.vote ?? '' })
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse VOTECOUNTED:', e, 'Message:', message.substring(0, 100))
+        }
+      } else if (message.startsWith('ERR ')) {
+        try {
+          const data = JSON.parse(message.substring(4)) as { description?: string }
+          if (data?.description === 'alreadyvoted' || data?.description) {
+            this.emit('pollVoteError', { description: data.description })
+          }
+          if (data?.description) {
+            this.emit('chatErr', { description: data.description })
+          }
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse ERR:', e, 'Message:', message.substring(0, 100))
         }
       } else if (message.startsWith('DEATH ')) {
         // DEATH {...}

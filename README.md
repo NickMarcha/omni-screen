@@ -44,9 +44,11 @@ Split-screen view with Destiny.gg chat, live stream embeds, and a unified chat f
 - **Split-screen layout**: DGG chat alongside embedded streams (YouTube, Kick, Twitch)
 - **Live embeds**: Add streams by pasting links or from the DGG live list; dock with grouped streamers
 - **Combined chat**: Single feed aggregating chat from DGG, YouTube, Kick, and Twitch
+- **DGG private messages (whispers)**: Persistent list (localStorage); list grows from unread API, PRIVMSG events, and when you send a whisper only if the inbox fetch succeeds. List view: "Whisper To" + message at bottom (message disabled until recipient set). Add to list and open conversation only when `GET /api/messages/usr/:username/inbox` succeeds after sending; otherwise fields just clear. Send via WebSocket; sticky Back; unread count and badge on 📫/📬
 - **Embed chat toggles**: Show/hide chat per platform in the combined view
 - **Highlight term**: Option to highlight messages containing a term (e.g. your username) in combined chat
 - **Pinned streamers**: Group embeds by streamer (e.g. Destiny on YouTube + Kick) with one dock button per streamer
+- **What’s being watched**: Pie chart (embeds WebSocket data) in the dock
 
 ### Link Scroller
 

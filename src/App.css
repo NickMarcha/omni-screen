@@ -94,6 +94,11 @@ body {
   vertical-align: middle;
 }
 
+/* Combo row: emote must not shrink so destiny.gg emotes.css dimensions apply correctly */
+.msg-chat.msg-emote .emote {
+  flex-shrink: 0;
+}
+
 /* DGG autocomplete dropdown: render emote images same as chat */
 .dgg-autocomplete-list .emote {
   display: inline-block;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
@@ -83,6 +84,145 @@ function makeViewTransitionNameForKey(key: string) {
   return `omni-embed-${String(key || '')
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')}`
+}
+
+type PieDatum = { name: string; value: number; color?: string }
+
+/** Donut + labels outside with polylines (D3 example style). Hover tooltips show name, value, %. */
+function midAngle(d: d3.PieArcDatum<PieDatum>) {
+  return d.startAngle + (d.endAngle - d.startAngle) / 2
+}
+
+/** Prefer showing labels for larger slices; hide labels that overlap on the y-axis. */
+function visibleLabelIndices(
+  arcs: d3.PieArcDatum<PieDatum>[],
+  labelArc: d3.Arc<any, d3.PieArcDatum<PieDatum>>,
+  yThreshold: number,
+): Set<number> {
+  const sortedByValue = arcs
+    .map((arc, i) => ({ arc, i }))
+    .sort((a, b) => b.arc.data.value - a.arc.data.value)
+  const visible = new Set<number>()
+  for (const { arc, i } of sortedByValue) {
+    const y = labelArc.centroid(arc)[1]
+    const overlaps = [...visible].some((j) => {
+      const yOther = labelArc.centroid(arcs[j])[1]
+      return Math.abs(y - yOther) < yThreshold
+    })
+    if (!overlaps) visible.add(i)
+  }
+  return visible
+}
+
+const LABEL_Y_OVERLAP_THRESHOLD = 10
+
+function PieChartSvg({
+  data,
+  fallbackColor,
+  size,
+  outerRadius,
+}: {
+  data: PieDatum[]
+  fallbackColor: string
+  size: number
+  outerRadius: number
+}) {
+  const [hovered, setHovered] = useState<PieDatum | null>(null)
+  const cx = size / 2
+  const cy = size / 2
+  const radius = outerRadius
+  const pie = d3.pie<PieDatum>().sort(null).value((d) => d.value)
+  const arcs = pie(data)
+  const arcGen = d3
+    .arc<d3.PieArcDatum<PieDatum>>()
+    .innerRadius(radius * 0.4)
+    .outerRadius(radius * 0.8)
+  const labelArc = d3
+    .arc<d3.PieArcDatum<PieDatum>>()
+    .innerRadius(radius * 0.9)
+    .outerRadius(radius * 0.9)
+  const total = data.reduce((s, d) => s + d.value, 0)
+  const showLabel = useMemo(() => {
+    const arc = d3.arc<d3.PieArcDatum<PieDatum>>().innerRadius(radius * 0.9).outerRadius(radius * 0.9)
+    return visibleLabelIndices(arcs, arc, LABEL_Y_OVERLAP_THRESHOLD)
+  }, [arcs, radius])
+  const labelPadding = 70
+  const svgViewWidth = size + 2 * labelPadding
+  return (
+    <div className="relative flex flex-col items-center" style={{ width: svgViewWidth, minHeight: size }}>
+      <svg width={svgViewWidth} height={size} viewBox={`-${labelPadding} 0 ${svgViewWidth} ${size}`} className="block mx-auto" preserveAspectRatio="xMidYMid meet">
+        <g transform={`translate(${cx},${cy})`}>
+          {arcs.map((arc, i) => {
+            const pct = total > 0 ? Math.round((100 * arc.data.value) / total) : 0
+            const isHovered = hovered === arc.data
+            const mid = midAngle(arc)
+            const labelPos: [number, number] = [
+              radius * 0.95 * (mid < Math.PI ? 1 : -1),
+              labelArc.centroid(arc)[1],
+            ]
+            const arcCentroid = arcGen.centroid(arc)
+            const labelCentroid = labelArc.centroid(arc)
+            const polylinePoints: [number, number][] = [
+              arcCentroid,
+              labelCentroid,
+              labelPos,
+            ]
+            const labelVisible = showLabel.has(i)
+            return (
+              <g
+                key={`${arc.data.name}-${i}`}
+                onMouseEnter={() => setHovered(arc.data)}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <title>
+                  {arc.data.name}: {arc.data.value.toLocaleString()} ({pct}%)
+                </title>
+                <path
+                  className="slice"
+                  d={arcGen(arc) ?? ''}
+                  fill={arc.data.color ?? fallbackColor}
+                  stroke="var(--color-base-100)"
+                  strokeWidth={2}
+                  style={{ opacity: isHovered ? 1 : hovered ? 0.6 : 1 }}
+                />
+                {labelVisible ? (
+                  <polyline
+                    points={polylinePoints.map((p) => p.join(',')).join(' ')}
+                    fill="none"
+                    stroke="var(--color-base-content)"
+                    strokeWidth={2}
+                    opacity={0.3}
+                    className="pointer-events-none"
+                  />
+                ) : null}
+                {labelVisible ? (
+                  <text
+                    transform={`translate(${labelPos[0]},${labelPos[1]})`}
+                    textAnchor={mid < Math.PI ? 'start' : 'end'}
+                    dominantBaseline="middle"
+                    className="fill-base-content text-[10px] font-medium pointer-events-none"
+                    dy="0.35em"
+                  >
+                    {arc.data.name} {pct}%
+                  </text>
+                ) : null}
+              </g>
+            )
+          })}
+        </g>
+      </svg>
+      {hovered && total > 0 ? (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 bottom-full z-[100] mb-1 text-xs text-base-content/80 text-center px-2 py-1 rounded bg-base-200 shadow border border-base-300 pointer-events-none"
+          style={{ whiteSpace: 'nowrap' }}
+        >
+          <span className="font-medium">{hovered.name}</span>
+          <br />
+          {hovered.value.toLocaleString()} ({Math.round((100 * hovered.value) / total)}%)
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 const CHANNEL_LABEL_MAX = 20
@@ -1628,6 +1768,65 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return dockItems.find((it) => getDockItemId(it) === dockHoverItemId) ?? null
   }, [dockHoverItemId, dockItems, getDockItemId])
 
+  /** Pie chart: one slice per embed; values from embeds websocket (count = people watching that embed). */
+  const pieChartData = useMemo((): PieDatum[] => {
+    const entries: PieDatum[] = []
+    const maxLabelLen = 18
+    for (const [key, embed] of combinedAvailableEmbeds) {
+      const value: number =
+        typeof (embed as LiveEmbed).count === 'number'
+          ? (embed as LiveEmbed).count ?? 0
+          : typeof embed.mediaItem?.metadata?.viewers === 'number'
+            ? embed.mediaItem.metadata.viewers
+            : 0
+      if (value <= 0) continue
+      const rawName =
+        embed.mediaItem?.metadata?.displayName ||
+        embed.mediaItem?.metadata?.title ||
+        key
+      const name = rawName.length > maxLabelLen ? rawName.slice(0, maxLabelLen - 1) + '…' : rawName
+      const color = omniColorForKey(key, { displayName: embed.mediaItem?.metadata?.displayName })
+      entries.push({ name, value, color })
+    }
+    return entries.sort((a, b) => b.value - a.value)
+  }, [combinedAvailableEmbeds])
+
+  const pieChartButtonRef = useRef<HTMLButtonElement>(null)
+  const pieChartCloseTimerRef = useRef<number | null>(null)
+  const [pieChartPinned, setPieChartPinned] = useState(false)
+  const [pieChartHover, setPieChartHover] = useState(false)
+  const [pieChartRect, setPieChartRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const showPiePopup = (pieChartPinned || pieChartHover) && pieChartRect
+
+  const updatePieChartRect = useCallback(() => {
+    const el = pieChartButtonRef.current
+    if (!el) return
+    setPieChartRect(el.getBoundingClientRect())
+  }, [])
+
+  const openPiePopup = useCallback(() => {
+    if (pieChartCloseTimerRef.current) {
+      window.clearTimeout(pieChartCloseTimerRef.current)
+      pieChartCloseTimerRef.current = null
+    }
+    setPieChartHover(true)
+    updatePieChartRect()
+  }, [updatePieChartRect])
+
+  const scheduleClosePiePopup = useCallback(() => {
+    if (pieChartCloseTimerRef.current) window.clearTimeout(pieChartCloseTimerRef.current)
+    pieChartCloseTimerRef.current = window.setTimeout(() => {
+      if (pieChartPinned) return
+      setPieChartHover(false)
+    }, 120)
+  }, [pieChartPinned])
+
+  useEffect(() => {
+    if (!showPiePopup) return
+    window.addEventListener('resize', updatePieChartRect)
+    return () => window.removeEventListener('resize', updatePieChartRect)
+  }, [showPiePopup, updatePieChartRect])
+
   const toggleDockItemMaster = useCallback(
     (item: DockItem) => {
       const keys = item.type === 'group' ? item.keys : [item.key]
@@ -1896,8 +2095,20 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </div>
             </div>
 
-            {/* Fixed controls (right side): +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
+            {/* Fixed controls (right side): Pie chart, +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
             <div className="flex-none flex items-center gap-2">
+              <button
+                type="button"
+                ref={pieChartButtonRef}
+                className="btn btn-sm btn-ghost min-h-0 p-0 text-xl"
+                title="What's being watched (by platform)"
+                aria-label="Show watch proportions"
+                onMouseEnter={openPiePopup}
+                onMouseLeave={scheduleClosePiePopup}
+                onClick={() => setPieChartPinned((p) => !p)}
+              >
+                🥧
+              </button>
               <div className="dropdown dropdown-top dropdown-end">
                 <label tabIndex={0} className="btn btn-sm btn-ghost min-h-0 p-0 text-xl" title="Add embed from link (YouTube, Kick, Twitch)">
                   ➕
@@ -2258,6 +2469,67 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             )
           })() : null}
         </div>
+
+        {/* Pie chart popup (what's being watched by platform) */}
+        {showPiePopup && pieChartRect && (() => {
+          const popupW = 380
+          const preferredLeft = pieChartRect.left + pieChartRect.width / 2 - popupW / 2
+          const margin = 8
+          let minLeft = margin
+          let maxLeft = window.innerWidth - popupW - margin
+          if (chatPaneOpen && chatPaneWidth > 0) {
+            if (chatPaneSide === 'left') minLeft = chatPaneWidth + margin
+            else maxLeft = window.innerWidth - chatPaneWidth - popupW - margin
+          }
+          const left = Math.max(minLeft, Math.min(maxLeft, preferredLeft))
+          const top = Math.max(8, pieChartRect.top - 8)
+          return (
+          <div
+            className="fixed z-[9999] p-3 shadow bg-base-100 rounded-box border border-base-300"
+            style={{
+              width: popupW,
+              left,
+              top,
+              transform: 'translateY(-100%)',
+            }}
+            onMouseEnter={() => {
+              if (pieChartCloseTimerRef.current) {
+                window.clearTimeout(pieChartCloseTimerRef.current)
+                pieChartCloseTimerRef.current = null
+              }
+              setPieChartHover(true)
+            }}
+            onMouseLeave={() => {
+              setPieChartHover(false)
+              if (!pieChartPinned) setPieChartRect(null)
+            }}
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="font-semibold text-sm">What&apos;s being watched</span>
+              {pieChartPinned ? (
+                <button
+                  type="button"
+                  className="btn btn-xs btn-ghost"
+                  onClick={() => setPieChartPinned(false)}
+                  title="Unpin"
+                >
+                  Unpin
+                </button>
+              ) : null}
+            </div>
+            {pieChartData.length === 0 ? (
+              <div className="text-xs text-base-content/50 py-4 text-center">No embed data yet.</div>
+            ) : (
+              <div className="flex flex-col items-center w-full">
+                <PieChartSvg data={pieChartData} fallbackColor="#888" size={200} outerRadius={70} />
+                <div className="text-xs text-base-content/60 text-center mt-1">
+                  Total: {pieChartData.reduce((s, d) => s + d.value, 0).toLocaleString()} watching
+                </div>
+              </div>
+            )}
+          </div>
+          )
+        })()}
 
         {/* Right pane */}
         {chatPaneOpen && chatPaneSide === 'right' && (

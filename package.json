@@ -16,6 +16,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",
     "bufferutil": "^4.1.0",
+    "d3": "^7.9.0",
     "daisyui": "^5.0.47",
     "electron-updater": "^6.6.2",
     "react": "^18.2.0",
@@ -25,6 +26,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",
     "@types/ws": "^8.18.1",

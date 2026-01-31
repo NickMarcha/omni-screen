@@ -29,21 +29,36 @@ export interface PollViewProps {
   poll: PollData
   /** True when POLLSTOP has been received (poll ended). No timer; losing options greyed out. */
   pollOver: boolean
+  /** Server time offset (serverNow - clientNow) at POLLSTART; used so timer matches server. */
+  serverOffsetMs?: number | null
   /** Called when user clicks an option (1-based index). Omit or no-op in debug. */
   onVote?: (optionIndex: number) => void
   /** Called after poll is over and POLL_RESULTS_VISIBLE_MS has elapsed. Parent can clear poll and unmount. */
   onDismiss?: () => void
+  /** Called once when timer reaches 0 (poll end time) so parent can set pollOver if POLLSTOP was missed. */
+  onPollTimeExpired?: () => void
+  /** When true, vote buttons are disabled (e.g. vote in flight). */
+  votePending?: boolean
 }
 
-/** Compute time left in ms from poll.start (ISO) and poll.time (duration ms). Returns 0 if invalid or elapsed. */
-function getTimeLeftMs(poll: PollData): number {
-  const startMs = new Date(poll.start).getTime()
+/** Parse poll start or now: ISO string or Unix seconds (number). Returns ms. */
+function parsePollTime(value: string | number | undefined): number {
+  if (value == null) return NaN
+  if (typeof value === 'number') return value < 1e12 ? value * 1000 : value
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : NaN
+}
+
+/** Compute time left in ms using server time (poll.start + poll.time) and optional server offset. */
+function getTimeLeftMs(poll: PollData, serverOffsetMs: number | null | undefined): number {
+  const startMs = parsePollTime(poll.start)
   if (!Number.isFinite(startMs) || !poll.time || poll.time <= 0) return 0
   const endMs = startMs + poll.time
-  return Math.max(0, endMs - Date.now())
+  const offset = typeof serverOffsetMs === 'number' && Number.isFinite(serverOffsetMs) ? serverOffsetMs : 0
+  return Math.max(0, endMs - (Date.now() + offset))
 }
 
-export default function PollView({ poll, pollOver, onVote, onDismiss }: PollViewProps) {
+export default function PollView({ poll, pollOver, serverOffsetMs, onVote, onDismiss, onPollTimeExpired, votePending }: PollViewProps) {
   const options = poll.options.length > 0 ? poll.options : ['']
   const totals =
     poll.totals.length >= options.length
@@ -53,28 +68,38 @@ export default function PollView({ poll, pollOver, onVote, onDismiss }: PollView
     poll.totalvotes > 0 ? poll.totalvotes : Math.max(1, totals.reduce((a: number, b: number) => a + b, 0))
   const maxTot = options.length > 0 ? Math.max(...options.map((_, idx) => totals[idx] ?? 0)) : 0
 
-  const [timeLeftMs, setTimeLeftMs] = useState(() => getTimeLeftMs(poll))
+  const [timeLeftMs, setTimeLeftMs] = useState(() => getTimeLeftMs(poll, serverOffsetMs))
   const showTimer = !pollOver && poll.time > 0 && timeLeftMs > 0
 
-  /* Bar: one CSS animation from start→end, no React updates = 60fps smooth. Set once when timer shows. */
+  /* Bar: one CSS animation from start→end; elapsed uses server offset so bar matches server time. */
   const barAnimationVars = useMemo(() => {
     if (!poll.time || pollOver) return { duration: 0, elapsed: 0 }
-    const startMs = new Date(poll.start).getTime()
+    const startMs = parsePollTime(poll.start)
     if (!Number.isFinite(startMs)) return { duration: 0, elapsed: 0 }
-    const elapsed = Math.min(poll.time, Math.max(0, Date.now() - startMs))
+    const offset = typeof serverOffsetMs === 'number' && Number.isFinite(serverOffsetMs) ? serverOffsetMs : 0
+    const elapsed = Math.min(poll.time, Math.max(0, Date.now() + offset - startMs))
     return { duration: poll.time, elapsed }
-  }, [poll.start, poll.time, pollOver])
+  }, [poll.start, poll.time, pollOver, serverOffsetMs])
 
   useEffect(() => {
     if (pollOver || !poll.time) return
-    const tick = () => setTimeLeftMs(() => {
-      const next = getTimeLeftMs(poll)
-      return next <= 0 ? 0 : next
-    })
+    let expiredFired = false
+    const tick = () => {
+      const next = getTimeLeftMs(poll, serverOffsetMs)
+      if (next <= 0) {
+        if (!expiredFired && onPollTimeExpired) {
+          expiredFired = true
+          onPollTimeExpired()
+        }
+        setTimeLeftMs(0)
+      } else {
+        setTimeLeftMs(next)
+      }
+    }
     tick()
     const id = setInterval(tick, 100)
     return () => clearInterval(id)
-  }, [pollOver, poll.start, poll.time])
+  }, [pollOver, poll.start, poll.time, serverOffsetMs, onPollTimeExpired])
 
   // After poll is over, keep results visible for POLL_RESULTS_VISIBLE_MS then call onDismiss
   useEffect(() => {
@@ -151,7 +176,8 @@ export default function PollView({ poll, pollOver, onVote, onDismiss }: PollView
               <button
                 key={i}
                 type="button"
-                className={`${className} hover:bg-base-content/10 transition-colors`}
+                disabled={votePending}
+                className={`${className} hover:bg-base-content/10 transition-colors disabled:opacity-60 disabled:pointer-events-none`}
                 onClick={() => onVote(i + 1)}
               >
                 {optionContent}

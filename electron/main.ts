@@ -164,6 +164,35 @@ async function getCookiesForUrl(url: string): Promise<string> {
       return cookieString
     }
     
+    // For destiny.gg, include cookies from www and chat subdomains so API requests have full session
+    if (hostname.includes('destiny.gg')) {
+      const dggDomains = ['www.destiny.gg', 'chat.destiny.gg', '.destiny.gg']
+      const allCookies: Electron.Cookie[] = []
+      for (const domain of dggDomains) {
+        try {
+          const cookies = await getDefaultSession().cookies.get({ domain })
+          allCookies.push(...cookies)
+        } catch {
+          // Ignore errors for specific domains
+        }
+      }
+      const uniqueCookies = new Map<string, Electron.Cookie>()
+      for (const cookie of allCookies) {
+        if (!cookie.domain) continue
+        const key = `${cookie.domain}:${cookie.name}`
+        if (!uniqueCookies.has(key)) {
+          uniqueCookies.set(key, cookie)
+        }
+      }
+      const cookieString = Array.from(uniqueCookies.values())
+        .map(cookie => `${cookie.name}=${cookie.value}`)
+        .join('; ')
+      if (cookieString) {
+        console.log(`Found ${uniqueCookies.size} cookies for destiny.gg (www + chat)`)
+      }
+      return cookieString
+    }
+    
     // For other domains, use domain-specific approach
     const domains = [hostname]
     const parts = hostname.split('.')
@@ -2677,15 +2706,56 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       })
       
       chatWebSocket.on('pollStart', (event) => {
+        try {
+          fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTART', [event?.poll?.question?.slice?.(0, 50)])
+        } catch {
+          // ignore
+        }
         safeSend('chat-websocket-poll-start', event)
       })
-      
+
       chatWebSocket.on('voteCast', (event) => {
         safeSend('chat-websocket-vote-cast', event)
       })
-      
+
       chatWebSocket.on('pollStop', (event) => {
+        try {
+          fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTOP', [])
+        } catch {
+          // ignore
+        }
         safeSend('chat-websocket-poll-stop', event)
+      })
+
+      chatWebSocket.on('voteCounted', (event: { vote?: string }) => {
+        try {
+          fileLogger.writeLog('info', 'main', '[Chat WS] Vote counted', [event?.vote])
+        } catch {
+          // ignore
+        }
+        safeSend('chat-websocket-vote-counted', event)
+      })
+
+      chatWebSocket.on('pollVoteError', (event: { description?: string }) => {
+        try {
+          fileLogger.writeLog('info', 'main', '[Chat WS] Poll vote error', [event?.description])
+        } catch {
+          // ignore
+        }
+        safeSend('chat-websocket-poll-vote-error', event)
+      })
+
+      chatWebSocket.on('chatErr', (event: { description?: string }) => {
+        try {
+          fileLogger.writeLog('warn', 'main', '[Chat WS] Server ERR (e.g. whisper failed)', [event?.description])
+        } catch {
+          // ignore
+        }
+        safeSend('chat-websocket-err', event)
+      })
+
+      chatWebSocket.on('privmsg', (event) => {
+        safeSend('chat-websocket-privmsg', event)
       })
 
       chatWebSocket.on('death', (event) => {
@@ -2762,6 +2832,109 @@ ipcMain.handle('chat-websocket-cast-poll-vote', async (_event, payload: { option
   const option = typeof payload?.option === 'number' ? payload.option : 0
   if (option < 1) return { success: false, error: 'Invalid option' }
   const sent = sendChatRaw(`CASTVOTE ${JSON.stringify({ vote: String(option) })}`)
+  try {
+    fileLogger.writeLog('info', 'main', '[Main Process] Poll vote cast', [{ option, sent }])
+  } catch {
+    // ignore
+  }
+  return { success: sent }
+})
+
+const DGG_ORIGIN = 'https://www.destiny.gg'
+
+/** Send a DGG whisper via the chat WebSocket: PRIVMSG {"nick":"<recipient>","data":"<message>"}. */
+ipcMain.handle('dgg-send-whisper', async (_event, payload: { recipient: string; message: string }) => {
+  const recipient = typeof payload?.recipient === 'string' ? payload.recipient.trim() : ''
+  const message = typeof payload?.message === 'string' ? payload.message.trim() : ''
+  if (!recipient) {
+    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Missing recipient', []) } catch { /* ignore */ }
+    return { success: false, error: 'Missing recipient' }
+  }
+  if (!message) {
+    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Missing message', []) } catch { /* ignore */ }
+    return { success: false, error: 'Missing message' }
+  }
+  if (!chatWebSocket?.isConnected()) {
+    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Chat not connected', [recipient]) } catch { /* ignore */ }
+    return { success: false, error: 'DGG chat not connected. Connect to DGG chat first.' }
+  }
+  try {
+    try { fileLogger.writeLog('info', 'main', '[dgg-send-whisper] Attempt', [recipient, message.length]) } catch { /* ignore */ }
+    const line = `PRIVMSG ${JSON.stringify({ nick: recipient, data: message })}`
+    const sent = sendChatRaw(line)
+    if (sent) {
+      try { fileLogger.writeLog('info', 'main', '[dgg-send-whisper] OK (WebSocket)', [recipient]) } catch { /* ignore */ }
+    } else {
+      try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] WebSocket send failed', [recipient]) } catch { /* ignore */ }
+      return { success: false, error: 'Failed to send (WebSocket)' }
+    }
+    return { success: true }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    try { fileLogger.writeLog('error', 'main', '[dgg-send-whisper] Exception', [recipient, err, e instanceof Error ? e.stack : '']) } catch { /* ignore */ }
+    return { success: false, error: err }
+  }
+})
+
+/** GET https://www.destiny.gg/api/messages/unread — returns list of unread private message summaries. */
+ipcMain.handle('dgg-messages-unread', async (_event) => {
+  try {
+    const cookieStr = await getCookiesForUrl(DGG_ORIGIN)
+    if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
+    const res = await fetch(`${DGG_ORIGIN}/api/messages/unread`, {
+      method: 'GET',
+      headers: {
+        Cookie: cookieStr,
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+        Referer: `${DGG_ORIGIN}/`,
+      },
+      redirect: 'follow',
+    })
+    if (!res.ok) return { success: false, error: `Request failed: ${res.status} ${res.statusText}`, data: null }
+    const data = await res.json()
+    return { success: true, data }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    return { success: false, error: err, data: null }
+  }
+})
+
+/** GET https://www.destiny.gg/api/messages/usr/:username/inbox — returns inbox/conversation with that user. */
+ipcMain.handle('dgg-messages-inbox', async (_event, payload: { username: string }) => {
+  const username = typeof payload?.username === 'string' ? payload.username.trim() : ''
+  if (!username) return { success: false, error: 'Missing username', data: null }
+  try {
+    const cookieStr = await getCookiesForUrl(DGG_ORIGIN)
+    if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
+    const encoded = encodeURIComponent(username)
+    const res = await fetch(`${DGG_ORIGIN}/api/messages/usr/${encoded}/inbox`, {
+      method: 'GET',
+      headers: {
+        Cookie: cookieStr,
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+        Referer: `${DGG_ORIGIN}/`,
+      },
+      redirect: 'follow',
+    })
+    if (!res.ok) return { success: false, error: `Request failed: ${res.status} ${res.statusText}`, data: null }
+    const data = await res.json()
+    return { success: true, data }
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e)
+    return { success: false, error: err, data: null }
+  }
+})
+
+/** Send "watching" to DGG chat WebSocket so embeds can show who is watching what.
+ * Not wired to UI yet (may be against TOS). Callable via ipcRenderer.invoke('chat-websocket-send-watching', { platform, id }). */
+ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platform: string; id: string }) => {
+  const platform = typeof payload?.platform === 'string' ? payload.platform.trim() : ''
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : ''
+  if (!platform || !id) return { success: false, error: 'Missing platform or id' }
+  const line = JSON.stringify({ type: 'watching', data: { platform, id } })
+  const sent = sendChatRaw(line)
   return { success: sent }
 })
 
