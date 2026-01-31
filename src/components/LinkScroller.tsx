@@ -892,6 +892,55 @@ export function getPlatformFooterColor(platform: string | undefined, style: 'tin
   return style === 'tint' ? 'border-l-4 border-l-secondary bg-secondary/5' : 'border-l-4 border-l-secondary/40 bg-secondary/5'
 }
 
+/** Returns embed-related LinkCard fields derived from a URL. Use for building synthetic cards (e.g. Debug page) so the same components receive the same shape as real data. */
+export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url' | 'isDirectMedia' | 'mediaType' | 'embedUrl' | 'isYouTube' | 'isTwitter' | 'isTikTok' | 'isReddit' | 'isImgur' | 'isStreamable' | 'isWikipedia' | 'isBluesky' | 'isKick' | 'isLSF'> {
+  if (!url || typeof url !== 'string' || url.trim() === '') {
+    return { url: url || '', isDirectMedia: false }
+  }
+  let actualUrl = url
+  let isRedditMedia = false
+  if (isRedditMediaLink(url)) {
+    try {
+      const urlObj = new URL(url)
+      const mediaUrl = urlObj.searchParams.get('url')
+      if (mediaUrl) {
+        actualUrl = decodeURIComponent(mediaUrl)
+        isRedditMedia = true
+      }
+    } catch {
+      // use original
+    }
+  }
+  const mediaInfo = isDirectMedia(actualUrl)
+  const isYouTubeClip = isYouTubeClipLink(actualUrl)
+  const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
+  const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
+  const isTwitter = isTwitterStatusLink(actualUrl)
+  const isTikTok = isTikTokVideoLink(actualUrl)
+  const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
+  const isImgur = isImgurAlbumLink(url)
+  const isStreamable = isStreamableLink(actualUrl)
+  const isWikipedia = isWikipediaLink(actualUrl)
+  const isBluesky = isBlueskyLink(actualUrl)
+  const isKick = isKickLink(actualUrl)
+  const isLSF = isLSFLink(actualUrl)
+  return {
+    url: actualUrl,
+    isDirectMedia: mediaInfo.isMedia,
+    mediaType: mediaInfo.type,
+    embedUrl: embedUrl ?? undefined,
+    isYouTube,
+    isTwitter,
+    isTikTok,
+    isReddit,
+    isImgur,
+    isStreamable,
+    isWikipedia,
+    isBluesky,
+    isKick,
+    isLSF,
+  }
+}
 
 // Shared overview card content (used by MasonryGrid and DebugPage)
 function renderLinkCardOverviewContent(
@@ -932,6 +981,7 @@ function renderLinkCardOverviewContent(
     (card.isLSF && lsfMode === 'embed') ||
     (card.isImgur && imgurMode === 'embed')
   
+  const getEmbedTheme = _getEmbedTheme
   return (
     <>
       {/* Embed content above - constrained to prevent overflow */}
@@ -956,6 +1006,24 @@ function renderLinkCardOverviewContent(
               />
             )}
           </div>
+        ) : card.isYouTube && youtubeMode === 'embed' && card.embedUrl ? (
+          <YouTubeEmbed key={`yt-${card.id}-${reloadKey}`} url={card.url} embedUrl={card.embedUrl as string} autoplay={false} mute={true} />
+        ) : card.isTwitter && twitterMode === 'embed' ? (
+          <TwitterEmbed key={`tw-${card.id}-${reloadKey}`} url={card.url} theme={getEmbedTheme()} />
+        ) : card.isTikTok && tiktokMode === 'embed' ? (
+          <TikTokEmbed key={`tt-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} loop={false} />
+        ) : card.isReddit && redditMode === 'embed' ? (
+          <RedditEmbed key={`rd-${card.id}-${reloadKey}`} url={card.url} theme={getEmbedTheme()} />
+        ) : card.isStreamable && streamableMode === 'embed' ? (
+          <StreamableEmbed key={`streamable-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} loop={false} />
+        ) : card.isWikipedia && wikipediaMode === 'embed' ? (
+          <WikipediaEmbed key={`wiki-${card.id}-${reloadKey}`} url={card.url} />
+        ) : card.isBluesky && blueskyMode === 'embed' ? (
+          <BlueskyEmbed key={`bsky-${card.id}-${reloadKey}`} url={card.url} />
+        ) : card.isKick && kickMode === 'embed' ? (
+          <KickEmbed key={`kick-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} />
+        ) : card.isLSF && lsfMode === 'embed' ? (
+          <LSFEmbed key={`lsf-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={false} />
         ) : null}
       </div>
       {/* Text content and metadata at bottom - always visible */}

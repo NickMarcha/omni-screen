@@ -6,6 +6,7 @@ import {
   LinkCardExpandedContent,
   getPlatformLabel,
   getPlatformFooterColor,
+  getLinkCardEmbedFieldsFromUrl,
   type LinkCard,
 } from './LinkScroller'
 import { getAppPreferences } from '../utils/appPreferences'
@@ -99,19 +100,21 @@ export default function DebugPage({ onBackToMenu }: DebugPageProps) {
   const defaultFooterDisplay = { showPlatformLabel: true, platformColorStyle: 'tint' as const, timestampDisplay: 'datetimestamp' as const }
   const emotesMap = useMemo(() => new Map<string, string>(), [])
   const getEmbedTheme = useCallback(() => (getAppPreferences().theme.mode === 'dark' ? 'dark' : 'light'), [])
-  const syntheticCard: LinkCard = useMemo(() => ({
-    id: 'debug-card',
-    messageId: `debug:channel:${cardDate}:${cardData.nick}`,
-    url: cardData.url,
-    text: cardData.messageText,
-    nick: cardData.nick,
-    date: cardDate,
-    isDirectMedia: false,
-    platform: cardData.platform as 'dgg' | 'kick',
-    channel: cardData.platform === 'kick' ? 'channel' : 'Destinygg',
-    isTrusted: false,
-    isStreaming: false,
-  }), [cardData, cardDate])
+  const syntheticCard: LinkCard = useMemo(() => {
+    const embedFields = getLinkCardEmbedFieldsFromUrl(cardData.url)
+    return {
+      id: 'debug-card',
+      messageId: `debug:channel:${cardDate}:${cardData.nick}`,
+      text: cardData.messageText,
+      nick: cardData.nick,
+      date: cardDate,
+      platform: cardData.platform as 'dgg' | 'kick',
+      channel: cardData.platform === 'kick' ? 'channel' : 'Destinygg',
+      isTrusted: false,
+      isStreaming: false,
+      ...embedFields,
+    }
+  }, [cardData, cardDate])
 
   return (
     <div className="min-h-full flex-1 bg-base-100 text-base-content flex flex-col overflow-hidden">
