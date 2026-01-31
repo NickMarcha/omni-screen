@@ -2,45 +2,190 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [1.0.0] - 2025-01-27
-
-### Added
-- Initial release of Electron Vite React Boilerplate
-- Vite 5+ with hot reload support
-- React 18+ with TypeScript
-- DaisyUI 5+ component library
-- Auto-updater functionality with progress tracking
-- Cross-platform build support (Windows, macOS, Linux)
-- GitHub Actions workflow for automated releases
-- Comprehensive documentation and configuration guides
-- ESLint configuration for code quality
-- Modern development tooling setup
-
-### Features
-- ⚡️ Lightning-fast development with Vite
-- 🔄 Hot reload for instant feedback
-- 📦 Auto-updater with progress tracking
-- 🎨 Beautiful DaisyUI components
-- 📱 Cross-platform builds
-- 🔧 TypeScript for type safety
-- 📚 Comprehensive documentation
-- 🚀 GitHub Actions ready
 
 ## [Unreleased]
 
 ### Added
-- **Pie chart (What’s being watched)**: Button in the embed dock opens a popup with a pie chart of who is watching what, using data from the embeds WebSocket only (no chatters count). Total is the sum of embed counts; “Not watching” slice removed. Tooltip floats above the chart; labels no longer cut off (viewBox + width); chart centered in popup.
-- **DGG private messages (whispers)**: The list of users who have whispered you is **persisted in localStorage**; users are added from the initial unread API call when chat loads, from WebSocket PRIVMSG events, and when you **send** a whisper only if the subsequent **inbox fetch** (`GET /api/messages/usr/:username/inbox`) succeeds; users are removed only when you hit **Clear**. The 📫/📬 button is always clickable and opens the whisper list. In the list view, a **"Whisper To"** field (dropdown from whisper list + DGG nicks, or type any username) and message field sit at the bottom; message input is disabled until a recipient is entered (placeholder "whisper message.."). After sending, the app fetches inbox for that recipient; **only if that fetch succeeds** do we add the user to the list and open the conversation; otherwise we just clear the fields. In the conversation view, a sticky **← Back** header stays visible. Whispers are sent via the **chat WebSocket** (`PRIVMSG {"nick","data"}`). Per-user unread count and total badge on 📫/📬; send error shown above the recipient field when relevant.
+- LinkScroller Embeds recovered (Twitter, Reddit, YouTube, etc. render in overview again; Debug page uses same components with URL-derived embed fields).
+
+## [1.7.1] - 2026-01-31
+
+### Added
+- Sending whispers (DGG private messages via chat WebSocket).
+
+## [1.7.0] - 2026-01-30
+
+### Added
+- Voting and debug page (poll voting, debug page with shared LinkScroller components).
+- Auto update check at startup.
+- Send DGG messages.
 
 ### Changed
-- **Combined chat poll**: Poll now dismisses correctly: if POLLSTART is for an already-ended poll (e.g. from HISTORY), it is shown as ended and the 15s dismiss timer runs; when the countdown reaches 0, `onPollTimeExpired` sets the poll over so it dismisses even if POLLSTOP is never received. Time left uses server time with support for `poll.start` / `poll.now` as Unix seconds. Vote feedback: “Sending vote…” and disabled buttons while pending; errors (e.g. “Already voted”) shown. POLLSTART/POLLSTOP/vote-counted/poll-vote-error logged in main and renderer.
-- **Combo rendering**: DGG emote in combo rows now matches message emotes (same div + class, no fixed size, no `emotesMap.has` gate). Added `.msg-chat.msg-emote .emote { flex-shrink: 0 }` so combo emotes don’t shrink.
-- **Private messages button**: Compact 32×32px button to the right of the DGG input; input uses flex-1 so it takes most space; row uses `flex-none` so it doesn’t grow in height.
+- Better layout for pinned streamers.
+- Omni screen layout fixed, combined chat improvements.
+- Emote combos, pinned messages, better scrolling behavior.
+
+## [1.6.6] - 2026-01-30
+
+### Added
+- Handle # links.
+
+### Changed
+- Emote rendering tweaks.
+
+## [1.6.5] - 2026-01-30
+
+### Changed
+- Embed better link handling.
+
+## [1.6.4] - 2026-01-30
 
 ### Fixed
-- **Pie chart**: Data source is embeds WebSocket only; total is sum of embed counts; “Not watching” slice removed.
-- **Poll**: Never disappears (POLLSTOP or time-expired); time left accurate (Unix seconds for start/now); vote feedback and logging.
-- **Combined chat JSX**: Corrected fragment closing and missing `</div>` for scroll area so the layout no longer breaks.
+- Bug vanishing embeds.
+
+## [1.6.3] - 2026-01-30
+
+### Changed
+- Reworked embeds in omni screen.
+
+## [1.6.2] - 2026-01-29
+
+### Changed
+- CSS fix.
+- Readme updates.
+
+## [1.6.1] - 2026-01-29
+
+### Added
+- Combined chat highlight.
+
+### Changed
+- Better split screen management.
+
+## [1.6.0] - 2026-01-29
+
+### Added
+- User scripts for Kick and DGG chat.
+- Youtube emotes.
+- Omni Screen Cinema mode.
+
+### Changed
+- Destiny chat embed fixes.
+- LinkScroller and title improvements.
+- Custom titlebar.
+- Link Scroller improved.
+
+## [1.5.3] - 2026-01-28
+
+### Added
+- Omni screen combined chat feature.
+
+## [1.5.2] - 2026-01-27
+
+### Changed
+- Workflow fix.
+
+## [1.5.1] - 2026-01-27
+
+### Changed
+- Upscaled logo.
+
+## [1.5.0] - 2026-01-27
+
+### Added
+- Omni Screen.
+
+### Changed
+- Testing different builds.
+- Linkscroller order fixes.
+- Pagination fix.
+- Demo, docs.
+
+## [1.4.0] - 2026-01-27
+
+_(Release marker; see 1.5.0 for commits in this period.)_
+
+## [1.3.0] - 2026-01-25
+
+### Added
+- Embed hacking.
+
+### Changed
+- Readme updates.
+
+### Fixed
+- Production local storage fix.
+
+## [1.2.0] - 2026-01-25
+
+### Added
+- Added some flair.
+- Muting.
+- Websockets right click menu.
+- Logging and backup API.
+- Added Menu Screen.
+- Multiple mentions.
+- Emotes and better text.
+- More embeds.
+- Reimagined the modes.
+- Twitter embed respects theme.
+- Improved theming.
+- Bluesky Embed.
+
+### Fixed
+- Twitter fixed.
+- TikTok and Wikipedia embed fix, CORS issues in prod build fix.
+
+## [1.1.1] - 2026-01-24
+
+### Fixed
+- Build fixes.
+
+## [1.1.0] - 2026-01-24
+
+### Added
+- Streamable Embed.
+- Link Scroller setup.
+
+### Changed
+- Better trusted user and settings text.
+- Better loading maybe?
+- Youtube timestamps.
+- Testing new layout.
+- Highlight view better scrolling behaviour.
+- Better imgur handling.
+- Better next page and small cards.
+- Readme updates.
+
+### Fixed
+- Twitter height fix, Angelthump.
+- Still working on embeds.
+
+## [1.0.1] - 2026-01-24
+
+### Added
+- Cloned from electron-vite-react-boilerplate.
+- Initial commit.
+
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/main...HEAD
+[1.7.1]: https://github.com/NickMarcha/omni-screen/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/NickMarcha/omni-screen/compare/v1.6.6...v1.7.0
+[1.6.6]: https://github.com/NickMarcha/omni-screen/compare/v1.6.5...v1.6.6
+[1.6.5]: https://github.com/NickMarcha/omni-screen/compare/v1.6.4...v1.6.5
+[1.6.4]: https://github.com/NickMarcha/omni-screen/compare/v1.6.3...v1.6.4
+[1.6.3]: https://github.com/NickMarcha/omni-screen/compare/v1.6.2...v1.6.3
+[1.6.2]: https://github.com/NickMarcha/omni-screen/compare/v1.6.1...v1.6.2
+[1.6.1]: https://github.com/NickMarcha/omni-screen/compare/v1.6.0...v1.6.1
+[1.6.0]: https://github.com/NickMarcha/omni-screen/compare/v1.5.3...v1.6.0
+[1.5.3]: https://github.com/NickMarcha/omni-screen/compare/v1.5.2...v1.5.3
+[1.5.2]: https://github.com/NickMarcha/omni-screen/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/NickMarcha/omni-screen/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/NickMarcha/omni-screen/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/NickMarcha/omni-screen/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/NickMarcha/omni-screen/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/NickMarcha/omni-screen/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/NickMarcha/omni-screen/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/NickMarcha/omni-screen/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/NickMarcha/omni-screen/releases/tag/v1.0.1
