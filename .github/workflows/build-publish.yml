@@ -16,9 +16,40 @@ jobs:
       GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
 
     steps:
-      - name: Ensure GitHub release exists
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
         run: |
-          gh release view "$GH_TAG" --repo "${{ github.repository }}" || gh release create "$GH_TAG" --repo "${{ github.repository }}" --title "$GH_TAG" --generate-notes
+          VERSION="${GH_TAG#v}"
+          # Extract the section for this version (from "## [X.Y.Z]" up to, but not including, the next "## [")
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { found = 1 }
+            found && /^## \[/ && index($0, "## [" ver "]") != 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          # If we found a section, use it; otherwise fall back to empty (workflow will still create release)
+          if [ -s release_notes.md ]; then
+            echo "path=release_notes.md" >> "$GITHUB_OUTPUT"
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub release with changelog notes
+        run: |
+          if gh release view "$GH_TAG" --repo "${{ github.repository }}" 2>/dev/null; then
+            if [ "${{ steps.notes.outputs.has_notes }}" = "true" ]; then
+              gh release edit "$GH_TAG" --repo "${{ github.repository }}" --notes-file release_notes.md
+            fi
+          else
+            if [ "${{ steps.notes.outputs.has_notes }}" = "true" ]; then
+              gh release create "$GH_TAG" --repo "${{ github.repository }}" --title "$GH_TAG" --notes-file release_notes.md
+            else
+              gh release create "$GH_TAG" --repo "${{ github.repository }}" --title "$GH_TAG" --generate-notes
+            fi
+          fi
 
   build:
     needs: create_release

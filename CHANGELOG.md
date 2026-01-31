@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-01-31
+
 ### Added
 - LinkScroller Embeds recovered (Twitter, Reddit, YouTube, etc. render in overview again; Debug page uses same components with URL-derived embed fields).
+- Release workflow populates GitHub release notes from CHANGELOG.md for the tagged version.
 
 ## [1.7.1] - 2026-01-31
 
@@ -169,7 +172,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/main...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/NickMarcha/omni-screen/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/NickMarcha/omni-screen/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/NickMarcha/omni-screen/compare/v1.6.6...v1.7.0
 [1.6.6]: https://github.com/NickMarcha/omni-screen/compare/v1.6.5...v1.6.6
