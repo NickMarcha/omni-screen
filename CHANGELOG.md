@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(No changes yet.)_
+
+## [1.8.0] - 2026-02-05
+
 ### Added
 - **Connections** (Menu → Connections): Central place to manage cookies per platform. Renamed from "Connections / Accounts"; when logged out of DGG, combined chat shows "Login → Main menu → Connections" instead of the input.
 - **Simplified mode**: “Log in” opens an in-app browser; “Logged in” only when auth cookies are present (platform-specific cookie names; tracking cookies no longer count as logged in). Per-platform “Delete cookies” to clear that platform’s session.
@@ -199,7 +203,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/NickMarcha/omni-screen/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/NickMarcha/omni-screen/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/NickMarcha/omni-screen/compare/v1.6.6...v1.7.0
