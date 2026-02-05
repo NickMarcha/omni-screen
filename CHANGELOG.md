@@ -8,16 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Connections / Accounts** (Menu → Connections): Central place to manage cookies per platform for DGG chat, embeds, and combined chat (DGG, YouTube, Kick, Twitch, Twitter, Reddit).
+- **Connections** (Menu → Connections): Central place to manage cookies per platform. Renamed from "Connections / Accounts"; when logged out of DGG, combined chat shows "Login → Main menu → Connections" instead of the input.
 - **Simplified mode**: “Log in” opens an in-app browser; “Logged in” only when auth cookies are present (platform-specific cookie names; tracking cookies no longer count as logged in). Per-platform “Delete cookies” to clear that platform’s session.
 - **Paranoid mode** toggle: Paste cookies manually (no password ever entered in the app); manual fields and paste blob; short explanation that you never type your password.
 - **Clear options**: “Delete all sessions” (clears known platform domains) and “Clear entire cookie store” (clears every cookie in the app session). Success messages no longer show cookie counts (avoids confusion from embeds re-setting cookies).
 - **Kick logged-in detection**: Uses `kick_session` and `session_token` so Kick shows “Logged in” when you have a real session.
 - Manual cookie fields and paste area refresh when the login window closes, so you see updated values without reopening the modal.
+- **DGG flairs and nickname colors**: Load flairs CSS + JSON from CDN (mount + on RELOAD). Nickname color and flair icons in combined chat follow DGG chat-gui. Platform favicons (DGG, Kick, YouTube, Twitch) as optional "Platform icons" in combined chat (Settings → Chat), separate from source labels.
+- **DGG user tooltips**: Right-click any DGG nickname (sender or mentioned in message) for a popover with created date, watching link, flairs, Whisper and Rustlesearch. Double-click a nickname to insert it into the message input. Mentioned nicks in DGG messages underline on hover.
+- **DGG chat events in combined chat**: GIFTSUB, MASSGIFT, DONATION as event lines; MUTE, BAN, UNBAN as system lines. Banned phrases (ADDPHRASE/REMOVEPHRASE) block send when message contains one. SUBONLY disables typing for non-subs. RELOAD reloads emotes and flairs.
+- **Script** `npm run check:dgg-upstream`: Compare tracked DGG chat-gui files to baseline and print GitHub file/history links (rate-limited).
+- **Update modal**: When an update is available, release notes (changelog) for the new version are fetched from GitHub and shown when appropriate.
 
 ### Changed
-- Connections UI simplified: long explanation removed (details in code comments); “Log in in browser” label shortened to “Log in”.
+- Connections label is now "Connections" everywhere. Removed "DGG: main menu → Connections / Accounts" from combined chat header.
+- Combined chat message row: flex layout so timestamp, source label, platform icon, nickname stay on one line.
+- Settings modal: fixed scrolling (modal uses fixed height so tab content scrolls).
+- Poll: 7s results visibility; end message "Poll ended! X vote(s) cast. (Lasted Y s)".
+- DGG autocomplete: emotes only unless user types `@` (then nicks only); Arrow Up/Down prefer message history; insert nick without `@`.
+- WebSocket reconnect: "at bottom" re-marked so auto-scroll continues after reconnect.
 - Auth detection is based on platform auth cookie names only (e.g. DGG: sid/rememberme; YouTube: SID, HSID, etc.; Twitter: auth_token/ct0; Reddit: reddit_session; Twitch: auth-token/unique_id; Kick: kick_session/session_token), so opening YouTube or clearing sessions no longer falsely shows “Logged in”.
+
+### Fixed
+- Emote/flair caching: cache-bust and no-store so updates are picked up.
+- Empty DGG pinned message: when DGG clears the pin, pinned block is hidden.
+- TypeScript: user tooltip callbacks and DGG input focus ref.
 
 ## [1.7.2] - 2026-01-31
 

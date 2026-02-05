@@ -134,6 +134,8 @@ function Menu({ onNavigate }: MenuProps) {
   const [versionInfo, setVersionInfo] = useState<any>()
   const [updateError, setUpdateError] = useState<any>()
   const [progressInfo, setProgressInfo] = useState<any>()
+  const [releaseNotes, setReleaseNotes] = useState<string | null>(null)
+  const [releaseNotesLoading, setReleaseNotesLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [modalBtn, setModalBtn] = useState({
     cancelText: 'Close',
@@ -277,8 +279,47 @@ function Menu({ onNavigate }: MenuProps) {
       setUpdateAvailable(true)
     } else {
       setUpdateAvailable(false)
+      setReleaseNotes(null)
     }
   }, [])
+
+  // When an update is available, best-effort fetch release notes from GitHub. Must not affect the
+  // update flow: we only set releaseNotes/releaseNotesLoading; errors are swallowed.
+  const newVersion = versionInfo?.newVersion
+  useEffect(() => {
+    if (!updateAvailable || !newVersion || typeof newVersion !== 'string') {
+      setReleaseNotes(null)
+      setReleaseNotesLoading(false)
+      return
+    }
+    const tag = newVersion.startsWith('v') ? newVersion : `v${newVersion}`
+    setReleaseNotes(null)
+    setReleaseNotesLoading(true)
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10_000)
+
+    fetch(`https://api.github.com/repos/NickMarcha/omni-screen/releases/tags/${tag}`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/vnd.github.v3+json' },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { body?: string } | null) => {
+        if (data?.body) setReleaseNotes(data.body)
+      })
+      .catch(() => {
+        // Ignore: network error, 404, rate limit, etc. Update flow is unaffected.
+      })
+      .finally(() => {
+        clearTimeout(timeoutId)
+        setReleaseNotesLoading(false)
+      })
+
+    return () => {
+      clearTimeout(timeoutId)
+      controller.abort()
+    }
+  }, [updateAvailable, newVersion])
 
   const onUpdateError = useCallback((_event: any, arg1: any) => {
     setUpdateAvailable(false)
@@ -428,6 +469,14 @@ function Menu({ onNavigate }: MenuProps) {
                 <div>
                   <div className="text-success mb-2">The latest version is: v{versionInfo?.newVersion}</div>
                   <div className="text-base-content/70 text-sm mb-4">Current: v{versionInfo?.version} → v{versionInfo?.newVersion}</div>
+                  {(releaseNotesLoading || releaseNotes) && (
+                    <div className="mb-4">
+                      <div className="text-sm font-semibold mb-1">What&apos;s new</div>
+                      <div className="bg-base-100 rounded border border-base-300 p-2 max-h-40 overflow-y-auto text-xs text-base-content/80 whitespace-pre-wrap">
+                        {releaseNotesLoading ? 'Loading release notes…' : releaseNotes ?? ''}
+                      </div>
+                    </div>
+                  )}
                   <div className="mb-4">
                     <div className="text-sm mb-2">Update progress:</div>
                     <div className="bg-base-200 rounded-full h-4 w-full overflow-hidden">
