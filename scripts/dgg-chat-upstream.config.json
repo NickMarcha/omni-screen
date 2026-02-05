@@ -1,0 +1,23 @@
+{
+  "repo": "destinygg/chat-gui",
+  "ref": "master",
+  "maxRequests": 30,
+  "paths": [
+    "scripts/glue.js",
+    "assets/views/embed.html",
+    "assets/views/stream.html",
+    "assets/views/templates.html",
+    "assets/chat/js/chat.js",
+    "assets/chat/js/emotes.js",
+    "assets/chat/js/autocomplete.js",
+    "assets/chat/js/commands.js",
+    "assets/chat/js/const.js",
+    "assets/chat/js/emitter.js",
+    "assets/chat/js/mentions.js",
+    "assets/chat/js/notification.js",
+    "assets/chat/js/poll.js",
+    "assets/chat/js/user.js",
+    "assets/chat/js/window.js",
+    "assets/chat/css/style.scss"
+  ]
+}
