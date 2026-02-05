@@ -107,7 +107,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
               }
             }, 2000)
           } else {
-            setError('Tweet unavailable or requires auth. Add Twitter cookies in the main menu: Connections / Accounts.')
+            setError('Tweet unavailable or requires auth. Add Twitter cookies in the main menu: Connections.')
             setEmbedHtml(null)
             setLoading(false)
             if (onError) onError('Embed creation timed out')
@@ -482,7 +482,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
                       } catch (e) {
                         console.warn('[TwitterEmbed] Fallback failed:', e)
                       }
-                      setError(`Twitter returned error state (${height}px height). Tweet may be unavailable, deleted, age-restricted, or rate-limited. Log in via Connections / Accounts if needed.`)
+                      setError(`Twitter returned error state (${height}px height). Tweet may be unavailable, deleted, age-restricted, or rate-limited. Log in via Connections if needed.`)
                       setEmbedHtml(null)
                       setLoading(false)
                       if (onError) onError('Twitter embed error state')

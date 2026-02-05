@@ -3055,6 +3055,34 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       chatWebSocket.on('broadcast', (event) => {
         safeSend('chat-websocket-broadcast', event)
       })
+
+      chatWebSocket.on('ban', (event) => {
+        safeSend('chat-websocket-ban', event)
+      })
+      chatWebSocket.on('subonly', (event) => {
+        safeSend('chat-websocket-subonly', event)
+      })
+      chatWebSocket.on('reload', (event) => {
+        safeSend('chat-websocket-reload', event)
+      })
+      chatWebSocket.on('privmsgsent', (event) => {
+        safeSend('chat-websocket-privmsgsent', event)
+      })
+      chatWebSocket.on('addphrase', (event) => {
+        safeSend('chat-websocket-addphrase', event)
+      })
+      chatWebSocket.on('removephrase', (event) => {
+        safeSend('chat-websocket-removephrase', event)
+      })
+      chatWebSocket.on('giftsub', (event) => {
+        safeSend('chat-websocket-giftsub', event)
+      })
+      chatWebSocket.on('massgift', (event) => {
+        safeSend('chat-websocket-massgift', event)
+      })
+      chatWebSocket.on('donation', (event) => {
+        safeSend('chat-websocket-donation', event)
+      })
     }
 
     if (!chatWebSocket.isConnected()) {

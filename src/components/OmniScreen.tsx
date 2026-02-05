@@ -525,6 +525,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === '0' || saved === 'false') return false
     return true
   })
+  const [combinedShowPlatformIcons, setCombinedShowPlatformIcons] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:combined-show-platform-icons')
+    if (saved === '0' || saved === 'false') return false
+    return false
+  })
   const [combinedSortMode, setCombinedSortMode] = useState<CombinedSortMode>(() => {
     const saved = localStorage.getItem('omni-screen:combined-sort-mode')
     return saved === 'arrival' ? 'arrival' : 'timestamp'
@@ -607,7 +612,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   type SettingsTab = 'pinned' | 'chat' | 'keybinds'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('pinned')
-  const [tabContentMinHeight, setTabContentMinHeight] = useState(320)
   const settingsTabContentRef = useRef<HTMLDivElement>(null)
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
   /** YouTube embed key -> pinned streamer ids that resolved to this video (multiple streamers can share same stream). */
@@ -628,10 +632,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   // Prevent layout shift (gap on right) when modal opens: body may get overflow hidden and scrollbar disappears
   useEffect(() => {
-    if (!settingsModalOpen) {
-      setTabContentMinHeight(320)
-      return
-    }
+    if (!settingsModalOpen) return
     const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
     const prevPadding = document.body.style.paddingRight
     document.body.style.paddingRight = `${scrollbarWidth}px`
@@ -639,12 +640,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       document.body.style.paddingRight = prevPadding
     }
   }, [settingsModalOpen])
-
-  useLayoutEffect(() => {
-    if (!settingsModalOpen || !settingsTabContentRef.current) return
-    const h = settingsTabContentRef.current.scrollHeight
-    setTabContentMinHeight((prev) => Math.max(prev, h))
-  }, [settingsModalOpen, settingsTab, pinnedStreamers.length, editingStreamerId])
 
   const combinedHeaderText = useMemo(() => {
     const parts: string[] = []
@@ -822,12 +817,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     try {
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
+      localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
       localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
       localStorage.setItem('omni-screen:combined-highlight-term', combinedHighlightTerm)
     } catch {
       // ignore
     }
-  }, [combinedShowLabels, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm])
+  }, [combinedShowLabels, combinedShowPlatformIcons, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm])
 
   useEffect(() => {
     try {
@@ -1736,9 +1732,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     </div>
                     <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
                       {combinedMsgCount} msgs · {combinedDggUserCount} users
-                      <span className="text-xs text-base-content/50" title="Add cookies in main menu">
-                        DGG: main menu → Connections / Accounts
-                      </span>
                       <button
                         type="button"
                         className="btn btn-xs btn-ghost btn-circle"
@@ -1761,6 +1754,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     maxMessages={combinedMaxMessages}
                     showTimestamps={combinedShowTimestamps}
                     showSourceLabels={combinedShowLabels}
+                    showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
                     highlightTerm={combinedHighlightTerm || undefined}
                     onCountChange={setCombinedMsgCount}
@@ -2337,9 +2331,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     </div>
                     <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
                       {combinedMsgCount} msgs · {combinedDggUserCount} users
-                      <span className="text-xs text-base-content/50" title="Add cookies in main menu">
-                        DGG: main menu → Connections / Accounts
-                      </span>
                       <button
                         type="button"
                         className="btn btn-xs btn-ghost btn-circle"
@@ -2362,6 +2353,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     maxMessages={combinedMaxMessages}
                     showTimestamps={combinedShowTimestamps}
                     showSourceLabels={combinedShowLabels}
+                    showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
                     highlightTerm={combinedHighlightTerm || undefined}
                     onCountChange={setCombinedMsgCount}
@@ -2379,7 +2371,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       {/* Unified Settings modal */}
       {settingsModalOpen && (
         <div className="modal modal-open z-[100]" role="dialog" aria-modal="true">
-          <div className="modal-box max-w-4xl max-h-[90vh] overflow-hidden flex flex-col w-11/12">
+          <div className="modal-box max-w-4xl h-[90vh] max-h-[90vh] overflow-hidden flex flex-col w-11/12">
             <h3 className="font-bold text-lg mb-2">Settings</h3>
             <div className="tabs tabs-bordered mb-3 flex-shrink-0">
               <button
@@ -2407,7 +2399,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             <div
               ref={settingsTabContentRef}
               className="flex-1 min-h-0 overflow-y-auto"
-              style={{ minHeight: tabContentMinHeight }}
             >
               {settingsTab === 'pinned' && (
                 <div className="space-y-4">
@@ -2668,6 +2659,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         className="toggle toggle-sm"
                         checked={combinedShowLabels}
                         onChange={(e) => setCombinedShowLabels(e.target.checked)}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Platform icons</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm"
+                        checked={combinedShowPlatformIcons}
+                        onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
                       />
                     </label>
                     <label className="flex flex-col gap-1 text-sm mb-2">

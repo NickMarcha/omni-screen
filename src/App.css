@@ -94,6 +94,14 @@ body {
   vertical-align: middle;
 }
 
+/* DGG flairs: CDN flairs.css sets .flair.<name> { background-image, height, width }. Base rule so icons display. */
+.flair {
+  display: inline-block;
+  vertical-align: middle;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
 /* Combo row: emote must not shrink so destiny.gg emotes.css dimensions apply correctly */
 .msg-chat.msg-emote .emote {
   flex-shrink: 0;

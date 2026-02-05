@@ -169,6 +169,83 @@ export interface ChatBroadcastEvent {
   }
 }
 
+/** BAN: data.data = banned nick, data.nick = who banned, data.timestamp */
+export interface ChatBanEvent {
+  type: 'BAN'
+  ban: { data: string; nick?: string; timestamp?: number }
+}
+
+/** SUBONLY: data.data === 'on' when enabled */
+export interface ChatSubOnlyEvent {
+  type: 'SUBONLY'
+  subonly: { data: string; nick?: string; timestamp?: number }
+}
+
+/** RELOAD: no payload; server asks client to reload (emotes/flairs) */
+export interface ChatReloadEvent {
+  type: 'RELOAD'
+}
+
+/** PRIVMSGSENT: confirmation that our whisper was sent; no payload */
+export interface ChatPrivMsgSentEvent {
+  type: 'PRIVMSGSENT'
+}
+
+/** ADDPHRASE / REMOVEPHRASE: data.data = the phrase */
+export interface ChatPhraseEvent {
+  type: 'ADDPHRASE' | 'REMOVEPHRASE'
+  phrase: { data: string; timestamp?: number }
+}
+
+/** GIFTSUB: gift sub event (user, recipient, tier, etc.) */
+export interface ChatGiftSubEvent {
+  type: 'GIFTSUB'
+  giftSub: {
+    data?: string
+    user?: { nick: string; id?: number; [k: string]: unknown }
+    recipient?: { nick: string; [k: string]: unknown }
+    tier?: number
+    tierLabel?: string
+    amount?: number
+    fromMassGift?: boolean
+    timestamp?: number
+    expirationTimestamp?: number
+    uuid?: string
+    [k: string]: unknown
+  }
+}
+
+/** MASSGIFT: mass gift subs */
+export interface ChatMassGiftEvent {
+  type: 'MASSGIFT'
+  massGift: {
+    data?: string
+    user?: { nick: string; [k: string]: unknown }
+    tier?: number
+    tierLabel?: string
+    amount?: number
+    quantity?: number
+    timestamp?: number
+    expirationTimestamp?: number
+    uuid?: string
+    [k: string]: unknown
+  }
+}
+
+/** DONATION */
+export interface ChatDonationEvent {
+  type: 'DONATION'
+  donation: {
+    data?: string
+    user?: { nick: string; [k: string]: unknown }
+    amount?: number
+    timestamp?: number
+    expirationTimestamp?: number
+    uuid?: string
+    [k: string]: unknown
+  }
+}
+
 export type ChatWebSocketEvent =
   | ChatHistoryMessage
   | ChatUserEvent
@@ -606,6 +683,55 @@ export class ChatWebSocket extends EventEmitter {
                       error: e instanceof Error ? e.message : String(e),
                     })
                   }
+                } else if (msgStr.startsWith('BAN ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(4)) as { data?: string; nick?: string; timestamp?: number }
+                    this.emit('ban', { type: 'BAN', ban: data } as ChatBanEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse BAN in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('SUBONLY ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(8)) as { data?: string; nick?: string; timestamp?: number }
+                    this.emit('subonly', { type: 'SUBONLY', subonly: data } as ChatSubOnlyEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse SUBONLY in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('ADDPHRASE ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(10)) as { data?: string; timestamp?: number }
+                    this.emit('addphrase', { type: 'ADDPHRASE', phrase: data } as ChatPhraseEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse ADDPHRASE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('REMOVEPHRASE ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(12)) as { data?: string; timestamp?: number }
+                    this.emit('removephrase', { type: 'REMOVEPHRASE', phrase: data } as ChatPhraseEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse REMOVEPHRASE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
+                  }
+                } else if (msgStr.startsWith('GIFTSUB ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(8)) as ChatGiftSubEvent['giftSub']
+                    this.emit('giftsub', { type: 'GIFTSUB', giftSub: data } as ChatGiftSubEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse GIFTSUB in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                  }
+                } else if (msgStr.startsWith('MASSGIFT ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(9)) as ChatMassGiftEvent['massGift']
+                    this.emit('massgift', { type: 'MASSGIFT', massGift: data } as ChatMassGiftEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse MASSGIFT in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                  }
+                } else if (msgStr.startsWith('DONATION ')) {
+                  try {
+                    const data = JSON.parse(msgStr.substring(9)) as ChatDonationEvent['donation']
+                    this.emit('donation', { type: 'DONATION', donation: data } as ChatDonationEvent)
+                  } catch (e) {
+                    console.error('[ChatWebSocket] Failed to parse DONATION in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
+                  }
                 } else {
                   console.log('[ChatWebSocket] Unsupported message type in HISTORY:', msgStr.substring(0, 50))
                   fileLogger.writeWsDiscrepancy('chat', 'unsupported_history_item', {
@@ -878,6 +1004,59 @@ export class ChatWebSocket extends EventEmitter {
             preview: message.substring(0, 2000),
             error: e instanceof Error ? e.message : String(e),
           })
+        }
+      } else if (message.startsWith('BAN ')) {
+        try {
+          const data = JSON.parse(message.substring(4)) as { data?: string; nick?: string; timestamp?: number }
+          this.emit('ban', { type: 'BAN', ban: data } as ChatBanEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse BAN:', e, 'Message:', message.substring(0, 100))
+        }
+      } else if (message.startsWith('SUBONLY ')) {
+        try {
+          const data = JSON.parse(message.substring(8)) as { data?: string; nick?: string; timestamp?: number }
+          this.emit('subonly', { type: 'SUBONLY', subonly: data } as ChatSubOnlyEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse SUBONLY:', e, 'Message:', message.substring(0, 100))
+        }
+      } else if (message === 'RELOAD' || message.startsWith('RELOAD ')) {
+        this.emit('reload', { type: 'RELOAD' } as ChatReloadEvent)
+      } else if (message === 'PRIVMSGSENT' || message.startsWith('PRIVMSGSENT ')) {
+        this.emit('privmsgsent', { type: 'PRIVMSGSENT' } as ChatPrivMsgSentEvent)
+      } else if (message.startsWith('ADDPHRASE ')) {
+        try {
+          const data = JSON.parse(message.substring(10)) as { data?: string; timestamp?: number }
+          this.emit('addphrase', { type: 'ADDPHRASE', phrase: data } as ChatPhraseEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse ADDPHRASE:', e, 'Message:', message.substring(0, 100))
+        }
+      } else if (message.startsWith('REMOVEPHRASE ')) {
+        try {
+          const data = JSON.parse(message.substring(12)) as { data?: string; timestamp?: number }
+          this.emit('removephrase', { type: 'REMOVEPHRASE', phrase: data } as ChatPhraseEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse REMOVEPHRASE:', e, 'Message:', message.substring(0, 100))
+        }
+      } else if (message.startsWith('GIFTSUB ')) {
+        try {
+          const data = JSON.parse(message.substring(8)) as ChatGiftSubEvent['giftSub']
+          this.emit('giftsub', { type: 'GIFTSUB', giftSub: data } as ChatGiftSubEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse GIFTSUB:', e, 'Message:', message.substring(0, 120))
+        }
+      } else if (message.startsWith('MASSGIFT ')) {
+        try {
+          const data = JSON.parse(message.substring(9)) as ChatMassGiftEvent['massGift']
+          this.emit('massgift', { type: 'MASSGIFT', massGift: data } as ChatMassGiftEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse MASSGIFT:', e, 'Message:', message.substring(0, 120))
+        }
+      } else if (message.startsWith('DONATION ')) {
+        try {
+          const data = JSON.parse(message.substring(9)) as ChatDonationEvent['donation']
+          this.emit('donation', { type: 'DONATION', donation: data } as ChatDonationEvent)
+        } catch (e) {
+          console.error('[ChatWebSocket] Failed to parse DONATION:', e, 'Message:', message.substring(0, 120))
         }
       } else {
         console.log('[ChatWebSocket] Unsupported message type:', message.substring(0, 100))

@@ -21,8 +21,8 @@ export interface PollData {
   totalvotes: number
 }
 
-/** How long to show results after poll ends before calling onDismiss. */
-export const POLL_RESULTS_VISIBLE_MS = 15000
+/** How long to show results after poll ends before calling onDismiss. Matches upstream chat-gui POLL_END_TIME (7000). */
+export const POLL_RESULTS_VISIBLE_MS = 7000
 
 export interface PollViewProps {
   /** POLLSTART/POLLSTOP poll payload */
@@ -138,8 +138,11 @@ export default function PollView({ poll, pollOver, serverOffsetMs, onVote, onDis
           </div>
         </div>
       )}
-      {pollOver && poll.time > 0 && (
-        <div className="text-sm font-medium text-base-content/80 mb-2">Poll lasted {pollDurationSec} s</div>
+      {pollOver && (
+        <div className="text-sm font-medium text-base-content/80 mb-2">
+          Poll ended! {totalvotes} vote{totalvotes !== 1 ? 's' : ''} cast.
+          {poll.time > 0 && ` (Lasted ${pollDurationSec} s)`}
+        </div>
       )}
       <div className="text-sm text-base-content/60 mb-1">Poll by {poll.nick}</div>
       <div className="font-semibold mb-3">{poll.question}</div>

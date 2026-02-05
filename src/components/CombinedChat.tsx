@@ -1,6 +1,25 @@
-import { type ReactNode, useCallback, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 import PollView, { type PollData } from './PollView'
+import dggPlatformIcon from '../assets/icons/third-party/platforms/dgg.png'
+import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
+import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
+import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
+
+const PLATFORM_ICONS: Record<string, string> = {
+  dgg: dggPlatformIcon,
+  kick: kickPlatformIcon,
+  youtube: youtubePlatformIcon,
+  twitch: twitchPlatformIcon,
+}
+
+function getPlatformIcon(colorKey: string): string | undefined {
+  if (colorKey === 'dgg') return PLATFORM_ICONS.dgg
+  if (colorKey.startsWith('kick:')) return PLATFORM_ICONS.kick
+  if (colorKey.startsWith('youtube:')) return PLATFORM_ICONS.youtube
+  if (colorKey.startsWith('twitch:')) return PLATFORM_ICONS.twitch
+  return undefined
+}
 
 interface DggChatMessage {
   id: number
@@ -100,6 +119,26 @@ interface EmoteData {
     height: number
     width: number
   }>
+}
+
+/** DGG flair (from flairs.json): used for nickname color and flair icons. */
+interface DggFlair {
+  name: string
+  label: string
+  priority: number
+  color?: string
+  rainbowColor?: boolean
+  hidden?: boolean
+  image?: Array<{ url: string; name: string; height: number; width: number }>
+}
+
+/** Highest-priority flair with a color for the user's features (mirrors chat-gui usernameColorFlair). */
+function usernameColorFlair(flairs: DggFlair[], user: { features?: string[] }): DggFlair | undefined {
+  if (!Array.isArray(user.features) || user.features.length === 0) return undefined
+  return flairs
+    .filter((flair) => user.features!.some((f) => f === flair.name))
+    .sort((a, b) => a.priority - b.priority)
+    .find((f) => f.rainbowColor || f.color)
 }
 
 function loadCSSOnceById(href: string, id: string): Promise<void> {
@@ -278,6 +317,31 @@ function renderTextWithLinks(
   return <>{parts}</>
 }
 
+/** Segment type for DGG message content: plain text or a mentioned nick. */
+type DggContentSegment = { type: 'text'; value: string } | { type: 'nick'; value: string }
+
+/** Split DGG message content into text and nick segments (nicks are word-boundary matches from nicks list). */
+function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment[] {
+  if (!content || nicks.length === 0) return [{ type: 'text', value: content || '' }]
+  const sorted = [...nicks].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
+  const escaped = sorted.map((n) => escapeRegexLiteral(n))
+  const re = new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi')
+  const segments: DggContentSegment[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'text', value: content.slice(lastIndex, match.index) })
+    }
+    segments.push({ type: 'nick', value: match[1]! })
+    lastIndex = re.lastIndex
+  }
+  if (lastIndex < content.length) {
+    segments.push({ type: 'text', value: content.slice(lastIndex) })
+  }
+  return segments.length ? segments : [{ type: 'text', value: content }]
+}
+
 const SCROLL_THRESHOLD_PX = 40
 const DGG_AUTOCOMPLETE_LIMIT = 20
 
@@ -294,20 +358,25 @@ function getWordAtCursor(value: string, cursor: number): { start: number; end: n
   return { start, end, fragment }
 }
 
+/** @-mode: fragment starts with @ → user search only (strip @ for match). Otherwise emote search only. */
 function getAutocompleteSuggestions(
   fragment: string,
   emotesMap: Map<string, string>,
   dggNicks: string[]
 ): string[] {
   if (!fragment) return []
-  const lower = fragment.toLowerCase()
+  const isUserSearch = fragment.startsWith('@')
+  const search = (isUserSearch ? fragment.slice(1) : fragment).trim().toLowerCase()
+  if (!search && !isUserSearch) return []
+  if (isUserSearch) {
+    const nicks = dggNicks.filter((n) => n.toLowerCase().startsWith(search))
+    return nicks.slice(0, DGG_AUTOCOMPLETE_LIMIT)
+  }
   const emotes: string[] = []
   emotesMap.forEach((_, prefix) => {
-    if (prefix.toLowerCase().startsWith(lower)) emotes.push(prefix)
+    if (prefix.toLowerCase().startsWith(search)) emotes.push(prefix)
   })
-  const nicks = dggNicks.filter((n) => n.toLowerCase().startsWith(lower))
-  const combined = [...new Set([...emotes, ...nicks])].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-  return combined.slice(0, DGG_AUTOCOMPLETE_LIMIT)
+  return emotes.slice(0, DGG_AUTOCOMPLETE_LIMIT)
 }
 
 interface DggInputBarProps {
@@ -334,10 +403,12 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
   const [lastInsertedWord, setLastInsertedWord] = useState<string | null>(null)
   const [lastSuggestions, setLastSuggestions] = useState<string[]>([])
   const [messageHistory, setMessageHistory] = useState<string[]>([])
-  const [, setHistoryIndex] = useState(-1)
+  const [historyIndex, setHistoryIndex] = useState(-1)
+  const historyIndexRef = useRef(-1)
   const [focused, setFocused] = useState(false)
   const savedCurrentRef = useRef('')
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  if (historyIndexRef.current !== historyIndex) historyIndexRef.current = historyIndex
   const mergedRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       inputRef.current = el
@@ -398,6 +469,39 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
         }
         return
       }
+      // Message history takes precedence over autocomplete: when browsing history or at start/end, ArrowUp/ArrowDown navigate history
+      if (messageHistory.length > 0) {
+        const inHistory = historyIndexRef.current >= 0
+        const atStart = cursor === 0
+        const atEnd = cursor === value.length
+        if (e.key === 'ArrowUp' && (inHistory || atStart)) {
+          e.preventDefault()
+          setHistoryIndex((prev) => {
+            const next = prev === -1 ? messageHistory.length - 1 : Math.max(0, prev - 1)
+            if (prev === -1) savedCurrentRef.current = value
+            onChange(messageHistory[next] ?? '')
+            historyIndexRef.current = next
+            return next
+          })
+          setHighlightIndex(-1)
+          setLastInsertedWord(null)
+          return
+        }
+        if (e.key === 'ArrowDown' && (inHistory || atEnd)) {
+          e.preventDefault()
+          setHistoryIndex((prev) => {
+            if (prev === -1) return -1
+            const next = prev >= messageHistory.length - 1 ? -1 : prev + 1
+            if (next === -1) onChange(savedCurrentRef.current)
+            else onChange(messageHistory[next] ?? '')
+            historyIndexRef.current = next
+            return next
+          })
+          setHighlightIndex(-1)
+          setLastInsertedWord(null)
+          return
+        }
+      }
       if (e.key === 'ArrowDown' && showDropdown) {
         e.preventDefault()
         setHighlightIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0))
@@ -415,54 +519,17 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
         return
       }
       if (e.key === 'Enter' && !e.shiftKey) {
+        setHistoryIndex(-1)
+        historyIndexRef.current = -1
         setHighlightIndex(-1)
         setLastInsertedWord(null)
         const trimmed = value.trim()
         if (trimmed) {
           setMessageHistory((prev) => [...prev.slice(-(HISTORY_MAX - 1)), trimmed])
-          setHistoryIndex(-1)
         }
         onSend()
         e.preventDefault()
         return
-      }
-      if (!showDropdown && messageHistory.length > 0) {
-        if (e.key === 'ArrowUp') {
-          const atStart = cursor === 0
-          if (atStart) {
-            e.preventDefault()
-            setHistoryIndex((prev) => {
-              if (prev === -1) {
-                savedCurrentRef.current = value
-                const next = messageHistory.length - 1
-                onChange(messageHistory[next] ?? '')
-                return next
-              }
-              if (prev <= 0) return 0
-              const next = prev - 1
-              onChange(messageHistory[next] ?? '')
-              return next
-            })
-            return
-          }
-        }
-        if (e.key === 'ArrowDown') {
-          const atEnd = cursor === value.length
-          if (atEnd) {
-            e.preventDefault()
-            setHistoryIndex((prev) => {
-              if (prev === -1) return -1
-              if (prev >= messageHistory.length - 1) {
-                onChange(savedCurrentRef.current)
-                return -1
-              }
-              const next = prev + 1
-              onChange(messageHistory[next] ?? '')
-              return next
-            })
-            return
-          }
-        }
       }
       setHighlightIndex(-1)
       setLastInsertedWord(null)
@@ -565,7 +632,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
                 <li
                   key={s}
                   data-index={idx}
-                  className={`px-2 py-1 text-sm cursor-pointer flex items-center gap-2 min-h-[28px] ${idx === highlightIndex ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}`}
+                  className={`px-2 py-1 text-sm cursor-pointer flex items-center min-h-[28px] w-full ${isEmote ? 'justify-between gap-2' : ''} ${idx === highlightIndex ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}`}
                   onMouseDown={(e) => {
                     e.preventDefault()
                     replaceWordWith(s, start, end)
@@ -574,14 +641,13 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
                 >
                   {isEmote ? (
                     <>
+                      <span className="min-w-0 truncate">{s}</span>
                       <div
                         className={`emote ${s} shrink-0`}
-                        style={{ width: 28, height: 28 }}
                         title={s}
                         role="img"
                         aria-label={s}
                       />
-                      <span>{s}</span>
                     </>
                   ) : (
                     <span>{s}</span>
@@ -630,6 +696,23 @@ type CombinedItem =
       content: string
       channel: string
       raw: TwitchChatMessage
+      isHistory?: boolean
+    }
+  | {
+      source: 'dgg-event'
+      eventType: 'giftsub' | 'massgift' | 'donation'
+      tsMs: number
+      nick: string
+      content: string
+      raw: unknown
+      isHistory?: boolean
+    }
+  | {
+      source: 'dgg-system'
+      kind: 'mute' | 'ban' | 'unmute'
+      tsMs: number
+      content: string
+      raw: unknown
       isHistory?: boolean
     }
 
@@ -824,6 +907,7 @@ export default function CombinedChat({
   maxMessages,
   showTimestamps,
   showSourceLabels,
+  showPlatformIcons = false,
   sortMode,
   highlightTerm,
   onCountChange,
@@ -840,6 +924,8 @@ export default function CombinedChat({
   maxMessages: number
   showTimestamps: boolean
   showSourceLabels: boolean
+  /** When true, show platform favicon (dgg, kick, youtube, twitch) in the source badge. */
+  showPlatformIcons?: boolean
   sortMode: 'timestamp' | 'arrival'
   /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
   highlightTerm?: string
@@ -854,6 +940,13 @@ export default function CombinedChat({
   focusShortcutLabel?: string
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
+  const [flairsList, setFlairsList] = useState<DggFlair[]>([])
+  const flairsMapRef = useRef<Map<string, DggFlair>>(new Map())
+  flairsMapRef.current = useMemo(() => {
+    const m = new Map<string, DggFlair>()
+    flairsList.forEach((f) => m.set(f.name, f))
+    return m
+  }, [flairsList])
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
   const [dggInputValue, setDggInputValue] = useState('')
@@ -897,6 +990,25 @@ export default function CombinedChat({
   const [composeRecipient, setComposeRecipient] = useState('')
   /** Show dropdown for compose recipient suggestions. */
   const [composeRecipientDropdownOpen, setComposeRecipientDropdownOpen] = useState(false)
+  /** Banned phrases from ADDPHRASE/REMOVEPHRASE; block public chat send if message contains one. */
+  const [bannedPhrases, setBannedPhrases] = useState<string[]>([])
+  /** Error for public chat send (e.g. banned phrase, not connected). */
+  const [dggPublicSendError, setDggPublicSendError] = useState<string | null>(null)
+  /** Sub-only mode: when true, only subscribers can type in public chat. */
+  const [subOnlyEnabled, setSubOnlyEnabled] = useState(false)
+  /** Current user from ME event (for subscriber check). */
+  const [dggMeUser, setDggMeUser] = useState<{ features?: string[]; subscription?: { tier?: number } } | null>(null)
+  /** User tooltip (right-click on nick): show created date, watching, flairs, Whisper, Rustlesearch. */
+  const [userTooltip, setUserTooltip] = useState<{
+    nick: string
+    source: 'dgg' | 'kick' | 'youtube' | 'twitch'
+    createdDate?: string
+    watching?: { platform: string | null; id: string | null } | null
+    features?: string[]
+    colorFlairName?: string
+  } | null>(null)
+  const [userTooltipPosition, setUserTooltipPosition] = useState({ x: 0, y: 0 })
+  const userTooltipRef = useRef<HTMLDivElement | null>(null)
   const composeRecipientInputRef = useRef<HTMLInputElement | null>(null)
   /** Have we done the initial unread fetch when combined chat first loads. */
   const unreadFetchedRef = useRef(false)
@@ -906,6 +1018,14 @@ export default function CombinedChat({
     () => Object.values(unreadCounts).reduce((a, b) => a + b, 0),
     [unreadCounts]
   )
+  const isSubscriber = useMemo(() => {
+    const u = dggMeUser
+    if (!u) return false
+    if (Array.isArray(u.features) && u.features.includes('subscriber')) return true
+    const tier = u.subscription?.tier
+    return tier != null && Number(tier) > 0
+  }, [dggMeUser])
+  const dggPublicChatDisabled = subOnlyEnabled && !isSubscriber
   const dggInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
   const mergedDggInputRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
@@ -968,18 +1088,25 @@ export default function CombinedChat({
     }
   }, [emotesMap])
 
-  // Load Destiny emotes CSS + prefix list once.
+  // Load Destiny emotes + flairs (CSS + JSON, no-store). Same pattern as chat-gui loadEmotes/loadFlairs.
   useEffect(() => {
     let cancelled = false
+    const cacheKey = Date.now()
 
     const run = async () => {
       try {
-        await loadCSSOnceById('https://cdn.destiny.gg/emotes/emotes.css', 'destiny-emotes-css')
-        const response = await fetch('https://cdn.destiny.gg/emotes/emotes.json', { cache: 'force-cache' })
-        if (!response.ok) throw new Error(`Failed to fetch emotes: ${response.status}`)
-        const emotesData: EmoteData[] = await response.json()
+        const existingEmotesCss = document.getElementById('destiny-emotes-css')
+        if (existingEmotesCss) existingEmotesCss.remove()
+        await loadCSSOnceById(
+          `https://cdn.destiny.gg/emotes/emotes.css?_=${cacheKey}`,
+          'destiny-emotes-css',
+        )
+        const emotesRes = await fetch(`https://cdn.destiny.gg/emotes/emotes.json?_=${cacheKey}`, {
+          cache: 'no-store',
+        })
+        if (!emotesRes.ok) throw new Error(`Failed to fetch emotes: ${emotesRes.status}`)
+        const emotesData: EmoteData[] = await emotesRes.json()
         if (cancelled) return
-
         const map = new Map<string, string>()
         emotesData.forEach((emote) => {
           if (emote.image && emote.image.length > 0) map.set(emote.prefix, '')
@@ -988,6 +1115,24 @@ export default function CombinedChat({
       } catch {
         // Continue without emotes if fetch fails.
       }
+
+      try {
+        const existingFlairsCss = document.getElementById('destiny-flairs-css')
+        if (existingFlairsCss) existingFlairsCss.remove()
+        await loadCSSOnceById(
+          `https://cdn.destiny.gg/flairs/flairs.css?_=${cacheKey}`,
+          'destiny-flairs-css',
+        )
+        const flairsRes = await fetch(`https://cdn.destiny.gg/flairs/flairs.json?_=${cacheKey}`, {
+          cache: 'no-store',
+        })
+        if (!flairsRes.ok) return
+        const flairsData: DggFlair[] = await flairsRes.json()
+        if (cancelled) return
+        setFlairsList(Array.isArray(flairsData) ? flairsData : [])
+      } catch {
+        // Continue without flairs if fetch fails.
+      }
     }
 
     run()
@@ -995,6 +1140,54 @@ export default function CombinedChat({
       cancelled = true
     }
   }, [])
+
+  // RELOAD: server asked to reload emotes/flairs (e.g. new emotes or flairs).
+  useEffect(() => {
+    if (!enableDgg) return
+    const handleReload = async () => {
+      const cacheKey = Date.now()
+      try {
+        const existingEmotesCss = document.getElementById('destiny-emotes-css')
+        if (existingEmotesCss) existingEmotesCss.remove()
+        await loadCSSOnceById(
+          `https://cdn.destiny.gg/emotes/emotes.css?_=${cacheKey}`,
+          'destiny-emotes-css',
+        )
+        const emotesRes = await fetch(`https://cdn.destiny.gg/emotes/emotes.json?_=${cacheKey}`, {
+          cache: 'no-store',
+        })
+        if (!emotesRes.ok) return
+        const emotesData: EmoteData[] = await emotesRes.json()
+        const map = new Map<string, string>()
+        emotesData.forEach((emote) => {
+          if (emote.image && emote.image.length > 0) map.set(emote.prefix, '')
+        })
+        setEmotesMap(map)
+      } catch {
+        // ignore
+      }
+      try {
+        const existingFlairsCss = document.getElementById('destiny-flairs-css')
+        if (existingFlairsCss) existingFlairsCss.remove()
+        await loadCSSOnceById(
+          `https://cdn.destiny.gg/flairs/flairs.css?_=${cacheKey}`,
+          'destiny-flairs-css',
+        )
+        const flairsRes = await fetch(`https://cdn.destiny.gg/flairs/flairs.json?_=${cacheKey}`, {
+          cache: 'no-store',
+        })
+        if (!flairsRes.ok) return
+        const flairsData: DggFlair[] = await flairsRes.json()
+        setFlairsList(Array.isArray(flairsData) ? flairsData : [])
+      } catch {
+        // ignore
+      }
+    }
+    window.ipcRenderer.on('chat-websocket-reload', handleReload)
+    return () => {
+      window.ipcRenderer.off('chat-websocket-reload', handleReload)
+    }
+  }, [enableDgg])
 
   // Track "at bottom" for auto-scroll behavior.
   useEffect(() => {
@@ -1020,6 +1213,47 @@ export default function CombinedChat({
     shouldStickToBottomRef.current = atBottom
     wasAtBottomRef.current = atBottom
   }
+
+  const closeUserTooltip = useCallback(() => setUserTooltip(null), [])
+
+  const openUserTooltip = useCallback(
+    (e: React.MouseEvent, m: CombinedItem) => {
+      if (m.source === 'dgg-event' || m.source === 'dgg-system') return
+      e.preventDefault()
+      e.stopPropagation()
+      const raw = m.source === 'dgg' ? m.raw : m.source === 'kick' ? m.raw : m.source === 'youtube' ? m.raw : m.raw
+      const nick = m.nick?.trim()
+      if (!nick) return
+      const colorFlair = m.source === 'dgg' ? usernameColorFlair(flairsList, { features: (raw as DggChatMessage).features ?? [] }) : undefined
+      setUserTooltip({
+        nick,
+        source: m.source,
+        createdDate: (raw as DggChatMessage).createdDate,
+        watching: (raw as DggChatMessage).watching ?? undefined,
+        features: (raw as DggChatMessage).features,
+        colorFlairName: colorFlair?.name,
+      })
+      setUserTooltipPosition({ x: e.clientX, y: e.clientY })
+    },
+    [flairsList]
+  )
+
+  useEffect(() => {
+    if (!userTooltip) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeUserTooltip()
+    }
+    const onPointerDown = (e: MouseEvent) => {
+      if (userTooltipRef.current?.contains(e.target as Node)) return
+      closeUserTooltip()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [userTooltip, closeUserTooltip])
 
   // If DGG is disabled, drop existing DGG items from the feed.
   useEffect(() => {
@@ -1079,24 +1313,40 @@ export default function CombinedChat({
 
     const handleConnected = () => {
       if (alive) setDggConnected(true)
+      // Capture scroll position so next HISTORY or MSG will auto-scroll if user was at bottom (fixes scroll stopping after reconnect)
+      if (alive) markStickIfAtBottom()
     }
     const handleDisconnected = () => {
       if (alive) setDggConnected(false)
       if (alive) setDggAuthenticated(false)
       if (alive) setDggUserNicks([])
+      if (alive) setDggMeUser(null)
     }
-    const handleMe = (_event: any, payload: { type?: string; data?: { nick?: string; id?: number } | null } | null) => {
+    const handleSubOnly = (_event: any, payload: { type?: string; subonly?: { data?: string } } | null) => {
+      if (!alive) return
+      const data = payload?.subonly?.data ?? (payload as { data?: string } | null)?.data
+      setSubOnlyEnabled(data === 'on')
+    }
+    const handleMe = (_event: any, payload: { type?: string; data?: { nick?: string; id?: number; features?: string[]; subscription?: { tier?: number } } | null } | null) => {
       if (!alive) return
       const me = payload?.data ?? payload
-      const nick = me && 'nick' in me ? me.nick : undefined
+      const nick = me && typeof me === 'object' && 'nick' in me ? (me as { nick?: string }).nick : undefined
       setDggAuthenticated(Boolean(nick))
+      if (me && typeof me === 'object') {
+        const user = me as { features?: string[]; subscription?: { tier?: number } }
+        setDggMeUser({ features: user.features, subscription: user.subscription ?? undefined })
+      } else {
+        setDggMeUser(null)
+      }
     }
 
     const handlePin = (_event: any, payload: { type?: string; pin?: DggChatMessage } | null) => {
       if (!alive) return
       const msg = payload?.pin ?? (payload as DggChatMessage | null)
-      setPinnedMessage(msg ?? null)
-      if (msg != null) setPinnedHidden(false)
+      // When DGG clears the pin it can send an empty pin (no nick, no data); treat as no pin so we don't show ":" box
+      const hasContent = msg && (String(msg.nick ?? '').trim() || String(msg.data ?? '').trim())
+      setPinnedMessage(hasContent ? msg : null)
+      if (hasContent) setPinnedHidden(false)
     }
 
     const handleNames = (_event: any, payload: { type?: string; names?: { users?: Array<{ nick?: string }> } } | null) => {
@@ -1153,6 +1403,94 @@ export default function CombinedChat({
 
     window.ipcRenderer.on('chat-websocket-privmsg', handlePrivmsg)
 
+    const handleAddPhrase = (_event: any, payload: { type?: string; phrase?: { data?: string } } | null) => {
+      if (!alive) return
+      const phrase = payload?.phrase?.data?.trim()
+      if (phrase) setBannedPhrases((prev) => (prev.includes(phrase) ? prev : [...prev, phrase]))
+    }
+    const handleRemovePhrase = (_event: any, payload: { type?: string; phrase?: { data?: string } } | null) => {
+      if (!alive) return
+      const phrase = payload?.phrase?.data?.trim()
+      if (phrase) setBannedPhrases((prev) => prev.filter((p) => p !== phrase))
+    }
+    window.ipcRenderer.on('chat-websocket-addphrase', handleAddPhrase)
+    window.ipcRenderer.on('chat-websocket-removephrase', handleRemovePhrase)
+    window.ipcRenderer.on('chat-websocket-subonly', handleSubOnly)
+
+    const handleGiftSub = (_event: any, payload: { type?: string; giftSub?: { user?: { nick?: string }; recipient?: { nick?: string }; tierLabel?: string; tier?: number } } | null) => {
+      if (!alive) return
+      const g = payload?.giftSub
+      if (!g) return
+      const from = g.user?.nick ?? 'Someone'
+      const to = g.recipient?.nick ?? 'someone'
+      const tier = g.tierLabel ?? (g.tier != null ? `Tier ${g.tier}` : '')
+      const content = tier ? `${from} gifted ${to} a ${tier} subscription` : `${from} gifted ${to} a subscription`
+      appendItems([
+        { source: 'dgg-event', eventType: 'giftsub', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
+      ])
+    }
+    const handleMassGift = (_event: any, payload: { type?: string; massGift?: { user?: { nick?: string }; quantity?: number; tierLabel?: string; tier?: number } } | null) => {
+      if (!alive) return
+      const g = payload?.massGift
+      if (!g) return
+      const from = g.user?.nick ?? 'Someone'
+      const qty = typeof g.quantity === 'number' ? g.quantity : 1
+      const tier = g.tierLabel ?? (g.tier != null ? `Tier ${g.tier}` : '')
+      const content = tier ? `${from} gifted ${qty} ${tier} subscriptions` : `${from} gifted ${qty} subscription${qty !== 1 ? 's' : ''}`
+      appendItems([
+        { source: 'dgg-event', eventType: 'massgift', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
+      ])
+    }
+    const handleDonation = (_event: any, payload: { type?: string; donation?: { user?: { nick?: string }; amount?: number } } | null) => {
+      if (!alive) return
+      const d = payload?.donation
+      if (!d) return
+      const from = d.user?.nick ?? 'Someone'
+      const amount = typeof d.amount === 'number' ? d.amount / 100 : 0
+      const content = `${from} donated ${amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`
+      appendItems([
+        { source: 'dgg-event', eventType: 'donation', tsMs: Date.now(), nick: from, content, raw: d, seq: seqRef.current++ },
+      ])
+    }
+    window.ipcRenderer.on('chat-websocket-giftsub', handleGiftSub)
+    window.ipcRenderer.on('chat-websocket-massgift', handleMassGift)
+    window.ipcRenderer.on('chat-websocket-donation', handleDonation)
+
+    const handleMute = (_event: any, payload: { type?: string; mute?: { data?: string; nick?: string } } | null) => {
+      if (!alive) return
+      const m = payload?.mute
+      if (!m) return
+      const target = m.data?.trim() ?? 'someone'
+      const by = m.nick?.trim()
+      const content = by ? `${target} was muted by ${by}` : `${target} was muted`
+      appendItems([
+        { source: 'dgg-system', kind: 'mute', tsMs: Date.now(), content, raw: m, seq: seqRef.current++ },
+      ])
+    }
+    const handleBan = (_event: any, payload: { type?: string; ban?: { data?: string; nick?: string } } | null) => {
+      if (!alive) return
+      const b = payload?.ban
+      if (!b) return
+      const target = b.data?.trim() ?? 'someone'
+      const by = b.nick?.trim()
+      const content = by ? `${target} was banned by ${by}` : `${target} was banned`
+      appendItems([
+        { source: 'dgg-system', kind: 'ban', tsMs: Date.now(), content, raw: b, seq: seqRef.current++ },
+      ])
+    }
+    const handleUnban = (_event: any, payload: { type?: string; unban?: { nick?: string } } | null) => {
+      if (!alive) return
+      const u = payload?.unban
+      if (!u) return
+      const target = u.nick?.trim() ?? 'someone'
+      appendItems([
+        { source: 'dgg-system', kind: 'unmute', tsMs: Date.now(), content: `${target} was unbanned`, raw: u, seq: seqRef.current++ },
+      ])
+    }
+    window.ipcRenderer.on('chat-websocket-mute', handleMute)
+    window.ipcRenderer.on('chat-websocket-ban', handleBan)
+    window.ipcRenderer.on('chat-websocket-unban', handleUnban)
+
     const handleChatErr = (_event: any, data: { description?: string } | null) => {
       if (!alive) return
       const desc = data?.description?.trim()
@@ -1163,6 +1501,15 @@ export default function CombinedChat({
     return () => {
       alive = false
       setDggConnected(false)
+      window.ipcRenderer.off('chat-websocket-addphrase', handleAddPhrase)
+      window.ipcRenderer.off('chat-websocket-removephrase', handleRemovePhrase)
+      window.ipcRenderer.off('chat-websocket-subonly', handleSubOnly)
+      window.ipcRenderer.off('chat-websocket-giftsub', handleGiftSub)
+      window.ipcRenderer.off('chat-websocket-massgift', handleMassGift)
+      window.ipcRenderer.off('chat-websocket-donation', handleDonation)
+      window.ipcRenderer.off('chat-websocket-mute', handleMute)
+      window.ipcRenderer.off('chat-websocket-ban', handleBan)
+      window.ipcRenderer.off('chat-websocket-unban', handleUnban)
       window.ipcRenderer.off('chat-websocket-err', handleChatErr)
       setDggAuthenticated(false)
       window.ipcRenderer.off('chat-websocket-privmsg', handlePrivmsg)
@@ -1460,6 +1807,27 @@ export default function CombinedChat({
     return Array.from(fromItems).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
   }, [dggUserNicks, items])
 
+  /** Cache of DGG user data by nick (from last message seen from that nick), for tooltips on mentioned nicks. */
+  const dggUserDataCache = useMemo(() => {
+    const map = new Map<
+      string,
+      { createdDate?: string; watching?: { platform: string | null; id: string | null } | null; features?: string[] }
+    >()
+    const limit = 500
+    const dggItems = items.filter((m): m is typeof m & { source: 'dgg' } => m.source === 'dgg')
+    for (let i = dggItems.length - 1; i >= 0 && map.size < limit; i--) {
+      const m = dggItems[i]
+      const nick = m.raw.nick?.trim()?.toLowerCase()
+      if (!nick || map.has(nick)) continue
+      map.set(nick, {
+        createdDate: m.raw.createdDate,
+        watching: m.raw.watching ?? undefined,
+        features: m.raw.features,
+      })
+    }
+    return map
+  }, [items])
+
   /** Suggestions for "Send to" combobox: whisper list + DGG nicks, filtered by composeRecipient, unique. */
   const composeRecipientSuggestions = useMemo(() => {
     const combined = [...new Set([...whisperUsernames, ...dggNicks])]
@@ -1570,6 +1938,69 @@ export default function CombinedChat({
     window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: 'browser' }).catch(() => {})
   })
 
+  const handleNickDoubleClick = useCallback(
+    (nick: string) => {
+      setDggInputValue((prev) => (prev ? prev + ' ' + nick : nick))
+      dggInputRefInternal.current?.focus()
+    },
+    []
+  )
+
+  const openUserTooltipByNick = useCallback(
+    (e: React.MouseEvent, nick: string) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const trimmed = nick?.trim()
+      if (!trimmed) return
+      const cached = dggUserDataCache.get(trimmed.toLowerCase())
+      const colorFlair = cached?.features?.length
+        ? usernameColorFlair(flairsList, { features: cached.features })
+        : undefined
+      setUserTooltip({
+        nick: trimmed,
+        source: 'dgg',
+        createdDate: cached?.createdDate,
+        watching: cached?.watching ?? undefined,
+        features: cached?.features,
+        colorFlairName: colorFlair?.name,
+      })
+      setUserTooltipPosition({ x: e.clientX, y: e.clientY })
+    },
+    [dggUserDataCache, flairsList]
+  )
+
+  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert. */
+  const renderDggMessageContent = useCallback(
+    (content: string) => {
+      const segments = tokenizeDggContent(content ?? '', dggNicks)
+      const parts: React.ReactNode[] = []
+      let key = 0
+      for (const seg of segments) {
+        if (seg.type === 'text') {
+          parts.push(
+            <Fragment key={`dgg-txt-${key++}`}>
+              {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink)}
+            </Fragment>
+          )
+        } else {
+          parts.push(
+            <span
+              key={`dgg-nick-${key++}`}
+              className="dgg-mention hover:underline cursor-context-menu"
+              onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
+              onDoubleClick={() => handleNickDoubleClick(seg.value)}
+              onMouseUp={(e) => e.stopPropagation()}
+            >
+              {seg.value}
+            </span>
+          )
+        }
+      }
+      return <>{parts}</>
+    },
+    [dggNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick]
+  )
+
   const sendDggMessage = useCallback(() => {
     const text = dggInputValue.trim()
     if (!text) return
@@ -1624,11 +2055,29 @@ export default function CombinedChat({
         })
       return
     }
-    // Public chat
+    // Public chat: block if sub-only and not subscriber
+    if (subOnlyEnabled && !isSubscriber) return
+    // Public chat: block if message contains a banned phrase
+    if (bannedPhrases.length > 0) {
+      const lower = text.toLowerCase()
+      const matched = bannedPhrases.find((p) => p.length > 0 && lower.includes(p.toLowerCase()))
+      if (matched) {
+        setDggPublicSendError(`Message contains a banned phrase.`)
+        return
+      }
+    }
+    setDggPublicSendError(null)
     window.ipcRenderer.invoke('chat-websocket-send', { data: text }).then((result: { success?: boolean }) => {
-      if (result?.success) setDggInputValue('')
+      if (result?.success) {
+        setDggInputValue('')
+        setDggPublicSendError(null)
+      }
     }).catch(() => {})
-  }, [dggInputValue, activeWhisperUsername, privViewOpen, composeRecipient])
+  }, [dggInputValue, activeWhisperUsername, privViewOpen, composeRecipient, bannedPhrases, subOnlyEnabled, isSubscriber])
+
+  useEffect(() => {
+    setDggPublicSendError(null)
+  }, [dggInputValue])
 
   const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1867,6 +2316,34 @@ export default function CombinedChat({
         {renderList.map((entry) => {
           if (entry.type === 'message') {
             const m = entry.item
+            if (m.source === 'dgg-event') {
+              const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
+              const icon = m.eventType === 'donation' ? '💰' : '🎁'
+              return (
+                <div
+                  key={`msg-${entry.index}-dgg-event-${m.tsMs}-${m.eventType}-${m.nick}`}
+                  className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/80"
+                >
+                  {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+                  <span className="mr-1.5" aria-hidden>{icon}</span>
+                  <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                </div>
+              )
+            }
+            if (m.source === 'dgg-system') {
+              const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
+              const icon = m.kind === 'ban' ? '🔨' : m.kind === 'unmute' ? '🔓' : '🔇'
+              return (
+                <div
+                  key={`msg-${entry.index}-dgg-system-${m.kind}-${m.tsMs}`}
+                  className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/70"
+                >
+                  {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+                  <span className="mr-1.5" aria-hidden>{icon}</span>
+                  <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                </div>
+              )
+            }
             const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
             const colorKey =
               m.source === 'dgg'
@@ -1885,15 +2362,23 @@ export default function CombinedChat({
             const term = highlightTerm?.trim() ?? ''
             const isHighlighted =
               term.length > 0 && (m.content?.toLowerCase().includes(term.toLowerCase()) ?? false)
+            const dggColorFlair =
+              m.source === 'dgg'
+                ? usernameColorFlair(flairsList, { features: m.raw.features ?? [] })
+                : undefined
+            const dggFlairFeatures =
+              m.source === 'dgg'
+                ? (m.raw.features ?? []).filter((f) => flairsMapRef.current.has(f))
+                : []
             return (
               <div
                 key={`msg-${entry.index}-${m.source}-${m.tsMs}-${m.nick}`}
-                className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
-                {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
+                {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
                 {showSourceLabels ? (
                   <span
-                    className="badge badge-sm mr-2 align-middle"
+                    className="badge badge-sm shrink-0"
                     style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                   >
                     {m.source === 'dgg'
@@ -1906,16 +2391,57 @@ export default function CombinedChat({
                               : `T:${m.channel}`))}
                   </span>
                 ) : null}
-                <span className="font-semibold mr-2" style={{ color: accent }}>
-                  {m.nick}
+                {showPlatformIcons && getPlatformIcon(colorKey) ? (
+                  <img
+                    src={getPlatformIcon(colorKey)}
+                    alt=""
+                    className="w-4 h-4 shrink-0"
+                    aria-hidden
+                  />
+                ) : null}
+                <span
+                  className="shrink-0 flex items-center gap-1 cursor-context-menu"
+                  onContextMenu={(e) => openUserTooltip(e, m)}
+                  onMouseUp={(e) => e.stopPropagation()}
+                  onDoubleClick={m.source === 'dgg' ? () => handleNickDoubleClick(m.nick) : undefined}
+                >
+                  {m.source === 'dgg' ? (
+                    <>
+                      {dggFlairFeatures.length > 0 ? (
+                        <span className="inline-flex items-center">
+                          {dggFlairFeatures.map((f) => {
+                            const fl = flairsMapRef.current.get(f)!
+                            return (
+                              <i
+                                key={f}
+                                className={`flair ${fl.name}`}
+                                title={fl.label}
+                                aria-hidden
+                              />
+                            )
+                          })}
+                        </span>
+                      ) : null}
+                      <span
+                        className={`font-semibold hover:underline ${dggColorFlair ? `user ${dggColorFlair.name}` : ''}`}
+                        style={dggColorFlair ? undefined : { color: accent }}
+                      >
+                        {m.nick}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="font-semibold" style={{ color: accent }}>
+                      {m.nick}
+                    </span>
+                  )}
                 </span>
-                <span className="whitespace-pre-wrap break-words">
+                <span className="whitespace-pre-wrap break-words min-w-0">
                   {m.source === 'dgg' ? (
                     <span
                       className="msg-chat"
                       style={{ position: 'relative', display: 'inline', overflow: 'visible' }}
                     >
-                      {renderTextWithLinks(m.content ?? '', emotePattern, emotesMap, onOpenLink)}
+                      {renderDggMessageContent(m.content ?? '')}
                     </span>
                   ) : m.source === 'kick'
                     ? renderKickContent(m.raw, onOpenLink)
@@ -1946,11 +2472,19 @@ export default function CombinedChat({
               {showTimestamps ? <span className="text-xs text-base-content/50">{ts}</span> : null}
               {showSourceLabels ? (
                 <span
-                  className="badge badge-sm align-middle"
+                  className="badge badge-sm align-middle mr-2"
                   style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                 >
                   {source === 'dgg' ? 'DGG' : displayName || 'Kick'}
                 </span>
+              ) : null}
+              {showPlatformIcons && getPlatformIcon(colorKey) ? (
+                <img
+                  src={getPlatformIcon(colorKey)}
+                  alt=""
+                  className="w-4 h-4 shrink-0 align-middle"
+                  aria-hidden
+                />
               ) : null}
               <span className="inline-flex items-center gap-1 shrink-0">
                 {isDgg && prefix ? (
@@ -1990,6 +2524,11 @@ export default function CombinedChat({
         )}
         </div>
       </div>
+      {enableDgg && showDggInput && !dggAuthenticated && (
+        <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
+          Login → Main menu → Connections
+        </div>
+      )}
       {enableDgg && showDggInput && dggAuthenticated && (
         <div className="flex flex-col gap-1 min-w-0 flex-none">
           {privViewOpen && !activeWhisperUsername && (
@@ -2036,6 +2575,11 @@ export default function CombinedChat({
               </div>
             </>
           )}
+          {dggPublicSendError && (
+            <div className="text-xs text-warning px-2 py-0.5" role="alert">
+              {dggPublicSendError}
+            </div>
+          )}
           <div className="flex items-center gap-1 min-w-0 flex-1">
           <div className="flex-1 min-w-0">
             <DggInputBar
@@ -2044,7 +2588,11 @@ export default function CombinedChat({
             onChange={setDggInputValue}
             onSend={sendDggMessage}
             onKeyDown={onDggInputKeyDown}
-            disabled={privViewOpen && !activeWhisperUsername ? !dggConnected || !composeRecipient.trim() : !dggConnected}
+            disabled={
+              privViewOpen && !activeWhisperUsername
+                ? !dggConnected || !composeRecipient.trim()
+                : !dggConnected || (dggPublicChatDisabled && !activeWhisperUsername)
+            }
             emotesMap={emotesMap}
             dggNicks={dggNicks}
             placeholder={
@@ -2052,7 +2600,9 @@ export default function CombinedChat({
                 ? (dggConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
                 : privViewOpen
                   ? (dggConnected ? 'whisper message..' : 'Connecting...')
-                  : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
+                  : dggPublicChatDisabled
+                    ? 'Sub only mode — subscribers can type'
+                    : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
             }
             shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
           />
@@ -2081,6 +2631,92 @@ export default function CombinedChat({
               </span>
             )}
           </button>
+          </div>
+        </div>
+      )}
+      {userTooltip && (
+        <div
+          ref={userTooltipRef}
+          className="fixed z-[200] min-w-[200px] max-w-[320px] rounded-lg border border-base-300 bg-base-200 shadow-xl p-3 flex flex-col gap-2"
+          style={{
+            left: Math.min(userTooltipPosition.x, window.innerWidth - 340),
+            top: userTooltipPosition.y + 8,
+          }}
+          role="dialog"
+          aria-label="User info"
+        >
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={`font-semibold text-sm ${userTooltip.colorFlairName ? `user ${userTooltip.colorFlairName}` : ''}`}
+            >
+              {userTooltip.nick}
+            </span>
+            {userTooltip.features && userTooltip.features.length > 0 && (
+              <span className="inline-flex items-center gap-0.5">
+                {userTooltip.features
+                  .filter((f) => flairsMapRef.current.has(f))
+                  .map((f) => {
+                    const fl = flairsMapRef.current.get(f)!
+                    return (
+                      <i key={f} className={`flair ${fl.name}`} title={fl.label} aria-hidden />
+                    )
+                  })}
+              </span>
+            )}
+          </div>
+          {userTooltip.createdDate && (
+            <p className="text-xs text-base-content/70">
+              Joined on{' '}
+              <time dateTime={userTooltip.createdDate}>
+                {new Date(userTooltip.createdDate).toLocaleDateString(undefined, {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </time>
+            </p>
+          )}
+          {userTooltip.watching?.platform && userTooltip.watching?.id && (
+            <p className="text-xs text-base-content/70">
+              Watching:{' '}
+              <a
+                href={`#${userTooltip.watching!.platform}/${userTooltip.watching!.id}`}
+                className="link link-hover"
+                onClick={(e) => {
+                  e.preventDefault()
+                  onOpenLink(`#${userTooltip.watching!.platform}/${userTooltip.watching!.id}`)
+                  closeUserTooltip()
+                }}
+              >
+                {userTooltip.watching.id} on {userTooltip.watching.platform}
+              </a>
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2 pt-1 border-t border-base-300">
+            {userTooltip.source === 'dgg' && enableDgg && (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => {
+                  setActiveWhisperUsername(userTooltip!.nick)
+                  setPrivViewOpen(true)
+                  closeUserTooltip()
+                }}
+              >
+                Whisper
+              </button>
+            )}
+            <a
+              href={`https://rustlesearch.dev/?username=${encodeURIComponent(userTooltip.nick)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-xs btn-ghost"
+              onClick={() => closeUserTooltip()}
+            >
+              Rustlesearch
+            </a>
           </div>
         </div>
       )}

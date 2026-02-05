@@ -402,7 +402,7 @@ function Menu({ onNavigate }: MenuProps) {
               Settings
             </button>
             <button className="btn btn-outline flex-1" onClick={() => setConnectionsOpen(true)}>
-              Connections / Accounts
+              Connections
             </button>
           </div>
         </div>
@@ -603,13 +603,13 @@ function Menu({ onNavigate }: MenuProps) {
         </div>
       )}
 
-      {/* Connections / Accounts Modal.
+      {/* Connections Modal.
           Clear messages don't show cookie counts: the same number often reappears because embeds/loaded content
           immediately set cookies again (session is persist:main); clearing still logs out DGG and wipes session cookies. */}
       {connectionsOpen && (
         <div className="modal modal-open">
           <div className="modal-box bg-base-300 text-base-content max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
-            <h3 className="font-bold text-lg mb-2">Connections / Accounts</h3>
+            <h3 className="font-bold text-lg mb-2">Connections</h3>
             <p className="text-sm text-base-content/70 mb-3">
               Add cookies per platform to use embeds and chat.
             </p>
