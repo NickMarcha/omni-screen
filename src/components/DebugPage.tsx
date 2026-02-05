@@ -7,6 +7,7 @@ import {
   getPlatformLabel,
   getPlatformFooterColor,
   getLinkCardEmbedFieldsFromUrl,
+  extractUrls,
   type LinkCard,
 } from './LinkScroller'
 import { getAppPreferences } from '../utils/appPreferences'
@@ -35,14 +36,14 @@ export interface DebugCardData {
   messageText: string
   nick: string
   platform: string
-  url: string
+  /** @deprecated URL is now derived from message text; kept for localStorage backward compat */
+  url?: string
 }
 
 const defaultCardData: DebugCardData = {
   messageText: 'Check out this link https://example.com',
   nick: 'ViewerName',
   platform: 'dgg',
-  url: 'https://example.com',
 }
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -100,8 +101,9 @@ export default function DebugPage({ onBackToMenu }: DebugPageProps) {
   const defaultFooterDisplay = { showPlatformLabel: true, platformColorStyle: 'tint' as const, timestampDisplay: 'datetimestamp' as const }
   const emotesMap = useMemo(() => new Map<string, string>(), [])
   const getEmbedTheme = useCallback(() => (getAppPreferences().theme.mode === 'dark' ? 'dark' : 'light'), [])
+  const derivedUrl = useMemo(() => extractUrls(cardData.messageText)[0] ?? '', [cardData.messageText])
   const syntheticCard: LinkCard = useMemo(() => {
-    const embedFields = getLinkCardEmbedFieldsFromUrl(cardData.url)
+    const embedFields = getLinkCardEmbedFieldsFromUrl(derivedUrl)
     return {
       id: 'debug-card',
       messageId: `debug:channel:${cardDate}:${cardData.nick}`,
@@ -114,7 +116,7 @@ export default function DebugPage({ onBackToMenu }: DebugPageProps) {
       isStreaming: false,
       ...embedFields,
     }
-  }, [cardData, cardDate])
+  }, [cardData, cardDate, derivedUrl])
 
   return (
     <div className="min-h-full flex-1 bg-base-100 text-base-content flex flex-col overflow-hidden">
@@ -319,14 +321,13 @@ export default function DebugPage({ onBackToMenu }: DebugPageProps) {
                     <option value="youtube">youtube</option>
                     <option value="twitch">twitch</option>
                   </select>
-                  <label className="label label-text">Link URL (optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full text-sm"
-                    value={cardData.url}
-                    onChange={(e) => setCardData((c) => ({ ...c, url: e.target.value }))}
-                    onBlur={saveCard}
-                  />
+                  {derivedUrl ? (
+                    <p className="text-xs text-base-content/60 font-mono truncate" title={derivedUrl}>
+                      Link derived from message: {derivedUrl}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-base-content/50">No link in message text (add a URL to test embeds).</p>
+                  )}
                 </div>
                 <div className="space-y-6">
                   <p className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Render</p>

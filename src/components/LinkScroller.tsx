@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { logger } from '../utils/logger'
 import { applyThemeToDocument, getAppPreferences } from '../utils/appPreferences'
 import TwitterEmbed from './embeds/TwitterEmbed'
+import TwitterTimelineEmbed from './embeds/TwitterTimelineEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import TikTokEmbed from './embeds/TikTokEmbed'
 import RedditEmbed from './embeds/RedditEmbed'
@@ -91,6 +92,7 @@ export interface LinkCard {
   embedUrl?: string
   isYouTube?: boolean
   isTwitter?: boolean
+  isTwitterTimeline?: boolean
   twitterEmbedHtml?: string
   isTikTok?: boolean
   tiktokEmbedHtml?: string
@@ -110,8 +112,8 @@ export interface LinkCard {
   kickEmotes?: KickEmote[] // Kick emote data for rendering
 }
 
-// Extract URLs from text
-function extractUrls(text: string): string[] {
+// Extract URLs from text (exported for Debug page to derive link from message text)
+export function extractUrls(text: string): string[] {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   return text.match(urlRegex) || []
 }
@@ -582,6 +584,27 @@ function isTwitterStatusLink(url: string): boolean {
   }
 }
 
+// Check if URL is a Twitter/X timeline (profile, list, likes, collection) - embeddable via timeline oEmbed
+function isTwitterTimelineLink(url: string): boolean {
+  try {
+    if (!isTwitterLink(url) || isTwitterStatusLink(url)) return false
+    const urlObj = new URL(url)
+    const pathname = urlObj.pathname.replace(/\/$/, '').toLowerCase()
+    if (!pathname || pathname === '/') return false
+    // User profile: /Username
+    if (/^\/[a-z0-9_]+$/i.test(pathname)) return true
+    // List: /Username/lists/list-slug
+    if (/^\/[a-z0-9_]+\/lists\/[^/]+$/i.test(pathname)) return true
+    // Likes: /Username/likes
+    if (/^\/[a-z0-9_]+\/likes$/i.test(pathname)) return true
+    // Collection: /i/collections/...
+    if (/^\/i\/collections\/[^/]+/i.test(pathname)) return true
+    return false
+  } catch {
+    return false
+  }
+}
+
 // Check if URL is a TikTok link
 function isTikTokLink(url: string): boolean {
   try {
@@ -893,7 +916,7 @@ export function getPlatformFooterColor(platform: string | undefined, style: 'tin
 }
 
 /** Returns embed-related LinkCard fields derived from a URL. Use for building synthetic cards (e.g. Debug page) so the same components receive the same shape as real data. */
-export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url' | 'isDirectMedia' | 'mediaType' | 'embedUrl' | 'isYouTube' | 'isTwitter' | 'isTikTok' | 'isReddit' | 'isImgur' | 'isStreamable' | 'isWikipedia' | 'isBluesky' | 'isKick' | 'isLSF'> {
+export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url' | 'isDirectMedia' | 'mediaType' | 'embedUrl' | 'isYouTube' | 'isTwitter' | 'isTwitterTimeline' | 'isTikTok' | 'isReddit' | 'isImgur' | 'isStreamable' | 'isWikipedia' | 'isBluesky' | 'isKick' | 'isLSF'> {
   if (!url || typeof url !== 'string' || url.trim() === '') {
     return { url: url || '', isDirectMedia: false }
   }
@@ -916,6 +939,7 @@ export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url'
   const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
   const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
   const isTwitter = isTwitterStatusLink(actualUrl)
+  const isTwitterTimeline = isTwitterTimelineLink(actualUrl)
   const isTikTok = isTikTokVideoLink(actualUrl)
   const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
   const isImgur = isImgurAlbumLink(url)
@@ -931,6 +955,7 @@ export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url'
     embedUrl: embedUrl ?? undefined,
     isYouTube,
     isTwitter,
+    isTwitterTimeline,
     isTikTok,
     isReddit,
     isImgur,
@@ -1005,6 +1030,11 @@ function renderLinkCardOverviewContent(
                 className="w-full rounded-t-lg"
               />
             )}
+          </div>
+        ) : card.isTwitterTimeline ? (
+          <div className="bg-base-200 rounded-t-lg p-4 text-center">
+            <p className="text-sm text-base-content/80 mb-2">Open in expanded mode to see Twitter timeline</p>
+            <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-sm" onClick={(e) => { e.stopPropagation(); onOpenLink?.(card.url) }}>Open on X</a>
           </div>
         ) : card.isYouTube && youtubeMode === 'embed' && card.embedUrl ? (
           <YouTubeEmbed key={`yt-${card.id}-${reloadKey}`} url={card.url} embedUrl={card.embedUrl as string} autoplay={false} mute={true} />
@@ -1161,6 +1191,8 @@ export function LinkCardExpandedContent(props: {
             </div>
           ) : card.isYouTube && card.embedUrl ? (
             <YouTubeEmbed url={card.url} embedUrl={card.embedUrl as string} autoplay={false} mute={false} />
+          ) : card.isTwitterTimeline ? (
+            <TwitterTimelineEmbed url={card.url} theme={getEmbedTheme()} />
           ) : card.isTwitter ? (
             <TwitterEmbed url={card.url} theme={getEmbedTheme()} />
           ) : card.isTikTok ? (
@@ -1230,9 +1262,9 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
       return baseHeight + (card.mediaType === 'image' ? 300 : 400)
     } else if (card.isYouTube) {
       return baseHeight + 315 // Standard YouTube embed height
-    } else if (card.isTwitter) {
-      // Twitter embeds have variable heights, use average
-      return baseHeight + 350
+    } else if (card.isTwitter || card.isTwitterTimeline) {
+      // Twitter tweet/timeline embeds have variable heights
+      return baseHeight + (card.isTwitterTimeline ? 450 : 350)
     } else if (card.isTikTok) {
       return baseHeight + 600 // TikTok embeds are taller
     } else if (card.isReddit) {
@@ -2266,8 +2298,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         const cssUrl = `https://cdn.destiny.gg/emotes/emotes.css?_=${Date.now()}`
         await loadCSSOnce(cssUrl, 'destiny-emotes-css')
         
-        // Then fetch emote data
-        const response = await fetch('https://cdn.destiny.gg/emotes/emotes.json')
+        // Then fetch emote data (no-store so new emotes are picked up, not cached)
+        const response = await fetch('https://cdn.destiny.gg/emotes/emotes.json', { cache: 'no-store' })
         if (!response.ok) {
           throw new Error(`Failed to fetch emotes: ${response.status}`)
         }
@@ -3105,6 +3137,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const isYouTube = isYouTubeLink(actualUrl) && !isYouTubeClip
           const embedUrl = isYouTube ? getYouTubeEmbedUrl(actualUrl) : undefined
           const isTwitter = isTwitterStatusLink(actualUrl)
+          const isTwitterTimeline = isTwitterTimelineLink(actualUrl)
           const isTikTok = isTikTokVideoLink(actualUrl)
           const isReddit = isRedditPostLink(actualUrl) && !isRedditMedia
           const isImgur = isImgurAlbumLink(url) // Check original URL, not actualUrl
@@ -3148,6 +3181,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             embedUrl: embedUrl ?? undefined,
             isYouTube,
             isTwitter,
+            isTwitterTimeline,
             isTikTok,
             isReddit,
             isImgur,
@@ -4184,6 +4218,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   mute={autoplayEnabled ? muteEnabled : false}
                 />
               </div>
+            ) : highlightedCard.isTwitterTimeline ? (
+              <TwitterTimelineEmbed url={highlightedCard.url} theme={getEmbedTheme()} />
             ) : highlightedCard.isTwitter ? (
               <div key={highlightedCard.id}>
                 <TwitterEmbed url={highlightedCard.url} theme={getEmbedTheme()} />
@@ -4409,7 +4445,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'YouTube link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isReddit
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Reddit link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
-                    : highlightedCard.isTwitter
+                    : (highlightedCard.isTwitter || highlightedCard.isTwitterTimeline)
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Twitter link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
                     : highlightedCard.isImgur
                     ? renderTextWithLinks(highlightedCard.text, highlightedCard.url, 'Imgur link', emotesMap, handleOpenLink, highlightedCard.kickEmotes)
@@ -4733,6 +4769,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             const hasEmbed = contextMenu.card.isDirectMedia || 
               (contextMenu.card.isYouTube && contextMenu.card.embedUrl) ||
               contextMenu.card.isTwitter ||
+              contextMenu.card.isTwitterTimeline ||
               contextMenu.card.isTikTok ||
               contextMenu.card.isReddit ||
               contextMenu.card.isStreamable ||
@@ -4982,6 +5019,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     </div>
                   ) : expandedCard.isYouTube && expandedCard.embedUrl ? (
                     <YouTubeEmbed url={expandedCard.url} embedUrl={expandedCard.embedUrl as string} autoplay={false} mute={false} />
+                  ) : expandedCard.isTwitterTimeline ? (
+                    <TwitterTimelineEmbed url={expandedCard.url} theme={getEmbedTheme()} />
                   ) : expandedCard.isTwitter ? (
                     <TwitterEmbed url={expandedCard.url} theme={getEmbedTheme()} />
                   ) : expandedCard.isTikTok ? (
@@ -5257,6 +5296,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             const hasEmbed = contextMenu.card.isDirectMedia || 
               (contextMenu.card.isYouTube && contextMenu.card.embedUrl) ||
               contextMenu.card.isTwitter ||
+              contextMenu.card.isTwitterTimeline ||
               contextMenu.card.isTikTok ||
               contextMenu.card.isReddit ||
               contextMenu.card.isStreamable ||

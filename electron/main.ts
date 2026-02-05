@@ -690,6 +690,26 @@ function createWindow() {
     }
   )
 
+  // Inject Twitter auth cookies into embed iframe requests so the widget sees the logged-in session
+  // (otherwise only guest_id is sent and age-restricted / sensitive tweets return 76px)
+  session.webRequest.onBeforeSendHeaders(
+    { urls: ['https://platform.twitter.com/*'] },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders }
+      getCookiesForUrl('https://platform.twitter.com/')
+        .then(cookieString => {
+          if (cookieString && (cookieString.includes('auth_token') || cookieString.includes('ct0'))) {
+            requestHeaders['Cookie'] = cookieString
+            if (details.url.includes('/embed/')) {
+              console.log('[Main Process] Injected Twitter auth cookies into embed request')
+            }
+          }
+          callback({ requestHeaders })
+        })
+        .catch(() => callback({ requestHeaders }))
+    }
+  )
+
   // Add CORS headers for Twitter video requests to allow them to load in embeds
   session.webRequest.onHeadersReceived(
     {
@@ -1474,8 +1494,8 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
           const currentUrl = browserView!.webContents.getURL()
           console.log('BrowserView URL:', currentUrl)
           
-          // Wait a bit for page to fully render
-          await new Promise(resolve => setTimeout(resolve, 1000))
+          // Wait for page to fully render (and content-warning "Show" to appear if any)
+          await new Promise(resolve => setTimeout(resolve, 2000))
           
           // Try to get the oEmbed HTML from the page
           const embedHtml = await browserView!.webContents.executeJavaScript(`
@@ -1484,11 +1504,21 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                 const tweetUrl = window.location.href
                 console.log('Current URL:', tweetUrl)
                 
-                // Check if we're on a tweet page
                 const isTweetPage = window.location.pathname.includes('/status/')
                 console.log('Is tweet page:', isTweetPage)
                 
                 if (isTweetPage) {
+                  // If there's a content warning "Show" button, click it so tweet body is in the DOM
+                  const showBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                    const t = (b.textContent || '').trim()
+                    const label = (b.getAttribute('aria-label') || '').toLowerCase()
+                    return t === 'Show' || label.includes('show')
+                  })
+                  if (showBtn) {
+                    console.log('Clicking content-warning Show button')
+                    showBtn.click()
+                    await new Promise(r => setTimeout(r, 2500))
+                  }
                   // Try oEmbed API from page context first (this should work from same origin)
                   try {
                     const oembedUrl = 'https://publish.twitter.com/oembed?url=' + encodeURIComponent(tweetUrl) + '&theme=${theme}&dnt=true&omit_script=true'
@@ -1509,11 +1539,16 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                       const data = await response.json()
                       console.log('oEmbed success, got HTML, length:', data.html?.length || 0)
                       console.log('oEmbed HTML preview:', data.html?.substring(0, 200))
-                      // Add align="center" if not present
-                      if (data.html && !data.html.includes('align=')) {
-                        data.html = data.html.replace('<blockquote', '<blockquote align="center"')
+                      // If oEmbed returned minimal content (e.g. empty blockquote for media-only/age-restricted), try DOM extraction instead
+                      const stripTags = (s) => (s || '').replace(/<[^>]+>/g, '').trim()
+                      const oembedText = stripTags(data.html)
+                      if (oembedText.length >= 30) {
+                        if (data.html && !data.html.includes('align=')) {
+                          data.html = data.html.replace('<blockquote', '<blockquote align="center"')
+                        }
+                        return { success: true, data }
                       }
-                      return { success: true, data }
+                      console.log('oEmbed HTML is minimal (length ' + oembedText.length + '), trying DOM extraction...')
                     } else {
                       const errorText = await response.text()
                       console.log('oEmbed failed:', response.status)
@@ -1523,25 +1558,25 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                     console.log('oEmbed fetch error:', e.message)
                   }
                   
-                  // Try to extract tweet content from the page DOM as fallback
+                  // Try to extract tweet content from the page DOM (when oEmbed failed or returned minimal HTML)
                   try {
                     console.log('Trying to extract tweet content from page DOM...')
                     
-                    // Look for the tweet text in various places Twitter stores it
-                    const article = document.querySelector('article[data-testid="tweet"]')
-                    console.log('Found article:', !!article)
-                    
+                    let article = document.querySelector('article[data-testid="tweet"]')
                     if (!article) {
-                      // Try alternative selectors
                       article = document.querySelector('article') || document.querySelector('[data-testid="tweet"]')
                       console.log('Trying alternative article selector:', !!article)
                     }
+                    console.log('Found article:', !!article)
                     
                     if (article) {
-                      // Try multiple strategies to get tweet text
-                      let textElement = article.querySelector('[data-testid="tweetText"]')
+                      // Prefer tweetText node that has the most content (in case of placeholder + expanded)
+                      const tweetTextCandidates = article.querySelectorAll('[data-testid="tweetText"]')
+                      let textElement = tweetTextCandidates.length === 0 ? null : Array.from(tweetTextCandidates).reduce((best, el) => {
+                        const len = (el.textContent || '').trim().length
+                        return (!best || len > (best.textContent || '').trim().length) ? el : best
+                      }, null)
                       if (!textElement) {
-                        // Try finding text in spans with lang attribute
                         textElement = article.querySelector('div[lang]') || 
                                      article.querySelector('[dir="auto"]') ||
                                      article.querySelector('div[data-testid="tweetText"]')
@@ -1562,13 +1597,13 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                         // Extract and clean the HTML structure to match Twitter's oEmbed format
                         // Twitter's widgets.js expects: plain text with <a> tags for links, no CSS classes
                         let tweetHtml = ''
-                        
-                        // Process nodes recursively, preserving only links and text
+                        const escapeHtml = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+                        // Process nodes recursively, preserving only links and text (full tweet text + all links)
                         const processNode = (node) => {
                           if (node.nodeType === 3) { // Text node
                             const text = node.textContent || ''
                             if (text.trim()) {
-                              tweetHtml += text
+                              tweetHtml += escapeHtml(text)
                             }
                           } else if (node.nodeType === 1) { // Element node
                             const tagName = node.tagName.toLowerCase()
@@ -1591,7 +1626,7 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                                 // Mention or other Twitter link
                                 cleanHref = href + (href.includes('?') ? '&' : '?') + 'ref_src=twsrc%5Etfw'
                               }
-                              tweetHtml += '<a href="' + cleanHref + '">' + text + '</a>'
+                              tweetHtml += '<a href="' + escapeHtml(cleanHref) + '">' + escapeHtml(text) + '</a>'
                             } else if (tagName === 'br') {
                               tweetHtml += '<br>'
                             } else {
@@ -1605,11 +1640,15 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                         // Process all child nodes
                         Array.from(textElement.childNodes || []).forEach(child => processNode(child))
                         
-                        // Fallback to text if HTML is still empty
                         if (!tweetHtml.trim()) {
-                          tweetHtml = textElement.textContent || textElement.innerText || ''
+                          tweetHtml = escapeHtml(textElement.textContent || textElement.innerText || '')
                         }
-                        
+                        if (!tweetHtml.trim()) {
+                          const raw = (article.innerText || article.textContent || '').trim().replace(/\\s+/g, ' ')
+                          if (raw.length > 20) {
+                            tweetHtml = escapeHtml(raw.substring(0, 600))
+                          }
+                        }
                         // Clean up: remove extra whitespace but preserve intentional spacing
                         tweetHtml = tweetHtml.trim().replace(/\\s+/g, ' ')
                         
@@ -1643,11 +1682,28 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                           ? new Date(dateElement.getAttribute('datetime')).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) 
                           : new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
                         
-                        // Construct blockquote with preserved HTML structure
-                        // Add ref_src parameter to tweet URL (Twitter expects this)
+                        // Try to get first image or video from tweet (prefer tweet media, not profile pic)
+                        let mediaHtml = ''
+                        const mediaContainer = article.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]') || article
+                        const img = mediaContainer.querySelector('img[src*="twimg.com"], img[src*="pbs.twimg"]')
+                        const videoEl = mediaContainer.querySelector('video')
+                        if (img && img.getAttribute('src')) {
+                          mediaHtml = '<p><img src="' + img.getAttribute('src') + '" alt="Tweet media" style="max-width:100%;border-radius:0.5rem;" /></p>'
+                        } else if (videoEl) {
+                          const src = videoEl.querySelector('source')?.getAttribute('src') || videoEl.getAttribute('src')
+                          const poster = videoEl.getAttribute('poster')
+                          if (poster) {
+                            mediaHtml = '<p><img src="' + poster + '" alt="Tweet video" style="max-width:100%;border-radius:0.5rem;" /></p>'
+                          }
+                          if (!mediaHtml && src && !String(src).startsWith('blob:')) {
+                            mediaHtml = '<p><video src="' + src + '"' + (poster ? ' poster="' + poster + '"' : '') + ' controls style="max-width:100%;border-radius:0.5rem;"></video></p>'
+                          }
+                        }
+                        
+                        // Construct blockquote with preserved HTML structure and optional media
                         const tweetUrlWithRef = tweetUrl + (tweetUrl.includes('?') ? '&' : '?') + 'ref_src=twsrc%5Etfw'
                         let blockquoteHtml = '<blockquote class="twitter-tweet" data-theme="${theme}" data-dnt="true" align="center"><p lang="en" dir="ltr">' + tweetHtml
-                        
+                        if (mediaHtml) blockquoteHtml += '</p>' + mediaHtml + '<p lang="en" dir="ltr">'
                         blockquoteHtml += '</p>&mdash; ' + authorName + ' (' + authorHandle + ') <a href="' + tweetUrlWithRef + '">' + date + '</a>'
                         blockquoteHtml += '</blockquote>'
                         
@@ -1660,20 +1716,45 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                           } 
                         }
                       } else {
-                        console.log('No text element found in article')
-                        // Try to get any text from article as last resort
+                        console.log('No text element found in article, trying media-only extraction')
+                        let mediaHtml = ''
+                        const mediaContainer = article.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]') || article
+                        const img = mediaContainer.querySelector('img[src*="twimg.com"], img[src*="pbs.twimg"]')
+                        const videoEl = mediaContainer.querySelector('video')
+                        if (img && img.getAttribute('src')) {
+                          mediaHtml = '<p><img src="' + img.getAttribute('src') + '" alt="Tweet media" style="max-width:100%;border-radius:0.5rem;" /></p>'
+                        } else if (videoEl) {
+                          const poster = videoEl.getAttribute('poster')
+                          const src = videoEl.querySelector('source')?.getAttribute('src') || videoEl.getAttribute('src')
+                          if (poster) {
+                            mediaHtml = '<p><img src="' + poster + '" alt="Tweet video" style="max-width:100%;border-radius:0.5rem;" /></p>'
+                          } else if (src && !String(src).startsWith('blob:')) {
+                            mediaHtml = '<p><video src="' + src + '" controls style="max-width:100%;border-radius:0.5rem;"></video></p>'
+                          }
+                        }
+                        let authorName = 'User', authorHandle = '@user'
+                        const authorElement = article.querySelector('[data-testid="User-Name"]') || article.querySelector('a[href*="/"]')
+                        if (authorElement) {
+                          const authorText = authorElement.textContent || ''
+                          const nameParts = authorText.split('@')
+                          if (nameParts.length > 0) authorName = nameParts[0].trim() || 'User'
+                          if (nameParts.length > 1) authorHandle = '@' + nameParts[1].trim()
+                        }
+                        const dateElement = article.querySelector('time')
+                        const date = dateElement?.getAttribute('datetime') 
+                          ? new Date(dateElement.getAttribute('datetime')).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) 
+                          : new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                        const tweetUrlWithRef = tweetUrl + (tweetUrl.includes('?') ? '&' : '?') + 'ref_src=twsrc%5Etfw'
+                        if (mediaHtml) {
+                          const blockquoteHtml = '<blockquote class="twitter-tweet" data-theme="${theme}" data-dnt="true" align="center">' + mediaHtml + '&mdash; ' + authorName + ' (' + authorHandle + ') <a href="' + tweetUrlWithRef + '">' + date + '</a></blockquote>'
+                          return { success: true, data: { html: blockquoteHtml, fallback: true } }
+                        }
                         const articleText = article.innerText || article.textContent || ''
                         if (articleText.trim().length > 20) {
                           console.log('Using article text as fallback, length:', articleText.length)
                           const escapedText = articleText.substring(0, 500).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                           const blockquoteHtml = '<blockquote class="twitter-tweet" data-theme="${theme}" data-dnt="true" align="center"><p lang="en" dir="ltr">' + escapedText + '</p><a href="' + tweetUrl + '"></a></blockquote>'
-                          return { 
-                            success: true, 
-                            data: { 
-                              html: blockquoteHtml,
-                              fallback: true 
-                            } 
-                          }
+                          return { success: true, data: { html: blockquoteHtml, fallback: true } }
                         }
                       }
                     } else {
@@ -1683,22 +1764,30 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
                     console.log('DOM extraction error:', e.message, e.stack)
                   }
                   
-                  // Fallback: construct a basic embed blockquote
-                  // Twitter's embed script will render this
                   const tweetId = window.location.pathname.split('/status/')[1]?.split('/')[0]
-                  console.log('Using fallback blockquote, tweetId:', tweetId)
+                  let debugReason = 'unknown'
+                  if (!tweetId) {
+                    debugReason = 'URL is not a tweet status page.'
+                  } else {
+                    const article = document.querySelector('article[data-testid="tweet"]') || document.querySelector('article')
+                    if (!article) {
+                      debugReason = 'No article found (login wall or page structure changed).'
+                    } else {
+                      const hasText = !!article.querySelector('[data-testid="tweetText"]')
+                      const hasMedia = !!article.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video, img[src*="twimg"]')
+                      debugReason = !hasText && !hasMedia
+                        ? 'Article found but no tweetText and no media (content may be behind Show or not loaded).'
+                        : 'DOM extraction ran but did not return (check console for errors).'
+                    }
+                  }
+                  console.log('Using minimal fallback blockquote, tweetId:', tweetId, 'reason:', debugReason)
                   
                   if (tweetId) {
-                    // Use Twitter's standard embed format - must match exactly what Twitter expects
-                    // The blockquote needs the tweet URL in the <a> tag's href
                     const blockquoteHtml = '<blockquote class="twitter-tweet" data-theme="${theme}" data-dnt="true"><a href="' + tweetUrl + '"></a></blockquote>'
-                    console.log('Generated fallback blockquote, length:', blockquoteHtml.length)
                     return { 
                       success: true, 
-                      data: { 
-                        html: blockquoteHtml,
-                        fallback: true 
-                      } 
+                      data: { html: blockquoteHtml, fallback: true },
+                      debug: { reason: debugReason }
                     }
                   }
                 }
@@ -1711,6 +1800,9 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
             })()
           `)
           
+          if (embedHtml?.success && embedHtml?.data?.fallback && embedHtml?.debug?.reason) {
+            console.log('[fetch-twitter-embed] Minimal fallback used:', embedHtml.debug.reason)
+          }
           console.log('Embed extraction result:', embedHtml?.success ? 'Success' : 'Failed', embedHtml?.error || '')
           resolve(embedHtml)
         } catch (error) {
@@ -1741,6 +1833,27 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
       // BrowserView cleanup - remove from window and let it be garbage collected
       browserView = null
     }
+  }
+})
+
+ipcMain.handle('fetch-twitter-timeline-oembed', async (_event, timelineUrl: string, theme: 'light' | 'dark' = 'dark') => {
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(timelineUrl)}&theme=${theme}&dnt=true&omit_script=true`
+    const response = await fetch(oembedUrl, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; OmniScreen/1.0)',
+      },
+    })
+    if (!response.ok) {
+      throw new Error(`Twitter timeline oEmbed: ${response.status}`)
+    }
+    const data = await response.json()
+    if (!data.html) throw new Error('Twitter timeline oEmbed did not return html')
+    return { success: true, html: data.html }
+  } catch (e) {
+    console.error('[Main Process] fetch-twitter-timeline-oembed error:', e)
+    return { success: false, error: e instanceof Error ? e.message : 'Unknown error' }
   }
 })
 

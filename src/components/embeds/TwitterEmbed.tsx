@@ -296,9 +296,8 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
     const lastProcessedMessages = new Set<string>()
     let lastHeightUpdate = 0
     let smallHeightDetected = false
-    let smallHeightDetectedTime = 0
     const HEIGHT_UPDATE_THROTTLE = 100 // Throttle height updates to once per 100ms
-    const SMALL_HEIGHT_ERROR_DELAY = 2000 // Wait 2 seconds before treating small height as error
+    const SMALL_HEIGHT_ERROR_DELAY = 600 // Try authenticated fallback quickly (e.g. age-restricted tweets)
 
     // Get the iframe for this specific embed instance
     const getThisIframe = () => {
@@ -328,6 +327,10 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
     
     // Use container tweet ID if available, otherwise use URL extraction
     const effectiveTweetId = getTweetIdFromContainer() || thisTweetId
+    
+    // Only try authenticated fallback once per small-height error; clear timeout on cleanup
+    let fallbackAttempted = false
+    let fallbackTimeoutId: ReturnType<typeof setTimeout> | null = null
     
     console.log(`[TwitterEmbed] Component initialized for tweet ID: ${effectiveTweetId || 'unknown'}, URL: ${url.substring(0, 80)}`)
 
@@ -444,26 +447,54 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
             }
             lastHeightUpdate = now
             
-            // Very small heights (like 76px) usually indicate an error state
+            // Very small heights (e.g. 76px) mean Twitter returned an error state (unavailable, rate limit, auth, etc.)
             if (height && height < 150) {
               console.log('⚠️ Twitter sent very small height, likely error state:', height, 'px')
               if (!smallHeightDetected) {
                 smallHeightDetected = true
-                smallHeightDetectedTime = now
-              } else if (now - smallHeightDetectedTime > SMALL_HEIGHT_ERROR_DELAY) {
-                // Small height persisted for too long - treat as error
-                console.log('⚠️ Small height persisted, showing error')
-                setError('Tweet not found or unavailable')
-                setEmbedHtml(null)
-                setLoading(false)
-                return
+                // Schedule authenticated fallback once (iframe often sends 76px only once)
+                if (!fallbackAttempted) {
+                  fallbackAttempted = true
+                  const tweetUrl = url
+                  const embedTheme = (containerRef.current?.getAttribute('data-theme') as 'light' | 'dark') || 'dark'
+                  fallbackTimeoutId = setTimeout(() => {
+                    if (!containerRef.current) return
+                    console.log('[TwitterEmbed] 76px error state — trying authenticated fallback (BrowserView + cookies)...')
+                    void (async () => {
+                      try {
+                        const result = await (window as any).ipcRenderer?.invoke?.('fetch-twitter-embed', tweetUrl, embedTheme)
+                        if (result?.success && result?.data?.html && containerRef.current) {
+                          console.log('[TwitterEmbed] Authenticated fallback succeeded, rendering oEmbed HTML (static, no widgets.load to avoid 76px iframe again)')
+                          const fallbackHtml = result.data.html
+                          const isMinimalFallback = result.data.fallback && fallbackHtml.includes('<a href="') && !fallbackHtml.includes('</p>')
+                          const debugNote = isMinimalFallback && result.debug?.reason
+                            ? `<p class="twitter-embed-fallback-debug">${(result.debug.reason as string).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}</p>`
+                            : ''
+                          const withWrapper =
+                            `<div class="twitter-embed-static-fallback">${fallbackHtml}${debugNote}<p class="twitter-embed-fallback-note">Preview only. Video and full content on X.</p><p class="twitter-embed-fallback-link"><a href="${tweetUrl}" target="_blank" rel="noopener noreferrer">View on X</a></p></div>`
+                          containerRef.current.innerHTML = withWrapper
+                          setEmbedHtml(withWrapper)
+                          setError(null)
+                          setLoading(false)
+                          return
+                        }
+                        console.warn('[TwitterEmbed] Fallback returned no HTML:', result?.error ?? 'unknown')
+                      } catch (e) {
+                        console.warn('[TwitterEmbed] Fallback failed:', e)
+                      }
+                      setError(`Twitter returned error state (${height}px height). Tweet may be unavailable, deleted, age-restricted, or rate-limited. Log in via Connections / Accounts if needed.`)
+                      setEmbedHtml(null)
+                      setLoading(false)
+                      if (onError) onError('Twitter embed error state')
+                    })()
+                  }, SMALL_HEIGHT_ERROR_DELAY)
+                }
               }
               // Don't apply very small heights - keep min-height instead
               return
             } else {
               // Height is normal, reset error detection
               smallHeightDetected = false
-              smallHeightDetectedTime = 0
             }
             
             // Only update if the height is significantly different (avoid unnecessary updates)
@@ -629,6 +660,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
       clearTimeout(timeout2)
       clearTimeout(timeout3)
       clearInterval(interval)
+      if (fallbackTimeoutId) clearTimeout(fallbackTimeoutId)
     }
   }, [embedHtml])
 
@@ -656,7 +688,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
       {/* Show error if there's an error - compact version */}
       {error && (
         <div className="bg-base-200 rounded-lg p-3">
-          <p className="text-sm text-base-content/70">Tweet not found</p>
+          <p className="text-sm text-base-content/70">{error}</p>
           <a
             href={url}
             target="_blank"
@@ -668,7 +700,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
         </div>
       )}
 
-      {/* CSS to override Twitter's hidden iframe styles - note: don't use !important on height so Twitter can set it */}
+      {/* CSS to override Twitter's hidden iframe styles; also style static oEmbed blockquote (fallback) */}
       {embedHtml && !error && (
         <style dangerouslySetInnerHTML={{ __html: `
           .twitter-embed-container {
@@ -683,13 +715,52 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
             display: block !important;
             position: relative !important;
             background-color: rgb(var(--b2)) !important;
-            /* Don't set height with !important - let Twitter control it */
           }
           .twitter-embed-container .twitter-tweet-rendered {
             display: block !important;
             visibility: visible !important;
             width: 100% !important;
             background-color: rgb(var(--b2)) !important;
+          }
+          /* Static oEmbed fallback (when widget would show 76px error) — force theme and visibility */
+          .twitter-embed-container .twitter-embed-static-fallback {
+            background-color: rgb(var(--b2)) !important;
+            color: rgb(var(--bc)) !important;
+            min-height: 120px !important;
+            padding: 1rem !important;
+            border-radius: 0.5rem;
+          }
+          .twitter-embed-container .twitter-embed-static-fallback blockquote.twitter-tweet,
+          .twitter-embed-container blockquote.twitter-tweet {
+            padding: 0.75rem 0 !important;
+            margin: 0 !important;
+            border-left: 4px solid rgb(var(--p)) !important;
+            color: rgb(var(--bc)) !important;
+            font-size: 0.95rem !important;
+            background: transparent !important;
+          }
+          .twitter-embed-container .twitter-embed-static-fallback blockquote *,
+          .twitter-embed-container blockquote.twitter-tweet * {
+            color: inherit !important;
+          }
+          .twitter-embed-container blockquote.twitter-tweet a,
+          .twitter-embed-container .twitter-embed-static-fallback a {
+            color: rgb(var(--p)) !important;
+          }
+          .twitter-embed-container .twitter-embed-fallback-link {
+            margin-top: 0.75rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid rgb(var(--b3));
+          }
+          .twitter-embed-container .twitter-embed-fallback-debug {
+            font-size: 0.75rem;
+            color: rgb(var(--b3));
+            margin-top: 0.5rem;
+          }
+          .twitter-embed-container .twitter-embed-fallback-note {
+            font-size: 0.7rem;
+            color: rgb(var(--b3));
+            margin-top: 0.5rem;
           }
         ` }} />
       )}
