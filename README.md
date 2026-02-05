@@ -6,7 +6,7 @@ A client application for the Destiny.gg (dgg) community, designed to enhance you
 
 <video src="./docs/OmniScreen.mp4" controls width="640"></video>
 
-*Main feature: split-screen with DGG chat, live embeds (YouTube/Kick/Twitch), and combined chat from all platforms.*
+*Main feature: split-screen with combined chat (DGG, YouTube, Kick, Twitch), and live embeds (YouTube/Kick/Twitch).*
 
 *([Open video directly](./docs/OmniScreen.mp4) if it doesn’t play above.)*
 
@@ -38,12 +38,12 @@ Omni Screen is a downloadable desktop application built for the Destiny.gg commu
 
 ### OmniScreen (main feature)
 
-Split-screen view with Destiny.gg chat, live stream embeds, and a unified chat feed.
+Split-screen view with combined chat (including DGG), live stream embeds, and a unified chat feed.
 
 #### Key Features:
-- **Split-screen layout**: DGG chat alongside embedded streams (YouTube, Kick, Twitch)
+- **Split-screen layout**: Combined chat pane (DGG + YouTube + Kick + Twitch) alongside embedded streams (YouTube, Kick, Twitch)
 - **Live embeds**: Add streams by pasting links or from the DGG live list; dock with grouped streamers
-- **Combined chat**: Single feed aggregating chat from DGG, YouTube, Kick, and Twitch
+- **Combined chat**: Single feed aggregating chat from DGG, YouTube, Kick, and Twitch (DGG is always available via this feed)
 - **DGG private messages (whispers)**: Persistent list (localStorage); list grows from unread API, PRIVMSG events, and when you send a whisper only if the inbox fetch succeeds. List view: "Whisper To" + message at bottom (message disabled until recipient set). Add to list and open conversation only when `GET /api/messages/usr/:username/inbox` succeeds after sending; otherwise fields just clear. Send via WebSocket; sticky Back; unread count and badge on 📫/📬
 - **Embed chat toggles**: Show/hide chat per platform in the combined view
 - **Highlight term**: Option to highlight messages containing a term (e.g. your username) in combined chat
@@ -84,6 +84,15 @@ Browse links shared in Destiny.gg chat mentions.
   - Position counter
   - Autoplay and mute controls
   - Infinite scrolling with auto-load
+
+### Connections / Accounts
+
+Log in once per platform so DGG chat, embeds, and Link Scroller can use your session.
+
+- **Where**: Menu → **Connections / Accounts**.
+- **Simplified mode**: Use **Log in** to open an in-app browser; the app shows “Logged in” only when real auth cookies are present. Use **Delete cookies** per platform to sign out.
+- **Paranoid mode**: Paste cookies manually (e.g. from DevTools); you never type your password in the app.
+- **Platforms**: DGG (chat + API), YouTube (embeds + live chat), Kick, Twitch, Twitter/X (embeds), Reddit (embeds). Clear all sessions or the entire cookie store from the same screen.
 
 For detailed feature documentation, see [IMPLEMENTED-FEATURES.md](./IMPLEMENTED-FEATURES.md).
 

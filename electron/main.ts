@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell, WebContents } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
@@ -11,7 +11,6 @@ import { mentionCache } from './mentionCache'
 import { KickChatManager } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
-import * as destinyEmbedView from './destinyEmbedView'
 import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeLiveOrLatest'
 import { checkUrlIsLive } from './urlIsLive'
 
@@ -562,11 +561,8 @@ function createWindow() {
     },
   })
 
-  destinyEmbedView.setMainWindowRef(win)
-  win.setMaxListeners(40) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest, destiny-embed setBounds)
-  win.on('closed', () => {
-    destinyEmbedView.setMainWindowRef(null)
-  })
+  win.setMaxListeners(40) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest)
+  win.on('closed', () => {})
 
   // Configure webRequest handlers for YouTube and Reddit embeds
   const session = win.webContents.session
@@ -987,92 +983,8 @@ function createWindow() {
 
 type LinkOpenAction = 'none' | 'clipboard' | 'browser' | 'viewer'
 
-/** Chat link click behavior (Destiny embed + combined chat). Set via IPC from OmniScreen. */
+/** Chat link click behavior (combined chat). Set via IPC from OmniScreen. */
 let chatLinkOpenAction: LinkOpenAction = 'browser'
-
-/** WebContents IDs we've already attached embed link handlers to (avoid duplicate listeners). */
-const embedLinkHandlersAttached = new Set<number>()
-
-/** Destiny # link: #kick/..., #twitch/..., #youtube/... — open in OmniScreen embed split instead of browser. */
-function parseDestinyHashFromUrl(url: string): { platform: string; id: string } | null {
-  try {
-    const u = new URL(url)
-    const hash = (u.hash || '').replace(/^#/, '').trim()
-    const m = hash.match(/^(kick|twitch|youtube)\/(.+)$/i)
-    if (!m) return null
-    return { platform: m[1].toLowerCase(), id: m[2].trim() }
-  } catch {
-    return null
-  }
-}
-
-function attachEmbedLinkHandlers(wc: WebContents): void {
-  if (wc.isDestroyed() || embedLinkHandlersAttached.has(wc.id)) return
-  embedLinkHandlersAttached.add(wc.id)
-  wc.on('will-navigate', (event, navigationUrl) => {
-    const destinyLink = parseDestinyHashFromUrl(navigationUrl)
-    if (destinyLink && win && !win.isDestroyed()) {
-      event.preventDefault()
-      win.webContents.send('add-embed-from-destiny-link', { platform: destinyLink.platform, id: destinyLink.id })
-      return
-    }
-    try {
-      const parsedUrl = new URL(navigationUrl)
-      const currentUrl = wc.getURL()
-      if (currentUrl) {
-        const currentParsed = new URL(currentUrl)
-        if (parsedUrl.origin === currentParsed.origin) return
-      }
-    } catch {
-      return
-    }
-    event.preventDefault()
-    const action = chatLinkOpenAction || 'browser'
-    if (action === 'none') return
-    if (action === 'clipboard') {
-      clipboard.writeText(navigationUrl)
-      return
-    }
-    if (action === 'browser') {
-      shell.openExternal(navigationUrl).catch(() => {})
-      return
-    }
-    if (action === 'viewer') {
-      const v = getOrCreateViewerWindow()
-      v.show()
-      v.focus()
-      if (isHttpUrl(navigationUrl)) v.loadURL(navigationUrl).catch(() => {})
-      else shell.openExternal(navigationUrl).catch(() => {})
-    }
-  })
-  wc.setWindowOpenHandler(({ url }) => {
-    const destinyLink = parseDestinyHashFromUrl(url)
-    if (destinyLink && win && !win.isDestroyed()) {
-      win.webContents.send('add-embed-from-destiny-link', { platform: destinyLink.platform, id: destinyLink.id })
-      return { action: 'deny' }
-    }
-    const action = chatLinkOpenAction || 'browser'
-    if (action === 'none') return { action: 'deny' }
-    if (action === 'clipboard') {
-      clipboard.writeText(url)
-      return { action: 'deny' }
-    }
-    if (action === 'browser') {
-      shell.openExternal(url).catch(() => {})
-      return { action: 'deny' }
-    }
-    if (action === 'viewer') {
-      const v = getOrCreateViewerWindow()
-      v.show()
-      v.focus()
-      if (isHttpUrl(url)) v.loadURL(url).catch(() => {})
-      else shell.openExternal(url).catch(() => {})
-      return { action: 'deny' }
-    }
-    return { action: 'deny' }
-  })
-  wc.on('destroyed', () => { embedLinkHandlersAttached.delete(wc.id) })
-}
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -1138,7 +1050,6 @@ function getOrCreateViewerWindow(): BrowserWindow {
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    destinyEmbedView.setMainWindowRef(null)
     app.quit()
     win = null
   }
@@ -1504,74 +1415,6 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
   }
 })
 
-// Destiny embed (single BrowserView, userscript injection, detach support)
-// REQUIRED: Renderer sends viewport (innerWidth/innerHeight) with bounds. We scale bounds by (contentSize/viewport)
-// so the BrowserView aligns with the slot. On Windows with DPI scaling, getContentSize() != renderer viewport;
-// without this scale the embed renders in the wrong place. Do not remove viewport or scaling.
-ipcMain.handle('destiny-embed-set-bounds', (_event, payload: unknown) => {
-  try {
-    const w = win ?? null
-    if (!w || w.isDestroyed()) return
-    const raw = payload as Record<string, unknown>
-    const x = Number(raw?.x)
-    const y = Number(raw?.y)
-    const width = Number(raw?.width)
-    const height = Number(raw?.height)
-    const viewportW = Number(raw?.viewportWidth)
-    const viewportH = Number(raw?.viewportHeight)
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) return
-    const [contentW, contentH] = w.getContentSize()
-    let finalX = Math.round(x)
-    let finalY = Math.round(y)
-    let finalW = Math.max(1, Math.round(width))
-    let finalH = Math.max(1, Math.round(height))
-    if (Number.isFinite(viewportW) && viewportW > 0 && Number.isFinite(viewportH) && viewportH > 0 && contentW > 0 && contentH > 0) {
-      const scaleX = contentW / viewportW
-      const scaleY = contentH / viewportH
-      finalX = Math.round(x * scaleX)
-      finalY = Math.round(y * scaleY)
-      finalW = Math.max(1, Math.round(width * scaleX))
-      finalH = Math.max(1, Math.round(height * scaleY))
-    }
-    destinyEmbedView.setBounds(w, { x: finalX, y: finalY, width: finalW, height: finalH })
-    const embedWc = destinyEmbedView.getEmbedWebContents()
-    if (embedWc) attachEmbedLinkHandlers(embedWc)
-  } catch (e) {
-    console.error('destiny-embed-set-bounds failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
-  }
-})
-ipcMain.handle('destiny-embed-hide', () => {
-  try {
-    destinyEmbedView.hide(win ?? null)
-  } catch (e) {
-    console.error('destiny-embed-hide failed:', e instanceof Error ? e.message : e, '')
-  }
-})
-ipcMain.handle('destiny-embed-detach', () => {
-  try {
-    destinyEmbedView.detach(win ?? null)
-  } catch (e) {
-    console.error('destiny-embed-detach failed:', e instanceof Error ? e.message : e, e instanceof Error ? e.stack : '')
-  }
-})
-ipcMain.handle('destiny-embed-is-detached', () => {
-  return destinyEmbedView.isDetached()
-})
-ipcMain.handle('destiny-embed-reload', () => {
-  try {
-    destinyEmbedView.reload()
-  } catch (e) {
-    console.error('destiny-embed-reload failed:', e instanceof Error ? e.message : e, '')
-  }
-})
-ipcMain.handle('destiny-embed-open-devtools', () => {
-  try {
-    destinyEmbedView.openDevTools()
-  } catch (e) {
-    console.error('destiny-embed-open-devtools failed:', e instanceof Error ? e.message : e, '')
-  }
-})
-
 ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'light' | 'dark' = 'dark') => {
   let browserView: BrowserView | null = null
   try {
@@ -1592,9 +1435,9 @@ ipcMain.handle('fetch-twitter-embed', async (event, tweetUrl: string, theme: 'li
     const ct0 = twitterCookies.find(c => c.name === 'ct0')
     
     if (!authToken || !ct0) {
-      return { 
-        success: false, 
-        error: 'Not logged in to Twitter. Please use the "Login to Twitter" button and complete the login process.' 
+      return {
+        success: false,
+        error: 'Add Twitter cookies in the main menu: Connections / Accounts.',
       }
     }
     
@@ -2508,6 +2351,329 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
   }
 })
 
+// Connections / Accounts: set cookies from pasted string (per platform). Uses persist:main so embeds and chat use them.
+const CONNECTIONS_PLATFORMS: Record<string, string> = {
+  dgg: 'https://www.destiny.gg',
+  destiny: 'https://www.destiny.gg',
+  youtube: 'https://www.youtube.com',
+  kick: 'https://kick.com',
+  twitch: 'https://www.twitch.tv',
+  twitter: 'https://twitter.com',
+  reddit: 'https://www.reddit.com',
+}
+
+function parseCookieString(cookieString: string): Array<{ name: string; value: string }> {
+  const out: Array<{ name: string; value: string }> = []
+  const raw = String(cookieString || '').trim()
+  if (!raw) return out
+  const parts = raw.split(';')
+  for (const part of parts) {
+    const trimmed = part.trim()
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) continue
+    const name = trimmed.slice(0, eq).trim()
+    const value = trimmed.slice(eq + 1).trim()
+    if (!name) continue
+    out.push({ name, value })
+  }
+  return out
+}
+
+/** Normalize pasted input: accept raw "name=val; ..." or JSON-wrapped string (e.g. from copy(JSON.stringify(...))). */
+function normalizePastedCookies(pasted: string): string {
+  const raw = String(pasted || '').trim()
+  if (!raw) return ''
+  try {
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'string') return parsed.trim()
+    }
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'string') return parsed.trim()
+    }
+  } catch {
+    // not JSON, use as-is
+  }
+  return raw
+}
+
+ipcMain.handle(
+  'connections-set-cookies',
+  async (
+    _event,
+    payload: { platform: string; cookieString?: string; cookies?: Record<string, string> }
+  ) => {
+  try {
+    const platform = String(payload?.platform || '').toLowerCase().trim()
+    const baseUrl = CONNECTIONS_PLATFORMS[platform] || CONNECTIONS_PLATFORMS[platform === 'dgg' ? 'destiny' : platform]
+    if (!baseUrl) {
+      return { success: false, error: `Unknown platform: ${platform}. Use one of: dgg, youtube, kick, twitch, twitter, reddit.` }
+    }
+    let pairs: Array<{ name: string; value: string }>
+    if (payload?.cookies && typeof payload.cookies === 'object') {
+      pairs = Object.entries(payload.cookies)
+        .filter(([, v]) => v != null && String(v).trim() !== '')
+        .map(([name, value]) => ({ name: name.trim(), value: String(value).trim() }))
+    } else {
+      const cookieString = normalizePastedCookies(
+        typeof payload?.cookieString === 'string' ? payload.cookieString : ''
+      )
+      pairs = parseCookieString(cookieString)
+    }
+    if (pairs.length === 0) {
+      return { success: false, error: 'No valid cookies to set (paste a cookie string or fill the fields above).' }
+    }
+    const ses = getDefaultSession()
+    for (const { name, value } of pairs) {
+      try {
+        await ses.cookies.set({ url: baseUrl, name, value })
+      } catch (e) {
+        console.warn(`[connections] Failed to set cookie ${name} for ${platform}:`, e)
+      }
+    }
+    console.log(`[connections] Set ${pairs.length} cookies for ${platform} (${baseUrl})`)
+    return { success: true, count: pairs.length }
+  } catch (e) {
+    console.error('[connections] set-cookies error:', e)
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
+})
+
+// Domains that "Delete all sessions" clears. Cookies from other domains (e.g. googlevideo.com, ytimg.com)
+// survive and can reappear after restart—that's why you may still see ~7 cookies; they're from domains
+// we don't clear. Use "Clear entire cookie store" to remove every cookie in the partition.
+const CONNECTIONS_CLEAR_DOMAINS = [
+  'destiny.gg',
+  'www.destiny.gg',
+  'chat.destiny.gg',
+  '.destiny.gg',
+  'youtube.com',
+  'www.youtube.com',
+  '.youtube.com',
+  'google.com',
+  '.google.com',
+  'googlevideo.com',
+  '.googlevideo.com',
+  'ytimg.com',
+  '.ytimg.com',
+  'kick.com',
+  'www.kick.com',
+  'web.kick.com',
+  'twitch.tv',
+  'www.twitch.tv',
+  'twitter.com',
+  'x.com',
+  'twimg.com',
+  '.twitter.com',
+  '.x.com',
+  'reddit.com',
+  'www.reddit.com',
+  '.reddit.com',
+]
+
+function cookieDomainMatches(domain: string | undefined): boolean {
+  if (!domain) return false
+  const d = domain.toLowerCase().trim()
+  return CONNECTIONS_CLEAR_DOMAINS.some((clear) => {
+    const c = clear.toLowerCase()
+    if (d === c) return true
+    if (c.startsWith('.')) return d === c.slice(1) || d.endsWith(c)
+    return d.endsWith('.' + c)
+  })
+}
+
+function urlForCookieDomain(domain: string | undefined): string {
+  if (!domain) return 'https://localhost'
+  const d = domain.startsWith('.') ? domain.slice(1) : domain
+  return 'https://' + (d.startsWith('www.') ? d : 'www.' + d)
+}
+
+ipcMain.handle('connections-clear-all-sessions', async () => {
+  try {
+    const ses = getDefaultSession()
+    const all = await ses.cookies.get({})
+    const toRemove = all.filter((c) => cookieDomainMatches(c.domain))
+    let total = 0
+    for (const c of toRemove) {
+      try {
+        const url = urlForCookieDomain(c.domain)
+        await ses.cookies.remove(url, c.name)
+        total++
+      } catch {
+        // ignore per-cookie errors
+      }
+    }
+    // Disconnect DGG chat so it stops using the old auth. Next connect will use (now empty) cookies.
+    if (chatWebSocket) {
+      try {
+        chatWebSocket.disconnect()
+        chatWebSocket.destroy()
+      } catch {
+        // ignore
+      }
+      chatWebSocket = null
+    }
+
+    console.log(`[connections] Cleared ${total} cookies; DGG chat disconnected (same session used by chat, embeds, etc.)`)
+    return { success: true, count: total }
+  } catch (e) {
+    console.error('[connections] clear-all-sessions error:', e)
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
+})
+
+// Clear every cookie in the partition (no domain filter). Use for a true clean slate so no cookies reappear after restart.
+ipcMain.handle('connections-clear-entire-cookie-store', async () => {
+  try {
+    const ses = getDefaultSession()
+    const all = await ses.cookies.get({})
+    let total = 0
+    for (const c of all) {
+      try {
+        const url = urlForCookieDomain(c.domain)
+        await ses.cookies.remove(url, c.name)
+        total++
+      } catch {
+        // ignore per-cookie errors
+      }
+    }
+    if (chatWebSocket) {
+      try {
+        chatWebSocket.disconnect()
+        chatWebSocket.destroy()
+      } catch {
+        // ignore
+      }
+      chatWebSocket = null
+    }
+    console.log(`[connections] Cleared entire cookie store: ${total} cookies`)
+    return { success: true, count: total }
+  } catch (e) {
+    console.error('[connections] clear-entire-cookie-store error:', e)
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
+})
+
+// URLs used to read cookies per platform (persist:main session). Used by Connections modal to show current session.
+const CONNECTIONS_GET_COOKIE_URLS: Record<string, string[]> = {
+  dgg: ['https://www.destiny.gg', 'https://destiny.gg', 'https://chat.destiny.gg'],
+  youtube: ['https://www.youtube.com', 'https://youtube.com', 'https://www.google.com', 'https://google.com'],
+  kick: ['https://www.kick.com', 'https://kick.com', 'https://web.kick.com'],
+  twitch: ['https://www.twitch.tv', 'https://twitch.tv'],
+  twitter: ['https://twitter.com', 'https://x.com', 'https://twimg.com'],
+  reddit: ['https://www.reddit.com', 'https://reddit.com'],
+}
+
+// Cookie names that indicate a real login. "Logged in" is true only when at least one of these exists (avoids
+// treating tracking/anonymous cookies as logged-in; e.g. opening YouTube sets cookies but not auth).
+const CONNECTIONS_AUTH_COOKIE_NAMES: Record<string, string[]> = {
+  dgg: ['sid', 'rememberme'],
+  youtube: ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'SIDCC', 'NID', 'LOGIN_INFO'],
+  kick: ['kick_session', 'session_token'],
+  twitch: ['auth-token', 'unique_id'],
+  twitter: ['auth_token', 'ct0'],
+  reddit: ['reddit_session'],
+}
+
+ipcMain.handle(
+  'connections-get-cookies',
+  async (
+    _event,
+    { platformId, cookieNames }: { platformId: string; cookieNames: string[] }
+  ) => {
+    const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
+    if (!urls || !Array.isArray(cookieNames) || cookieNames.length === 0) {
+      return {}
+    }
+    const ses = getDefaultSession()
+    const result: Record<string, string> = {}
+    for (const url of urls) {
+      try {
+        const list = await ses.cookies.get({ url: url + '/' })
+        for (const c of list) {
+          if (cookieNames.includes(c.name) && result[c.name] === undefined) {
+            result[c.name] = c.value
+          }
+        }
+      } catch {
+        // ignore per-url errors
+      }
+    }
+    return result
+  }
+)
+
+function cookieNameIndicatesAuth(platformId: string, cookieName: string): boolean {
+  const names = CONNECTIONS_AUTH_COOKIE_NAMES[platformId]
+  if (!names || names.length === 0) return false
+  const n = cookieName.trim()
+  if (names.includes(n)) return true
+  // YouTube cookies are often stored as __Secure-<name>
+  if (n.startsWith('__Secure-') && names.includes(n.slice(9))) return true
+  return false
+}
+
+ipcMain.handle('connections-has-cookies', async (_event, platformId: string) => {
+  const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
+  const authNames = CONNECTIONS_AUTH_COOKIE_NAMES[platformId]
+  if (!urls) return false
+  if (!authNames || authNames.length === 0) return false
+  const ses = getDefaultSession()
+  for (const url of urls) {
+    try {
+      const list = await ses.cookies.get({ url: url + '/' })
+      for (const c of list) {
+        if (cookieNameIndicatesAuth(platformId, c.name)) return true
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false
+})
+
+ipcMain.handle('connections-clear-platform', async (_event, platformId: string) => {
+  const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
+  if (!urls) return { success: false, error: 'Unknown platform', count: 0 }
+  const ses = getDefaultSession()
+  let total = 0
+  for (const url of urls) {
+    try {
+      const list = await ses.cookies.get({ url: url + '/' })
+      for (const c of list) {
+        try {
+          await ses.cookies.remove(url + '/', c.name)
+          total++
+        } catch {
+          // ignore per-cookie
+        }
+      }
+    } catch {
+      // ignore per-url
+    }
+  }
+  if (platformId === 'dgg' && chatWebSocket) {
+    try {
+      chatWebSocket.disconnect()
+      chatWebSocket.destroy()
+    } catch {
+      // ignore
+    }
+    chatWebSocket = null
+  }
+  return { success: true, count: total }
+})
+
 // Open login window for services
 ipcMain.handle('open-login-window', async (_event, service: string) => {
   try {
@@ -2516,8 +2682,12 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
       tiktok: 'https://www.tiktok.com/login',
       reddit: 'https://www.reddit.com/login',
       destiny: 'https://www.destiny.gg/login',
+      dgg: 'https://www.destiny.gg/login',
+      youtube: 'https://www.youtube.com',
+      kick: 'https://kick.com',
+      twitch: 'https://www.twitch.tv',
     }
-    
+
     const url = loginUrls[service.toLowerCase()] || 'https://www.google.com'
     
     // Create a new browser window for login using the same persistent session
@@ -2593,10 +2763,9 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
     })
     
     loginWindow.setMaxListeners(20)
-    // Clean up when window is closed
+    // When login window closes, tell renderer to refresh Connections cookie fields (they may have logged in)
     loginWindow.on('closed', () => {
-      // Optionally notify renderer that login window was closed
-      // win?.webContents.send('login-window-closed', service)
+      win?.webContents.send('connections-refresh-cookies')
     })
     
     return { success: true }

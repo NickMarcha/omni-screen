@@ -48,7 +48,6 @@ export interface ThemeSettings {
 }
 
 export interface UserscriptSettings {
-  dggUtilities: boolean
   kickstiny: boolean
 }
 
@@ -103,7 +102,7 @@ export const darkThemes: DarkTheme[] = [
 
 export const defaultPreferences: AppPreferences = {
   theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
-  userscripts: { dggUtilities: true, kickstiny: true },
+  userscripts: { kickstiny: true },
 }
 
 export function getAppPreferences(): AppPreferences {
@@ -119,10 +118,6 @@ export function getAppPreferences(): AppPreferences {
         embedTheme: parsed?.theme?.embedTheme || defaultPreferences.theme.embedTheme,
       },
       userscripts: {
-        dggUtilities:
-          typeof parsed?.userscripts?.dggUtilities === 'boolean'
-            ? parsed.userscripts.dggUtilities
-            : defaultPreferences.userscripts.dggUtilities,
         kickstiny:
           typeof parsed?.userscripts?.kickstiny === 'boolean'
             ? parsed.userscripts.kickstiny

@@ -4,15 +4,14 @@ This document outlines all features that have been implemented in the Omni Scree
 
 ## OmniScreen Feature (main feature)
 
-OmniScreen is the main feature: a split-screen view with Destiny.gg chat, live stream embeds (YouTube, Kick, Twitch), and a unified combined chat feed from all platforms.
+OmniScreen is the main feature: a split-screen view with Destiny.gg chat (via combined chat), live stream embeds (YouTube, Kick, Twitch), and a unified combined chat feed from all platforms.
 
 ### Core Functionality
 
 #### Split-screen layout
-- **Left/center**: Resizable chat pane (DGG embedded chat or combined chat)
+- **Left/center**: Resizable chat pane (combined chat only; DGG is included in combined chat)
 - **Center**: Embed grid + dock of live streams
 - **Resizable**: Drag the divider to resize chat vs content area
-- **Chat mode toggle**: Switch between embedded DGG chat (BrowserView) and combined chat (aggregated feed)
 
 #### Live embeds
 - **Sources**: Embeds come from the DGG live WebSocket (`dggApi:embeds`, `dggApi:streamInfo`) and/or manual paste (Add link)
@@ -34,16 +33,15 @@ OmniScreen is the main feature: a split-screen view with Destiny.gg chat, live s
 - **Combo rendering**: Consecutive single-emote messages (DGG or Kick) are grouped into a "C-C-C-COMBO" row. DGG combo emotes use the same rendering as message emotes (no fixed size; `.msg-chat.msg-emote .emote { flex-shrink: 0 }` in App.css).
 
 #### DGG integration
-- **Chat WebSocket**: `electron/chatWebSocket.ts` — connects to `wss://chat.destiny.gg/ws`, parses MSG, JOIN, QUIT, HISTORY, PIN, MUTE, UNMUTE, PRIVMSG, POLLSTART, POLLSTOP, VOTECAST, VOTECOUNTED, ERR (poll vote error), etc. Forwards to renderer via IPC (`chat-websocket-message`, `chat-websocket-privmsg`, `chat-websocket-poll-start`, etc.)
+- **Chat WebSocket**: `electron/chatWebSocket.ts` — connects to `wss://chat.destiny.gg/ws`, parses MSG, JOIN, QUIT, HISTORY, PIN, MUTE, UNMUTE, PRIVMSG, POLLSTART, POLLSTOP, VOTECAST, VOTECOUNTED, ERR (poll vote error), etc. Forwards to renderer via IPC (`chat-websocket-message`, `chat-websocket-privmsg`, `chat-websocket-poll-start`, etc.). DGG chat is shown in the combined chat pane only.
 - **Live WebSocket**: `electron/liveWebSocket.ts` — connects to `wss://live.destiny.gg/`, receives `dggApi:embeds`, `dggApi:streamInfo`, `dggApi:bannedEmbeds`, etc. Drives the embed list and dock
-- **Destiny embed slot**: Optional BrowserView that loads the DGG website chat embed when “embedded” chat mode is selected; can be detached, reloaded, or hidden
 - **DGG messages API**: IPC handlers `dgg-send-whisper` (sends via chat WebSocket as `PRIVMSG {"nick","data"}` when connected), `dgg-messages-unread` (GET `/api/messages/unread`), `dgg-messages-inbox` (GET `/api/messages/usr/:username/inbox`); unread and inbox use session cookies from `persist:main`
 
 ### OmniScreen technical notes
 
 - **Main UI**: `src/components/OmniScreen.tsx` — chat pane, embed grid, dock, pinned streamers modal, combined chat settings
 - **Combined chat**: `src/components/CombinedChat.tsx` — receives `highlightTerm`, `showTimestamps`, `showSourceLabels`, `sortMode`, etc.; renders message list with platform badges and optional highlight
-- **IPC / main**: Chat and live WebSockets registered in `electron/main.ts`; handlers for `youtube-chat-set-targets`, `kick-chat-*`, `twitch-chat-*`, `url-is-live`, `youtube-live-or-latest`; DGG embed view in `electron/destinyEmbedView.ts`
+- **IPC / main**: Chat and live WebSockets registered in `electron/main.ts`; handlers for `youtube-chat-set-targets`, `kick-chat-*`, `twitch-chat-*`, `url-is-live`, `youtube-live-or-latest`
 - **YouTube chat**: `electron/youtubeChatManager.ts` — polls YouTube live chat API using continuation token from live_chat or watch page; fallback to watch page when live_chat page doesn’t include continuation
 - **Persistence**: Combined chat settings (including highlight term, YT poll multiplier) and pinned streamers saved to localStorage
 
@@ -478,7 +476,6 @@ omni-screen/
 │   ├── youtubeChatManager.ts # YouTube live chat polling
 │   ├── kickChatManager.ts   # Kick chat (Pusher)
 │   ├── twitchChatManager.ts # Twitch IRC chat
-│   ├── destinyEmbedView.ts  # DGG website embed (BrowserView)
 │   ├── youtubeLiveOrLatest.ts # YouTube channel/video live detection
 │   ├── urlIsLive.ts         # URL live check (YouTube/Kick/Twitch)
 │   ├── mentionCache.ts     # Mention cache for Link Scroller

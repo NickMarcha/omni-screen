@@ -107,7 +107,7 @@ function TwitterEmbed({ url, theme = 'dark', onError }: TwitterEmbedProps) {
               }
             }, 2000)
           } else {
-            setError('Embed creation timed out. The tweet may be unavailable or require login.')
+            setError('Tweet unavailable or requires auth. Add Twitter cookies in the main menu: Connections / Accounts.')
             setEmbedHtml(null)
             setLoading(false)
             if (onError) onError('Embed creation timed out')

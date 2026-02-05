@@ -9,7 +9,6 @@ import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 import { omniColorForKey, textColorOn, withAlpha } from '../utils/omniColors'
-import { getAppPreferences } from '../utils/appPreferences'
 
 /** Log to console and to app log file (so user can search logs without DevTools). */
 function logPinned(message: string, detail?: unknown) {
@@ -23,7 +22,6 @@ function logPinned(message: string, detail?: unknown) {
 }
 
 type ChatPaneSide = 'left' | 'right'
-type ChatMode = 'embedded' | 'combined'
 type CombinedSortMode = 'timestamp' | 'arrival'
 
 type LiveWsMessage =
@@ -504,12 +502,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return false
   })
 
-  // ---- Chat pane ----
+  // ---- Chat pane (combined chat only; DGG is included via combined chat) ----
   const [chatPaneOpen, setChatPaneOpen] = useState(true)
-  const [chatMode, setChatMode] = useState<ChatMode>(() => {
-    const saved = localStorage.getItem('omni-screen:chat-mode')
-    return saved === 'combined' ? 'combined' : 'embedded'
-  })
   const [combinedIncludeDgg, setCombinedIncludeDgg] = useState<boolean>(() => {
     const saved = localStorage.getItem('omni-screen:combined-include-dgg')
     if (saved === '0' || saved === 'false') return false
@@ -583,16 +577,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const saved = Number(localStorage.getItem('omni-screen:chat-pane-width'))
     return Number.isFinite(saved) && saved > 0 ? saved : 420
   })
-  const [chatEmbedReload, setChatEmbedReload] = useState(0)
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
   const [combinedDggUserCount, setCombinedDggUserCount] = useState(0)
-  const [destinyEmbedDetached, setDestinyEmbedDetached] = useState(false)
-  const destinyEmbedSlotRef = useRef<HTMLDivElement | null>(null)
-  const destinyEmbedResizeObserverRef = useRef<ResizeObserver | null>(null)
-  const destinyEmbedResizeHandlerRef = useRef<(() => void) | null>(null)
-  const destinyEmbedResizeTimeoutRef = useRef<number | null>(null)
-  const destinyEmbedRafRef = useRef<number | null>(null)
-  const destinyEmbedLayoutTimeoutsRef = useRef<number[]>([])
   const manualEmbedsRef = useRef<Map<string, LiveEmbed>>(manualEmbeds)
   manualEmbedsRef.current = manualEmbeds
   const pinnedOriginatedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
@@ -660,19 +646,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     setTabContentMinHeight((prev) => Math.max(prev, h))
   }, [settingsModalOpen, settingsTab, pinnedStreamers.length, editingStreamerId])
 
-  const dggUtilitiesEnabled = (() => {
-    try {
-      return getAppPreferences().userscripts.dggUtilities
-    } catch {
-      return false
-    }
-  })()
-
-  const chatEmbedSrc = useMemo(() => {
-    // cache-buster so we can reload after login
-    return `https://www.destiny.gg/embed/chat?omni=1&t=${chatEmbedReload}`
-  }, [chatEmbedReload])
-
   const combinedHeaderText = useMemo(() => {
     const parts: string[] = []
     if (combinedIncludeDgg) parts.push('dgg')
@@ -701,112 +674,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return `Chat (combined: ${summary})`
   }, [combinedIncludeDgg, selectedEmbedChatKeys])
 
-  useEffect(() => {
-    const handler = (_event: any, service: any) => {
-      if (service === 'destiny') {
-        setChatEmbedReload((v) => v + 1)
-      }
-    }
-    window.ipcRenderer.on('login-success', handler)
-    return () => {
-      window.ipcRenderer.off('login-success', handler)
-    }
-  }, [])
-
-  // When not showing the Destiny embed slot (BrowserView), hide the view so it doesn't cover the iframe or combined chat.
-  useEffect(() => {
-    if (!(chatPaneOpen && chatMode === 'embedded' && dggUtilitiesEnabled)) {
-      window.ipcRenderer.invoke('destiny-embed-hide').catch(() => {})
-    }
-  }, [chatPaneOpen, chatMode, dggUtilitiesEnabled])
-
-  useEffect(() => {
-    const handler = () => setDestinyEmbedDetached(false)
-    window.ipcRenderer.on('destiny-embed-reattached', handler)
-    return () => {
-      window.ipcRenderer.off('destiny-embed-reattached', handler)
-    }
-  }, [])
-
-  const destinyEmbedSlotRefCallback = useCallback((el: HTMLDivElement | null) => {
-    destinyEmbedSlotRef.current = el
-    destinyEmbedResizeObserverRef.current?.disconnect()
-    destinyEmbedResizeObserverRef.current = null
-    if (destinyEmbedResizeHandlerRef.current) {
-      window.removeEventListener('resize', destinyEmbedResizeHandlerRef.current)
-      destinyEmbedResizeHandlerRef.current = null
-    }
-    if (destinyEmbedResizeTimeoutRef.current != null) {
-      clearTimeout(destinyEmbedResizeTimeoutRef.current)
-      destinyEmbedResizeTimeoutRef.current = null
-    }
-    if (destinyEmbedRafRef.current != null) {
-      cancelAnimationFrame(destinyEmbedRafRef.current)
-      destinyEmbedRafRef.current = null
-    }
-    if (!el) {
-      destinyEmbedLayoutTimeoutsRef.current.forEach((t) => clearTimeout(t))
-      destinyEmbedLayoutTimeoutsRef.current = []
-      window.ipcRenderer.invoke('destiny-embed-hide').catch(() => {})
-      return
-    }
-    const lastLoggedRef = { rect: { left: -1, top: -1, width: -1, height: -1 } }
-    const sendBounds = () => {
-      const rect = el.getBoundingClientRect()
-      const x = Math.round(rect.left)
-      const y = Math.round(rect.top)
-      const w = Math.round(rect.width)
-      const h = Math.round(rect.height)
-      const changed =
-        lastLoggedRef.rect.left !== x ||
-        lastLoggedRef.rect.top !== y ||
-        lastLoggedRef.rect.width !== w ||
-        lastLoggedRef.rect.height !== h
-      const viewportW = window.innerWidth
-      const viewportH = window.innerHeight
-      if (changed) lastLoggedRef.rect = { left: x, top: y, width: w, height: h }
-      // Must send viewport size so main can scale bounds: renderer viewport (CSS) often differs from getContentSize() on Windows/DPI.
-      window.ipcRenderer
-        .invoke('destiny-embed-set-bounds', { x, y, width: w, height: h, viewportWidth: viewportW, viewportHeight: viewportH })
-        .catch(() => {})
-    }
-    // Throttle: at most one bounds update per animation frame so resizing the pane isn't choppy.
-    const sendBoundsThrottled = () => {
-      if (destinyEmbedRafRef.current != null) return
-      destinyEmbedRafRef.current = requestAnimationFrame(() => {
-        destinyEmbedRafRef.current = null
-        sendBounds()
-      })
-    }
-    // Defer bounds after window resize so layout has settled (e.g. DevTools dock).
-    const sendBoundsAfterResize = () => {
-      if (destinyEmbedResizeTimeoutRef.current != null) clearTimeout(destinyEmbedResizeTimeoutRef.current)
-      destinyEmbedRafRef.current = requestAnimationFrame(() => {
-        destinyEmbedRafRef.current = requestAnimationFrame(() => {
-          destinyEmbedRafRef.current = null
-          sendBounds()
-          destinyEmbedResizeTimeoutRef.current = window.setTimeout(() => {
-            destinyEmbedResizeTimeoutRef.current = null
-            sendBounds()
-          }, 120)
-        })
-      })
-    }
-    sendBounds()
-    // Re-send after layout settles (flex/chat pane can have delayed size)
-    const t1 = window.setTimeout(sendBounds, 50)
-    const t2 = window.setTimeout(sendBounds, 200)
-    destinyEmbedLayoutTimeoutsRef.current = [t1, t2]
-    const ro = new ResizeObserver(sendBoundsThrottled)
-    ro.observe(el)
-    destinyEmbedResizeObserverRef.current = ro
-    window.addEventListener('resize', sendBoundsAfterResize)
-    destinyEmbedResizeHandlerRef.current = sendBoundsAfterResize
-  }, [])
-
-  const openDestinyLogin = useCallback(() => {
-    window.ipcRenderer.invoke('open-login-window', 'destiny').catch(() => {})
-  }, [])
 
   // ---- Center grid sizing (responsive to window size) ----
   // Measure ONLY the available area for the embed grid (not including the bottom dock).
@@ -933,14 +800,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   useEffect(() => {
     try {
-      localStorage.setItem('omni-screen:chat-mode', chatMode)
-    } catch {
-      // ignore
-    }
-  }, [chatMode])
-
-  useEffect(() => {
-    try {
       localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
     } catch {
       // ignore
@@ -1003,7 +862,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (settingsModalOpen) return
       const target = e.target as Node
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
-      if (!chatPaneOpen || chatMode !== 'combined' || !combinedIncludeDgg || !showDggInput) return
+      if (!chatPaneOpen || !combinedIncludeDgg || !showDggInput) return
       const key = e.key === ' ' ? ' ' : e.key
       if (dggFocusKeybind.key !== key || dggFocusKeybind.ctrl !== e.ctrlKey || dggFocusKeybind.shift !== e.shiftKey || dggFocusKeybind.alt !== e.altKey) return
       e.preventDefault()
@@ -1011,7 +870,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [settingsModalOpen, chatPaneOpen, chatMode, combinedIncludeDgg, showDggInput, dggFocusKeybind])
+  }, [settingsModalOpen, chatPaneOpen, combinedIncludeDgg, showDggInput, dggFocusKeybind])
 
   useEffect(() => {
     const handler = (_: unknown, payload: { platform: string; id: string }) => {
@@ -1172,7 +1031,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   // Subscribe Kick chatrooms for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
-    const shouldRun = chatPaneOpen && chatMode === 'combined'
+    const shouldRun = chatPaneOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
       return
@@ -1189,11 +1048,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     // De-dupe and keep stable-ish order.
     const uniq = Array.from(new Set(slugs)).sort()
     window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: uniq }).catch(() => {})
-  }, [chatMode, chatPaneOpen, selectedEmbedChatKeys])
+  }, [chatPaneOpen, selectedEmbedChatKeys])
 
   // Subscribe YouTube live chat for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
-    const shouldRun = chatPaneOpen && chatMode === 'combined'
+    const shouldRun = chatPaneOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: [], opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
       return
@@ -1221,11 +1080,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
     const uniq = Array.from(new Set(ids)).sort()
     window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: uniq, opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
-  }, [combinedAvailableEmbeds, chatMode, chatPaneOpen, selectedEmbedChatKeys, youTubePollMultiplier])
+  }, [combinedAvailableEmbeds, chatPaneOpen, selectedEmbedChatKeys, youTubePollMultiplier])
 
   // Subscribe Twitch IRC chat for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
-    const shouldRun = chatPaneOpen && chatMode === 'combined'
+    const shouldRun = chatPaneOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: [] }).catch(() => {})
       return
@@ -1241,7 +1100,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
     const uniq = Array.from(new Set(chans)).sort()
     window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: uniq }).catch(() => {})
-  }, [chatMode, chatPaneOpen, selectedEmbedChatKeys])
+  }, [chatPaneOpen, selectedEmbedChatKeys])
 
   // Poll pinned streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No DGG required.
   useEffect(() => {
@@ -1873,113 +1732,42 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 <div className="p-2 border-b border-base-300">
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
-                      {chatMode === 'embedded' ? 'Chat (embedded)' : combinedHeaderText}
+                      {combinedHeaderText}
                     </div>
-                    {chatMode === 'combined' ? (
-                      <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
-                        {combinedMsgCount} msgs · {combinedDggUserCount} users
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-ghost btn-circle"
-                          title="Close chat"
-                          onClick={() => setChatPaneOpen(false)}
-                          aria-label="Close chat"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ) : null}
-                    {chatMode === 'embedded' && (
-                      <>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-ghost btn-circle"
-                            title="Close chat"
-                            onClick={() => setChatPaneOpen(false)}
-                            aria-label="Close chat"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <button className="btn btn-xs btn-ghost" onClick={openDestinyLogin}>
-                          Login
-                        </button>
-                        <button
-                          className="btn btn-xs btn-ghost"
-                          onClick={() =>
-                            dggUtilitiesEnabled
-                              ? window.ipcRenderer.invoke('destiny-embed-reload')
-                              : setChatEmbedReload((v) => v + 1)
-                          }
-                        >
-                          Reload
-                        </button>
-                        {dggUtilitiesEnabled && (
-                          <>
-                            <button
-                              className="btn btn-xs btn-ghost"
-                              title="Open DevTools for the chat embed (inspect when docked)"
-                              onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
-                            >
-                              Inspect
-                            </button>
-                            <button
-                              className="btn btn-xs btn-ghost"
-                              onClick={() => {
-                                setDestinyEmbedDetached(true)
-                                window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
-                              }}
-                            >
-                              Detach
-                            </button>
-                          </>
-                        )}
-                      </>
-                    )}
+                    <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
+                      {combinedMsgCount} msgs · {combinedDggUserCount} users
+                      <span className="text-xs text-base-content/50" title="Add cookies in main menu">
+                        DGG: main menu → Connections / Accounts
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost btn-circle"
+                        title="Close chat"
+                        onClick={() => setChatPaneOpen(false)}
+                        aria-label="Close chat"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-hidden">
-                  {chatMode === 'embedded' ? (
-                    dggUtilitiesEnabled ? (
-                      destinyEmbedDetached ? (
-                        <div className="w-full h-full flex items-center justify-center bg-base-200 text-base-content/70 text-sm p-4 text-center">
-                          Chat detached. Close the chat window to re-attach.
-                        </div>
-                      ) : (
-                        <div
-                          ref={destinyEmbedSlotRefCallback}
-                          className="w-full h-full min-w-0 min-h-0"
-                          style={{ backgroundColor: 'transparent' }}
-                        />
-                      )
-                    ) : (
-                      <iframe
-                        src={chatEmbedSrc}
-                        title="Destiny.gg Chat"
-                        className="w-full h-full"
-                        style={{ border: 'none' }}
-                        allow="clipboard-read; clipboard-write"
-                      />
-                    )
-                  ) : (
-                    <CombinedChat
-                      enableDgg={combinedIncludeDgg}
-                      showDggInput={showDggInput}
-                      getEmbedDisplayName={getEmbedDisplayName}
-                      onOpenLink={handleChatOpenLink}
-                      maxMessages={combinedMaxMessages}
-                      showTimestamps={combinedShowTimestamps}
-                      showSourceLabels={combinedShowLabels}
-                      sortMode={combinedSortMode}
-                      highlightTerm={combinedHighlightTerm || undefined}
-                      onCountChange={setCombinedMsgCount}
-                      onDggUserCountChange={setCombinedDggUserCount}
-                      dggInputRef={dggInputRef}
-                      focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
-                    />
-                  )}
+                  <CombinedChat
+                    enableDgg={combinedIncludeDgg}
+                    showDggInput={showDggInput}
+                    getEmbedDisplayName={getEmbedDisplayName}
+                    onOpenLink={handleChatOpenLink}
+                    maxMessages={combinedMaxMessages}
+                    showTimestamps={combinedShowTimestamps}
+                    showSourceLabels={combinedShowLabels}
+                    sortMode={combinedSortMode}
+                    highlightTerm={combinedHighlightTerm || undefined}
+                    onCountChange={setCombinedMsgCount}
+                    onDggUserCountChange={setCombinedDggUserCount}
+                    dggInputRef={dggInputRef}
+                    focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
+                  />
                 </div>
               </div>
             </div>
@@ -2545,113 +2333,42 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 <div className="p-2 border-b border-base-300">
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
-                      {chatMode === 'embedded' ? 'Chat (embedded)' : combinedHeaderText}
+                      {combinedHeaderText}
                     </div>
-                    {chatMode === 'combined' ? (
-                      <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
-                        {combinedMsgCount} msgs · {combinedDggUserCount} users
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-ghost btn-circle"
-                          title="Close chat"
-                          onClick={() => setChatPaneOpen(false)}
-                          aria-label="Close chat"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ) : null}
-                    {chatMode === 'embedded' && (
-                      <>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-ghost btn-circle"
-                            title="Close chat"
-                            onClick={() => setChatPaneOpen(false)}
-                            aria-label="Close chat"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <button className="btn btn-xs btn-ghost" onClick={openDestinyLogin}>
-                          Login
-                        </button>
-                        <button
-                          className="btn btn-xs btn-ghost"
-                          onClick={() =>
-                            dggUtilitiesEnabled
-                              ? window.ipcRenderer.invoke('destiny-embed-reload')
-                              : setChatEmbedReload((v) => v + 1)
-                          }
-                        >
-                          Reload
-                        </button>
-                        {dggUtilitiesEnabled && (
-                          <>
-                            <button
-                              className="btn btn-xs btn-ghost"
-                              title="Open DevTools for the chat embed (inspect when docked)"
-                              onClick={() => window.ipcRenderer.invoke('destiny-embed-open-devtools').catch(() => {})}
-                            >
-                              Inspect
-                            </button>
-                            <button
-                              className="btn btn-xs btn-ghost"
-                              onClick={() => {
-                                setDestinyEmbedDetached(true)
-                                window.ipcRenderer.invoke('destiny-embed-detach').catch(() => {})
-                              }}
-                            >
-                              Detach
-                            </button>
-                          </>
-                        )}
-                      </>
-                    )}
+                    <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
+                      {combinedMsgCount} msgs · {combinedDggUserCount} users
+                      <span className="text-xs text-base-content/50" title="Add cookies in main menu">
+                        DGG: main menu → Connections / Accounts
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost btn-circle"
+                        title="Close chat"
+                        onClick={() => setChatPaneOpen(false)}
+                        aria-label="Close chat"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-hidden">
-                  {chatMode === 'embedded' ? (
-                    dggUtilitiesEnabled ? (
-                      destinyEmbedDetached ? (
-                        <div className="w-full h-full flex items-center justify-center bg-base-200 text-base-content/70 text-sm p-4 text-center">
-                          Chat detached. Close the chat window to re-attach.
-                        </div>
-                      ) : (
-                        <div
-                          ref={destinyEmbedSlotRefCallback}
-                          className="w-full h-full min-w-0 min-h-0"
-                          style={{ backgroundColor: 'transparent' }}
-                        />
-                      )
-                    ) : (
-                      <iframe
-                        src={chatEmbedSrc}
-                        title="Destiny.gg Chat"
-                        className="w-full h-full"
-                        style={{ border: 'none' }}
-                        allow="clipboard-read; clipboard-write"
-                      />
-                    )
-                  ) : (
-                    <CombinedChat
-                      enableDgg={combinedIncludeDgg}
-                      showDggInput={showDggInput}
-                      getEmbedDisplayName={getEmbedDisplayName}
-                      onOpenLink={handleChatOpenLink}
-                      maxMessages={combinedMaxMessages}
-                      showTimestamps={combinedShowTimestamps}
-                      showSourceLabels={combinedShowLabels}
-                      sortMode={combinedSortMode}
-                      highlightTerm={combinedHighlightTerm || undefined}
-                      onCountChange={setCombinedMsgCount}
-                      onDggUserCountChange={setCombinedDggUserCount}
-                      dggInputRef={dggInputRef}
-                      focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
-                    />
-                  )}
+                  <CombinedChat
+                    enableDgg={combinedIncludeDgg}
+                    showDggInput={showDggInput}
+                    getEmbedDisplayName={getEmbedDisplayName}
+                    onOpenLink={handleChatOpenLink}
+                    maxMessages={combinedMaxMessages}
+                    showTimestamps={combinedShowTimestamps}
+                    showSourceLabels={combinedShowLabels}
+                    sortMode={combinedSortMode}
+                    highlightTerm={combinedHighlightTerm || undefined}
+                    onCountChange={setCombinedMsgCount}
+                    onDggUserCountChange={setCombinedDggUserCount}
+                    dggInputRef={dggInputRef}
+                    focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
+                  />
                 </div>
               </div>
             </div>
@@ -2889,25 +2606,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {settingsTab === 'chat' && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium">Chat mode</span>
-                    <div className="join">
-                      <button
-                        type="button"
-                        className={`btn btn-xs join-item ${chatMode === 'embedded' ? 'btn-primary' : 'btn-ghost'}`}
-                        onClick={() => setChatMode('embedded')}
-                      >
-                        Embedded
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn btn-xs join-item ${chatMode === 'combined' ? 'btn-primary' : 'btn-ghost'}`}
-                        onClick={() => setChatMode('combined')}
-                      >
-                        Combined
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium">Chat pane side</span>
                     <button
                       type="button"
@@ -3064,7 +2762,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {settingsTab === 'keybinds' && (
                 <div className="space-y-4">
                   <p className="text-sm text-base-content/60 mb-4">
-                    Focus DGG chat input when combined chat is open (not when using Destiny embed chat).
+                    Focus DGG chat input when the chat pane is open.
                   </p>
                   <div className="flex items-center gap-4">
                     <label className="text-sm font-medium shrink-0">Focus DGG chat input</label>

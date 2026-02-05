@@ -107,15 +107,10 @@ function RedditEmbed({ url, theme = 'dark', onError }: RedditEmbedProps) {
       <div className="bg-base-200 rounded-lg p-6 mb-4">
         <p className="text-base-content/70 mb-2">Failed to load Reddit embed</p>
         <p className="text-sm text-error mb-3">{error}</p>
+        <p className="text-sm text-base-content/60 mb-2">
+          Add Reddit cookies in the main menu: Connections / Accounts. Then retry.
+        </p>
         <div className="flex gap-2 mb-3">
-          <button
-            className="btn btn-sm btn-primary"
-            onClick={() => {
-              window.ipcRenderer.invoke('open-login-window', 'reddit')
-            }}
-          >
-            Login to Reddit
-          </button>
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => {

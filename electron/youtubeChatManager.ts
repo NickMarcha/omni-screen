@@ -216,14 +216,18 @@ function extractMessagesFromActions(videoId: string, actions: any[]): YouTubeCha
   return out
 }
 
+function getYouTubeSession() {
+  return session.fromPartition('persist:main')
+}
+
 async function fetchText(url: string, headers: Record<string, string>): Promise<string> {
-  const res = await session.defaultSession.fetch(url, { headers })
+  const res = await getYouTubeSession().fetch(url, { headers })
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
   return await res.text()
 }
 
 async function fetchJson(url: string, headers: Record<string, string>, body: any, signal?: AbortSignal): Promise<any> {
-  const res = await session.defaultSession.fetch(url, {
+  const res = await getYouTubeSession().fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

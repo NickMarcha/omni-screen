@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Connections / Accounts** (Menu → Connections): Central place to manage cookies per platform for DGG chat, embeds, and combined chat (DGG, YouTube, Kick, Twitch, Twitter, Reddit).
+- **Simplified mode**: “Log in” opens an in-app browser; “Logged in” only when auth cookies are present (platform-specific cookie names; tracking cookies no longer count as logged in). Per-platform “Delete cookies” to clear that platform’s session.
+- **Paranoid mode** toggle: Paste cookies manually (no password ever entered in the app); manual fields and paste blob; short explanation that you never type your password.
+- **Clear options**: “Delete all sessions” (clears known platform domains) and “Clear entire cookie store” (clears every cookie in the app session). Success messages no longer show cookie counts (avoids confusion from embeds re-setting cookies).
+- **Kick logged-in detection**: Uses `kick_session` and `session_token` so Kick shows “Logged in” when you have a real session.
+- Manual cookie fields and paste area refresh when the login window closes, so you see updated values without reopening the modal.
+
+### Changed
+- Connections UI simplified: long explanation removed (details in code comments); “Log in in browser” label shortened to “Log in”.
+- Auth detection is based on platform auth cookie names only (e.g. DGG: sid/rememberme; YouTube: SID, HSID, etc.; Twitter: auth_token/ct0; Reddit: reddit_session; Twitch: auth-token/unique_id; Kick: kick_session/session_token), so opening YouTube or clearing sessions no longer falsely shows “Logged in”.
+
 ## [1.7.2] - 2026-01-31
 
 ### Added
