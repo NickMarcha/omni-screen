@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.8.1] - 2026-02-06
+
+### Fixed
+- **Packaged app (AppImage/installer)**: Logs are now written to the user data directory (e.g. `~/.config/omni-screen/logs`) instead of inside the read-only app bundle, fixing "Failed to create logs directory" when running the installed AppImage.
+- **AUR (omni-screen-bin)**: PKGBUILD now uses the correct GitHub release AppImage URL (`Omni-Screen-Linux-{version}-x86_64.AppImage`), so `yay -S omni-screen-bin` installs successfully.
+
 ## [1.8.0] - 2026-02-05
 
 ### Added
