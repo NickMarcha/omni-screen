@@ -2,19 +2,11 @@
 
 A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
 
-## 🎬 OmniScreen Demo
+## 🎬 OmniScreen
 
-<video src="./docs/OmniScreen.mp4" controls width="640"></video>
+![Omni Screen Demo](./docs/OmniScreenDemo.mov)
 
 *Main feature: split-screen with combined chat (DGG, YouTube, Kick, Twitch), and live embeds (YouTube/Kick/Twitch).*
-
-*([Open video directly](./docs/OmniScreen.mp4) if it doesn’t play above.)*
-
-## 🎬 Link Scroller Demo
-
-![Link Scroller Demo](./docs/LinkScroller.webp)
-
-*Link Scroller: browse links shared in DGG chat mentions.*
 
 ## 📥 Download & Install
 
