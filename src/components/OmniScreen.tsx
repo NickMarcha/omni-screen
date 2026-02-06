@@ -2324,7 +2324,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               ? Math.max(8, dockHoverRect.top - 8)
               : (() => {
                   const barRect = dockBarRef.current?.getBoundingClientRect()
-                  const barBottom = barRect ? barRect.bottom : dockHoverRect.bottom
+                  const barBottom = barRect ? barRect.bottom : dockHoverRect.top + dockHoverRect.height
                   return barBottom + 12
                 })()
             const isGroup = hoveredDockItem.type === 'group'
@@ -2508,7 +2508,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           }
           const left = Math.max(minLeft, Math.min(maxLeft, preferredLeft))
           const pieAboveBar = !dockAtTop
-          const top = pieAboveBar ? Math.max(8, pieChartRect.top - 8) : pieChartRect.bottom + 8
+          const top = pieAboveBar ? Math.max(8, pieChartRect.top - 8) : pieChartRect.top + pieChartRect.height + 8
           return (
           <div
             className="fixed z-[9999] p-3 shadow bg-base-100 rounded-box border border-base-300"
