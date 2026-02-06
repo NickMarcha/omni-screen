@@ -344,6 +344,8 @@ function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment
 
 const SCROLL_THRESHOLD_PX = 40
 const DGG_AUTOCOMPLETE_LIMIT = 20
+/** Base height for YouTube/Kick/Twitch inline emotes. 25% larger than previous 18px for readability. */
+const THIRD_PARTY_EMOTE_HEIGHT_PX = 23
 
 function isAtBottom(el: HTMLElement) {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_THRESHOLD_PX
@@ -758,7 +760,7 @@ function renderKickEmote(id: number, name?: string, key?: string) {
       title={name ? `:${name}:` : undefined}
       loading="lazy"
       className="inline-block align-middle mx-0.5"
-      style={{ height: 18, width: 'auto' }}
+      style={{ height: THIRD_PARTY_EMOTE_HEIGHT_PX, width: 'auto' }}
     />
   )
 }
@@ -889,7 +891,7 @@ function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string
           title={run.shortcut ?? undefined}
           loading="lazy"
           className="inline-block align-middle mx-0.5"
-          style={{ height: 18, width: 'auto', verticalAlign: 'middle' }}
+          style={{ height: THIRD_PARTY_EMOTE_HEIGHT_PX, width: 'auto', verticalAlign: 'middle' }}
         />,
       )
     }
@@ -910,6 +912,7 @@ export default function CombinedChat({
   showPlatformIcons = false,
   sortMode,
   highlightTerm,
+  pauseEmoteAnimationsOffScreen = false,
   onCountChange,
   onDggUserCountChange,
   onOpenLink: onOpenLinkProp,
@@ -929,6 +932,8 @@ export default function CombinedChat({
   sortMode: 'timestamp' | 'arrival'
   /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
   highlightTerm?: string
+  /** When true, pause CSS animations on DGG emotes when they scroll out of view (reduces restart-on-scroll). */
+  pauseEmoteAnimationsOffScreen?: boolean
   onCountChange?: (count: number) => void
   /** Called when DGG user count (from NAMES/JOIN/QUIT) changes, for header display. */
   onDggUserCountChange?: (count: number) => void
@@ -1035,9 +1040,11 @@ export default function CombinedChat({
     [dggInputRefProp]
   )
   const wasAtBottomRef = useRef(true)
-  const shouldStickToBottomRef = useRef(false)
+  /** True when user has scrolled up (don't auto-scroll). Set false when user scrolls to bottom or clicks "scroll to bottom". Kept separate from isAtBottom so layout changes (e.g. poll bar) don't disable stick. */
+  const userScrolledUpRef = useRef(false)
   const programmaticScrollRef = useRef(false)
   const seqRef = useRef(0)
+  const prevPrivViewOpenRef = useRef(false)
 
   /** Hard cap so the list never grows unbounded (e.g. if left open for days). ~5k messages ≈ 15k DOM nodes. */
   const HARD_MAX = 5000
@@ -1070,7 +1077,6 @@ export default function CombinedChat({
 
   const appendItems = (newItems: CombinedItemWithSeq[]) => {
     if (newItems.length === 0) return
-    markStickIfAtBottom()
     setItems((prev) => trimToLimit([...prev, ...newItems], wasAtBottomRef.current))
     setUpdateSeq((v) => v + 1)
   }
@@ -1189,7 +1195,7 @@ export default function CombinedChat({
     }
   }, [enableDgg])
 
-  // Track "at bottom" for auto-scroll behavior.
+  // Track "at bottom" and "user scrolled up" for auto-scroll behavior.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
@@ -1198,6 +1204,8 @@ export default function CombinedChat({
       if (programmaticScrollRef.current) return
       const atBottom = isAtBottom(el)
       wasAtBottomRef.current = atBottom
+      // Only update userScrolledUp from actual scroll: true when not at bottom, false when at bottom.
+      userScrolledUpRef.current = !atBottom
       setShowMoreMessagesBelow((prev) => (prev !== !atBottom ? !atBottom : prev))
     }
 
@@ -1206,13 +1214,34 @@ export default function CombinedChat({
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
+  /** When appending or after history/reconnect: if we're at bottom, clear "user scrolled up" so we keep sticking. */
   const markStickIfAtBottom = () => {
     const el = scrollerRef.current
     const atBottom = el ? isAtBottom(el) : true
-    // Only stick if the user is currently at bottom.
-    shouldStickToBottomRef.current = atBottom
     wasAtBottomRef.current = atBottom
+    if (atBottom) userScrolledUpRef.current = false
   }
+
+  // When "pause emote animations off-screen" is on, pause CSS animations on .emote when they leave the viewport.
+  useEffect(() => {
+    if (!pauseEmoteAnimationsOffScreen || privViewOpen) return
+    const el = scrollerRef.current
+    if (!el) return
+    const emotes = el.querySelectorAll('.emote')
+    if (emotes.length === 0) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const target = e.target as HTMLElement
+          if (e.isIntersecting) target.classList.remove('emote-paused')
+          else target.classList.add('emote-paused')
+        }
+      },
+      { root: el, rootMargin: '0px', threshold: 0 }
+    )
+    emotes.forEach((node) => observer.observe(node))
+    return () => observer.disconnect()
+  }, [pauseEmoteAnimationsOffScreen, privViewOpen, updateSeq])
 
   const closeUserTooltip = useCallback(() => setUserTooltip(null), [])
 
@@ -1588,6 +1617,26 @@ export default function CombinedChat({
     return () => cancelAnimationFrame(raf)
   }, [privViewOpen, activeWhisperUsername, inboxMessages])
 
+  // When returning from whisper view to combined feed, scroll to bottom so we don't stay at top
+  useEffect(() => {
+    if (prevPrivViewOpenRef.current && !privViewOpen) {
+      const el = scrollerRef.current
+      if (el) {
+        programmaticScrollRef.current = true
+        userScrolledUpRef.current = false
+        wasAtBottomRef.current = true
+        setShowMoreMessagesBelow(false)
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false
+          })
+        })
+      }
+    }
+    prevPrivViewOpenRef.current = privViewOpen
+  }, [privViewOpen])
+
   const removeWhisperUsername = useCallback((username: string) => {
     setWhisperUsernames((prev) => {
       const next = prev.filter((u) => u !== username)
@@ -1915,22 +1964,20 @@ export default function CombinedChat({
     onCountChange?.(displayItems.length)
   }, [displayItems.length, onCountChange])
 
-  // Auto-scroll when we were already at bottom.
+  // Auto-scroll when user has not scrolled up (stick to bottom).
   // Use updateSeq (not merged.length) because the list is capped at MAX_MESSAGES
   // and length can stay constant even as new messages arrive.
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    if (!shouldStickToBottomRef.current) return
+    if (userScrolledUpRef.current) return
 
     programmaticScrollRef.current = true
     el.scrollTop = el.scrollHeight
-    // release after the browser processes scroll
     requestAnimationFrame(() => {
       programmaticScrollRef.current = false
     })
-
-    shouldStickToBottomRef.current = false
+    userScrolledUpRef.current = false
     wasAtBottomRef.current = true
   }, [updateSeq])
 
@@ -2092,6 +2139,7 @@ export default function CombinedChat({
       programmaticScrollRef.current = true
       el.scrollTop = el.scrollHeight
       wasAtBottomRef.current = true
+      userScrolledUpRef.current = false
       setShowMoreMessagesBelow(false)
       requestAnimationFrame(() => {
         programmaticScrollRef.current = false
@@ -2206,7 +2254,10 @@ export default function CombinedChat({
             />
           </div>
         )}
-        <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+        <div
+          ref={scrollerRef}
+          className={`flex-1 min-h-0 overflow-y-auto p-2 space-y-2 ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''}`}
+        >
         {privViewOpen ? (
           activeWhisperUsername ? (
             /* Inbox conversation with one user */
@@ -2321,7 +2372,7 @@ export default function CombinedChat({
               const icon = m.eventType === 'donation' ? '💰' : '🎁'
               return (
                 <div
-                  key={`msg-${entry.index}-dgg-event-${m.tsMs}-${m.eventType}-${m.nick}`}
+                  key={`msg-dgg-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
                   className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/80"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
@@ -2335,7 +2386,7 @@ export default function CombinedChat({
               const icon = m.kind === 'ban' ? '🔨' : m.kind === 'unmute' ? '🔓' : '🔇'
               return (
                 <div
-                  key={`msg-${entry.index}-dgg-system-${m.kind}-${m.tsMs}`}
+                  key={`msg-dgg-system-${(m as CombinedItemWithSeq).seq}-${m.kind}-${m.tsMs}`}
                   className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/70"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
@@ -2372,7 +2423,7 @@ export default function CombinedChat({
                 : []
             return (
               <div
-                key={`msg-${entry.index}-${m.source}-${m.tsMs}-${m.nick}`}
+                key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
                 className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
                 {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
@@ -2463,11 +2514,13 @@ export default function CombinedChat({
           const kickParts = !isDgg && emoteKey.startsWith('kick:') ? emoteKey.slice(5).split(':') : []
           const kickId = kickParts.length >= 1 ? Number(kickParts[0]) : 0
           const kickName = kickParts.length >= 2 ? kickParts.slice(1).join(':') : undefined
+          const comboStepClass = count >= 50 ? 'x50' : count >= 30 ? 'x30' : count >= 20 ? 'x20' : count >= 10 ? 'x10' : count >= 5 ? 'x5' : 'x2'
           return (
             <div
-              key={`combo-${entry.index}-${source}-${emoteKey}-${count}`}
-              className="msg-chat msg-emote text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-2"
+              key={`combo-${source}-${emoteKey}-${tsMs}-${count}`}
+              className={`msg-chat msg-emote text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-2 ${comboStepClass}`}
               data-combo={count}
+              data-combo-group={comboStepClass}
             >
               {showTimestamps ? <span className="text-xs text-base-content/50">{ts}</span> : null}
               {showSourceLabels ? (
@@ -2498,7 +2551,7 @@ export default function CombinedChat({
                   renderKickEmote(kickId, kickName, `combo-kick-${entry.index}`)
                 ) : null}
               </span>
-              <span className="chat-combo combo-complete inline-flex items-center gap-1 text-base-content/70 text-xs">
+              <span className={`chat-combo combo-complete ${comboStepClass} inline-flex items-center gap-1 text-base-content/70 text-xs`}>
                 <i className="count font-semibold">{count}</i>
                 <i className="x">×</i>
                 <i className="hit">Hits</i>

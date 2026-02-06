@@ -546,6 +546,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [combinedHighlightTerm, setCombinedHighlightTerm] = useState<string>(() => {
     return localStorage.getItem('omni-screen:combined-highlight-term') ?? ''
   })
+  const [combinedPauseEmoteAnimationsOffScreen, setCombinedPauseEmoteAnimationsOffScreen] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:combined-pause-emote-offscreen')
+    if (saved === '1' || saved === 'true') return true
+    return false
+  })
   const [chatLinkOpenAction, setChatLinkOpenAction] = useState<'none' | 'clipboard' | 'browser' | 'viewer'>(() => {
     const saved = localStorage.getItem('omni-screen:chat-link-open-action')
     if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
@@ -820,10 +825,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
       localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
       localStorage.setItem('omni-screen:combined-highlight-term', combinedHighlightTerm)
+      localStorage.setItem('omni-screen:combined-pause-emote-offscreen', combinedPauseEmoteAnimationsOffScreen ? '1' : '0')
     } catch {
       // ignore
     }
-  }, [combinedShowLabels, combinedShowPlatformIcons, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm])
+  }, [combinedShowLabels, combinedShowPlatformIcons, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm, combinedPauseEmoteAnimationsOffScreen])
 
   useEffect(() => {
     try {
@@ -1757,6 +1763,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
                     highlightTerm={combinedHighlightTerm || undefined}
+                    pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
@@ -2356,6 +2363,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
                     highlightTerm={combinedHighlightTerm || undefined}
+                    pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
@@ -2670,6 +2678,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
                       />
                     </label>
+                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
+                      <span>Pause emote animations when off-screen</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm"
+                        checked={combinedPauseEmoteAnimationsOffScreen}
+                        onChange={(e) => setCombinedPauseEmoteAnimationsOffScreen(e.target.checked)}
+                      />
+                    </label>
+                    <span className="label-text-alt text-base-content/60 -mt-1 mb-2 block">Reduces DGG emote animation restarts when scrolling.</span>
                     <label className="flex flex-col gap-1 text-sm mb-2">
                       <span>Highlight term</span>
                       <input
