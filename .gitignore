@@ -26,4 +26,7 @@ dist-ssr
 
 release
 
+# AUR / release tarballs (generated artifacts)
+omni-screen-bin*.tar.gz
+
 .env

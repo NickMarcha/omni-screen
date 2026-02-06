@@ -224,12 +224,33 @@ The workflow publishes an AUR package **omni-screen-bin** (AppImage from GitHub 
 
 #### 1. Create the AUR package (one time)
 
+The AUR no longer has a web "submit" page. You create a new package by **cloning the (empty) AUR repo and pushing** your files. See [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines).
+
 1. Create an account at [aur.archlinux.org](https://aur.archlinux.org) if you don’t have one.
 2. Add your **SSH public key** in [AUR Account Settings](https://aur.archlinux.org/account/) (SSH keys).  
    AUR allows one key per account; many maintainers use a dedicated “machine” account for automation.
-3. Create the package: [Submit a new package](https://aur.archlinux.org/packages/submit/).  
-   - Package name: `omni-screen-bin`  
-   - You can upload a minimal PKGBUILD (e.g. from `aur/PKGBUILD` with a dummy `pkgver`) just to create the repo, or clone the empty AUR repo and push the initial PKGBUILD.
+3. **Clone the empty AUR repo** (run from a directory where you want the clone; the "empty repository" warning is expected for a new package):
+   ```bash
+   git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/omni-screen-bin.git
+   cd omni-screen-bin
+   ```
+4. **Add package files** from this repo into the clone. Use a `pkgver` that already has a GitHub release (e.g. `1.8.0`):
+   ```bash
+   # From inside the omni-screen-bin clone; adjust the path to the omni-screen repo if needed.
+   cp /path/to/omni-screen/aur/PKGBUILD /path/to/omni-screen/aur/omni-screen.desktop /path/to/omni-screen/aur/LICENSE .
+   sed -i 's/PKGVER_PLACEHOLDER/1.8.0/' PKGBUILD   # or set VER and use "$VER" in fish
+   ```
+5. **Generate .SRCINFO** (required by AUR). Requires `pacman`/`makepkg` (e.g. on Arch or in a container):
+   ```bash
+   makepkg --printsrcinfo > .SRCINFO
+   ```
+6. **Commit and push** to create the package on AUR:
+   ```bash
+   git add PKGBUILD .SRCINFO omni-screen.desktop LICENSE
+   git commit -m "Initial commit: omni-screen-bin 1.8.0"
+   git push aur master
+   ```
+   After this, the GitHub Actions workflow will update the AUR package on every tag push.
 
 #### 2. GitHub Actions secrets
 
