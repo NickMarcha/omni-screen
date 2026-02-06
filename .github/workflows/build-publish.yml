@@ -84,6 +84,7 @@ jobs:
         run: npm ci
 
       - name: Set version from tag
+        shell: bash
         run: |
           VER="${GITHUB_REF#refs/tags/v}"
           npm pkg set version="$VER"
