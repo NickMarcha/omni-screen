@@ -1,7 +1,7 @@
 {
   "name": "omni-screen",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "The Omni Screen",
   "author": "Your Name <your.email@example.com>",
   "type": "module",
