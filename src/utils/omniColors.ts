@@ -15,6 +15,9 @@ const COLOR_DGG: OmniColor = '#94b3c3'
 const COLOR_DESTINY_KICK: OmniColor = '#7dcf67'
 const COLOR_DESTINY_YOUTUBE: OmniColor = '#be5640'
 
+/** Default color when a bookmarked streamer has no dock/platform color set. Not from the random palette. */
+export const COLOR_BOOKMARKED_DEFAULT = '#6b7280'
+
 const NON_RESERVED: OmniColor[] = [
   '#8450c5',
   '#ccb55d',

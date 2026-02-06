@@ -953,17 +953,39 @@ export type CombinedChatContextMenuConfig = {
   order: { sortMode: 'timestamp' | 'arrival'; setSortMode: (v: 'timestamp' | 'arrival') => void }
   emotes: { pauseOffScreen: boolean; setPauseOffScreen: (v: boolean) => void }
   linkAction: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
+  /** Chat pane side: left or right. */
+  paneSide: { value: 'left' | 'right'; setPaneSide: (v: 'left' | 'right') => void }
   dgg?: { showInput: boolean; setShowInput: (v: boolean) => void }
   highlightTerms?: string[]
   addHighlightTerm?: (term: string) => void
   removeHighlightTerm?: (term: string) => void
 }
 
+/** Parse optional DGG label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
+function parseDggLabelColor(value: string | undefined): string | undefined {
+  if (!value || !value.trim()) return undefined
+  const v = value.trim()
+  if (/^#[0-9A-Fa-f]{6}$/.test(v)) return v
+  const rgb = v.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/)
+  if (rgb) {
+    const r = Math.max(0, Math.min(255, parseInt(rgb[1], 10)))
+    const g = Math.max(0, Math.min(255, parseInt(rgb[2], 10)))
+    const b = Math.max(0, Math.min(255, parseInt(rgb[3], 10)))
+    return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  }
+  return undefined
+}
+
 export default function CombinedChat({
   enableDgg,
   showDggInput = true,
   getEmbedDisplayName,
+  getEmbedColor,
+  getEmbedLabelHidden,
+  dggLabelColor,
+  dggLabelText = 'dgg',
   maxMessages,
+  maxMessagesScroll = 5000,
   showTimestamps,
   showSourceLabels,
   showPlatformIcons = false,
@@ -983,7 +1005,17 @@ export default function CombinedChat({
   showDggInput?: boolean
   /** Lookup display name for a channel key (e.g. youtube:videoId); canonicalizes key so casing matches. */
   getEmbedDisplayName: (key: string) => string
+  /** Optional: color for embed channel in combined chat (hex). When set, used for non-DGG message accent. */
+  getEmbedColor?: (key: string, displayName?: string) => string
+  /** Optional: when true for an embed key, hide the source label (badge) for that message. */
+  getEmbedLabelHidden?: (key: string) => boolean
+  /** Optional: override color for DGG label/badge (hex or rgb(r,g,b)). Default when unset: theme DGG color. */
+  dggLabelColor?: string
+  /** Text shown in the source badge for DGG messages. Default "dgg". */
+  dggLabelText?: string
   maxMessages: number
+  /** Max messages to keep when scrolled up (hard cap). Default 5000. */
+  maxMessagesScroll?: number
   showTimestamps: boolean
   showSourceLabels: boolean
   /** When true, show platform favicon (dgg, kick, youtube, twitch) in the source badge. */
@@ -1015,6 +1047,10 @@ export default function CombinedChat({
     flairsList.forEach((f) => m.set(f.name, f))
     return m
   }, [flairsList])
+  const dggAccentColor = useMemo(
+    () => parseDggLabelColor(dggLabelColor) ?? omniColorForKey('dgg'),
+    [dggLabelColor],
+  )
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
   const [dggInputValue, setDggInputValue] = useState('')
@@ -1119,24 +1155,29 @@ export default function CombinedChat({
   const seqRef = useRef(0)
   const prevPrivViewOpenRef = useRef(false)
 
-  /** Hard cap so the list never grows unbounded (e.g. if left open for days). ~5k messages ≈ 15k DOM nodes. */
-  const HARD_MAX = 5000
+  /** Hard cap when scrolled up (from settings). */
+  const hardCap = useMemo(() => {
+    const v = Number.isFinite(maxMessagesScroll) ? Math.floor(maxMessagesScroll) : 5000
+    return Math.max(50, Math.min(50000, v))
+  }, [maxMessagesScroll])
+  const hardCapRef = useRef(hardCap)
+  hardCapRef.current = hardCap
 
   const maxKeep = useMemo(() => {
-    const v = Number.isFinite(maxMessages) ? Math.floor(maxMessages) : 600
-    return Math.max(50, Math.min(HARD_MAX, v))
-  }, [maxMessages])
+    const v = Number.isFinite(maxMessages) ? Math.floor(maxMessages) : 70
+    return Math.max(50, Math.min(hardCap, v))
+  }, [maxMessages, hardCap])
 
-  const effectiveCap = Math.min(maxKeep, HARD_MAX)
+  const effectiveCap = Math.min(maxKeep, hardCap)
 
-  /** Trim only when at bottom (soft limit). When scrolled up, only trim if over hard max. */
+  /** Trim only when at bottom (soft limit). When scrolled up, only trim if over hard cap. */
   const trimToLimit = useCallback(
     (arr: CombinedItemWithSeq[], atBottom: boolean): CombinedItemWithSeq[] => {
-      const limit = atBottom ? effectiveCap : HARD_MAX
+      const limit = atBottom ? effectiveCap : hardCap
       if (arr.length <= limit) return arr
       return arr.slice(arr.length - limit)
     },
-    [effectiveCap]
+    [effectiveCap, hardCap]
   )
 
   const trimToLimitRef = useRef(trimToLimit)
@@ -1145,8 +1186,7 @@ export default function CombinedChat({
   useEffect(() => {
     setItems((prev) => trimToLimit(prev, wasAtBottomRef.current))
     setUpdateSeq((v) => v + 1)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [maxKeep])
+  }, [trimToLimit])
 
   const appendItems = (newItems: CombinedItemWithSeq[]) => {
     if (newItems.length === 0) return
@@ -1420,7 +1460,7 @@ export default function CombinedChat({
     const handleHistory = (_event: any, history: DggChatWsHistory) => {
       if (!alive) return
       if (!history || history.type !== 'HISTORY' || !Array.isArray(history.messages)) return
-      const slice = history.messages.slice(-HARD_MAX)
+      const slice = history.messages.slice(-hardCapRef.current)
       const mapped: CombinedItemWithSeq[] = slice.map((m) => ({
         source: 'dgg',
         tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
@@ -2312,7 +2352,7 @@ export default function CombinedChat({
                   </time>
                 )}
                 <span className="flex-1 min-w-0">
-                  <span className="font-semibold shrink-0" style={{ color: omniColorForKey('dgg') }}>
+                  <span className="font-semibold shrink-0" style={{ color: dggAccentColor }}>
                     {pinnedMessage.nick}
                   </span>
                   <span className="ctrl">: </span>
@@ -2361,7 +2401,7 @@ export default function CombinedChat({
         )}
         <div
           ref={scrollerRef}
-          className={`flex-1 min-h-0 overflow-y-auto p-2 space-y-2 ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''}`}
+          className={`flex-1 min-h-0 overflow-y-auto p-2 space-y-1 ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''}`}
           onContextMenu={
             contextMenuConfig && !privViewOpen
               ? (e) => {
@@ -2408,7 +2448,7 @@ export default function CombinedChat({
                       return (
                         <div
                           key={msg.id}
-                          className={`msg-chat text-sm rounded-md px-2 py-1 ${isFromThem ? 'bg-base-300' : 'bg-primary/15'}`}
+                          className={`msg-chat text-sm px-2 py-0.5 -mx-2 ${isFromThem ? 'bg-base-300' : 'bg-primary/15'}`}
                         >
                           {ts ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                           <span className="font-semibold mr-2">{msg.from}</span>
@@ -2489,7 +2529,7 @@ export default function CombinedChat({
               return (
                 <div
                   key={`msg-dgg-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
-                  className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/80"
+                  className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/80"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                   <span className="mr-1.5" aria-hidden>{icon}</span>
@@ -2503,7 +2543,7 @@ export default function CombinedChat({
               return (
                 <div
                   key={`msg-dgg-system-${(m as CombinedItemWithSeq).seq}-${m.kind}-${m.tsMs}`}
-                  className="text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 text-base-content/70"
+                  className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/70"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                   <span className="mr-1.5" aria-hidden>{icon}</span>
@@ -2523,8 +2563,8 @@ export default function CombinedChat({
             const displayName = getEmbedDisplayName(colorKey)
             const accent =
               m.source === 'dgg'
-                ? omniColorForKey(colorKey)
-                : omniColorForKey(colorKey, { displayName })
+                ? dggAccentColor
+                : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
             const badgeText = textColorOn(accent)
             const contentLower = (m.content ?? '').toLowerCase()
             const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
@@ -2544,16 +2584,16 @@ export default function CombinedChat({
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
-                className={`msg-chat text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`msg-chat text-sm leading-snug px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-0 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
                 {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
-                {showSourceLabels ? (
+                {showSourceLabels && (m.source === 'dgg' ? (dggLabelText != null && dggLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
                   <span
                     className="badge badge-sm shrink-0"
                     style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                   >
                     {m.source === 'dgg'
-                      ? 'DGG'
+                      ? (dggLabelText ?? '').trim()
                       : (displayName ||
                           (m.source === 'kick'
                             ? `K:${m.slug}`
@@ -2628,7 +2668,7 @@ export default function CombinedChat({
           const isDgg = source === 'dgg'
           const colorKey = isDgg ? 'dgg' : 'kick'
           const displayName = getEmbedDisplayName(colorKey)
-          const accent = isDgg ? omniColorForKey('dgg') : omniColorForKey(colorKey, { displayName })
+          const accent = isDgg ? dggAccentColor : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
           const badgeText = textColorOn(accent)
           const prefix = isDgg ? emoteKey : null
           const kickParts = !isDgg && emoteKey.startsWith('kick:') ? emoteKey.slice(5).split(':') : []
@@ -2638,17 +2678,17 @@ export default function CombinedChat({
           return (
             <div
               key={`combo-${source}-${emoteKey}-${tsMs}-${count}`}
-              className={`msg-chat msg-emote text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-2 ${comboStepClass}`}
+              className={`msg-chat msg-emote text-sm leading-snug px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass}`}
               data-combo={count}
               data-combo-group={comboStepClass}
             >
               {showTimestamps ? <span className="text-xs text-base-content/50">{ts}</span> : null}
-              {showSourceLabels ? (
+              {showSourceLabels && (isDgg ? (dggLabelText != null && dggLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
                 <span
                   className="badge badge-sm align-middle mr-2"
                   style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                 >
-                  {source === 'dgg' ? 'DGG' : displayName || 'Kick'}
+                  {source === 'dgg' ? (dggLabelText ?? '').trim() : displayName || 'Kick'}
                 </span>
               ) : null}
               {showPlatformIcons && getPlatformIcon(colorKey) ? (
@@ -2990,6 +3030,14 @@ export default function CombinedChat({
                   <span>Links</span>
                   <span aria-hidden className="text-base-content/50">▸</span>
                 </div>
+                <div
+                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                  onMouseEnter={() => setContextMenuHover('paneSide')}
+                  role="menuitem"
+                >
+                  <span>Chat pane side</span>
+                  <span aria-hidden className="text-base-content/50">▸</span>
+                </div>
                 {contextMenuConfig.dgg && (
                   <div
                     className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
@@ -3063,6 +3111,21 @@ export default function CombinedChat({
                       {contextMenuConfig.linkAction.value === action && <span aria-hidden>✓</span>}
                     </button>
                   ))}
+                </div>
+              )}
+              {contextMenuHover === 'paneSide' && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  onMouseEnter={() => setContextMenuHover('paneSide')}
+                >
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'left'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide.setPaneSide('left'); closeContextMenu() }}>
+                    <span>Left</span>
+                    {contextMenuConfig.paneSide.value === 'left' && <span aria-hidden>✓</span>}
+                  </button>
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'right'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide.setPaneSide('right'); closeContextMenu() }}>
+                    <span>Right</span>
+                    {contextMenuConfig.paneSide.value === 'right' && <span aria-hidden>✓</span>}
+                  </button>
                 </div>
               )}
               {contextMenuHover === 'dgg' && contextMenuConfig.dgg && (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
@@ -8,7 +8,7 @@ import CombinedChat, { type CombinedChatContextMenuConfig } from './CombinedChat
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
-import { omniColorForKey, textColorOn, withAlpha } from '../utils/omniColors'
+import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
 /** Log to console and to app log file (so user can search logs without DevTools). */
 function logPinned(message: string, detail?: unknown) {
@@ -61,6 +61,14 @@ export interface PinnedStreamer {
   twitchLogin?: string
   /** Hex color for dock button (e.g. #7dcf67). */
   color?: string
+  /** Per-platform hex for combined chat; undefined = use dock color. */
+  youtubeColor?: string
+  kickColor?: string
+  twitchColor?: string
+  /** When true, preferred video auto-opens when this streamer is detected as live. */
+  openWhenLive?: boolean
+  /** When true, hide the source label (badge) in combined chat for this streamer's messages. */
+  hideLabelInCombinedChat?: boolean
 }
 
 function makeEmbedKey(platform: string, id: string) {
@@ -489,10 +497,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   /** When set, the embed tile with this key shows a short shake (e.g. after clicking # link for already-selected embed). */
   const [shakeEmbedKey, setShakeEmbedKey] = useState<string | null>(null)
   const selectedEmbedKeysRef = useRef(selectedEmbedKeys)
+  selectedEmbedKeysRef.current = selectedEmbedKeys
+  const selectedEmbedChatKeysRef = useRef(selectedEmbedChatKeys)
+  selectedEmbedChatKeysRef.current = selectedEmbedChatKeys
   const handleDestinyLinkRef = useRef<(platform: string, id: string) => void>(() => {})
-  useEffect(() => {
-    selectedEmbedKeysRef.current = selectedEmbedKeys
-  }, [selectedEmbedKeys])
 
   const [autoplay, setAutoplay] = useState(true)
   const [mute, setMute] = useState(true)
@@ -515,10 +523,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const initialCombinedMaxMessages = useMemo(() => {
     const saved = Number(localStorage.getItem('omni-screen:combined-max-messages'))
-    return Number.isFinite(saved) && saved >= 50 ? Math.floor(saved) : 600
+    return Number.isFinite(saved) && saved >= 50 ? Math.floor(saved) : 70
   }, [])
   const [combinedMaxMessages, setCombinedMaxMessages] = useState<number>(initialCombinedMaxMessages)
   const [combinedMaxMessagesDraft, setCombinedMaxMessagesDraft] = useState<string>(() => String(initialCombinedMaxMessages))
+  const initialCombinedMaxMessagesScroll = useMemo(() => {
+    const saved = Number(localStorage.getItem('omni-screen:combined-max-messages-scroll'))
+    return Number.isFinite(saved) && saved >= 50 ? Math.floor(saved) : 5000
+  }, [])
+  const [combinedMaxMessagesScroll, setCombinedMaxMessagesScroll] = useState<number>(initialCombinedMaxMessagesScroll)
+  const [combinedMaxMessagesScrollDraft, setCombinedMaxMessagesScrollDraft] = useState<string>(() => String(initialCombinedMaxMessagesScroll))
   const [combinedShowTimestamps, setCombinedShowTimestamps] = useState<boolean>(() => {
     const saved = localStorage.getItem('omni-screen:combined-show-timestamps')
     if (saved === '0' || saved === 'false') return false
@@ -531,7 +545,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [combinedShowPlatformIcons, setCombinedShowPlatformIcons] = useState<boolean>(() => {
     const saved = localStorage.getItem('omni-screen:combined-show-platform-icons')
-    if (saved === '0' || saved === 'false') return false
+    if (saved === '1' || saved === 'true') return true
     return false
   })
   const [combinedSortMode, setCombinedSortMode] = useState<CombinedSortMode>(() => {
@@ -599,6 +613,29 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     } catch {}
     return { key: ' ', ctrl: true, shift: false, alt: false }
   })
+  /** DGG label/badge color in combined chat. Empty = use theme default. Default #94b3c3 for picker display. */
+  const [dggLabelColorOverride, setDggLabelColorOverride] = useState<string>(() => {
+    const saved = localStorage.getItem('omni-screen:dgg-label-color-override')
+    if (saved === '' || saved == null) return ''
+    if (/^#[0-9A-Fa-f]{6}$/.test(saved)) return saved
+    if (/^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)$/.test(saved)) {
+      const m = saved.match(/\d+/g)
+      if (m && m.length === 3) {
+        const r = parseInt(m[0], 10)
+        const g = parseInt(m[1], 10)
+        const b = parseInt(m[2], 10)
+        if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+          return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')
+        }
+      }
+    }
+    return ''
+  })
+  /** DGG label text in combined chat badge. Default "dgg". */
+  const [dggLabelText, setDggLabelText] = useState<string>(() => {
+    const saved = localStorage.getItem('omni-screen:dgg-label-text')
+    return (saved != null && saved !== '') ? saved : 'dgg'
+  })
   const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
@@ -630,6 +667,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         ...x,
         nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
         color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
+        youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
+        kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
+        twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
+        openWhenLive: x.openWhenLive === true,
       })) as PinnedStreamer[]
     } catch {
       return []
@@ -717,6 +758,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         setPauseOffScreen: setCombinedPauseEmoteAnimationsOffScreen,
       },
       linkAction: { value: chatLinkOpenAction, setValue: setChatLinkOpenAction },
+      paneSide: { value: chatPaneSide, setPaneSide: setChatPaneSide },
       dgg: combinedIncludeDgg ? { showInput: showDggInput, setShowInput: setShowDggInput } : undefined,
       highlightTerms: combinedHighlightTerms,
       addHighlightTerm: (term: string) => {
@@ -736,6 +778,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       combinedSortMode,
       combinedPauseEmoteAnimationsOffScreen,
       chatLinkOpenAction,
+      chatPaneSide,
       combinedIncludeDgg,
       showDggInput,
       combinedHighlightTerms,
@@ -833,8 +876,74 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     logPinned('combinedAvailableEmbeds', { manualCount: manualEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: m.size })
     return m
   }, [availableEmbeds, manualEmbeds, pinnedOriginatedEmbeds])
+  const combinedAvailableEmbedsRef = useRef<Map<string, LiveEmbed>>(combinedAvailableEmbeds)
+  combinedAvailableEmbedsRef.current = combinedAvailableEmbeds
+  const prevCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
+  const prevPinnedOriginatedRef = useRef<Map<string, LiveEmbed>>(new Map())
 
-  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Manual (pasted/pinned poll). */
+  /** When poll or DGG removes an embed that the user is watching, convert it to manual (📌) so it stays in the list. */
+  useEffect(() => {
+    const prev = prevCombinedEmbedsRef.current
+    const current = combinedAvailableEmbeds
+    if (prev.size === 0) {
+      prevCombinedEmbedsRef.current = new Map(current)
+      return
+    }
+    const watched = new Set([...selectedEmbedKeys, ...selectedEmbedChatKeys])
+    const toPin = new Map<string, LiveEmbed>()
+    watched.forEach((k) => {
+      const c = canonicalEmbedKey(k)
+      if (current.has(k) || current.has(c)) return
+      const embed = prev.get(k) || prev.get(c)
+      if (embed) toPin.set(c, embed)
+    })
+    if (toPin.size > 0) {
+      setManualEmbeds((m) => {
+        const next = new Map(m)
+        toPin.forEach((embed, c) => next.set(c, embed))
+        return next
+      })
+    }
+    prevCombinedEmbedsRef.current = new Map(current)
+  }, [combinedAvailableEmbeds, selectedEmbedKeys, selectedEmbedChatKeys])
+
+  /** When a bookmarked streamer comes live and that streamer has openWhenLive, add preferred platform video to selection. */
+  useEffect(() => {
+    const prev = prevPinnedOriginatedRef.current
+    const current = pinnedOriginatedEmbeds
+    prevPinnedOriginatedRef.current = new Map(current)
+    if (prev.size === 0) return
+    const prevKeys = new Set(prev.keys())
+    const newKeys = Array.from(current.keys()).filter((k) => !prevKeys.has(k))
+    if (newKeys.length === 0) return
+    const toAdd = new Set<string>()
+    for (const newKey of newKeys) {
+      const streamers = findStreamersForKey(newKey, pinnedStreamers, youtubeVideoToStreamerId).filter((s) => s.openWhenLive === true)
+      for (const s of streamers) {
+        const streamerKeys = Array.from(combinedAvailableEmbeds.keys()).filter((k) =>
+          findStreamersForKey(k, pinnedStreamers, youtubeVideoToStreamerId).some((x) => x.id === s.id),
+        )
+        const anySelected = streamerKeys.some((k) => selectedEmbedKeys.has(k))
+        if (anySelected) continue
+        for (const platform of preferredPlatformOrder) {
+          const match = streamerKeys.find((k) => (k.split(':')[0] || '').toLowerCase() === platform)
+          if (match) {
+            toAdd.add(match)
+            break
+          }
+        }
+      }
+    }
+    if (toAdd.size > 0) {
+      setSelectedEmbedKeys((prevSel) => {
+        const next = new Set(prevSel)
+        toAdd.forEach((k) => next.add(k))
+        return next
+      })
+    }
+  }, [pinnedOriginatedEmbeds, preferredPlatformOrder, pinnedStreamers, youtubeVideoToStreamerId, combinedAvailableEmbeds, selectedEmbedKeys])
+
+  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Manual (pasted / pinned). */
   const embedSourcesByKey = useMemo(() => {
     const out = new Map<string, { pinned: boolean; dgg: boolean; manual: boolean }>()
     for (const key of combinedAvailableEmbeds.keys()) {
@@ -846,13 +955,47 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return out
   }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId, availableEmbeds, isManualEmbedKey])
 
-  function formatEmbedSource(s: { pinned: boolean; dgg: boolean; manual: boolean }): string {
-    const parts: string[] = []
-    if (s.pinned) parts.push('Bookmarked')
-    if (s.dgg) parts.push('DGG embed')
-    if (s.manual) parts.push('Manually added')
-    return parts.length ? parts.join(' • ') : 'Unknown'
+  /** Icons for embed source: 🔖 bookmarked, #️⃣ DGG embed, 📌 manually added. */
+  function embedSourceIcons(s: { pinned: boolean; dgg: boolean; manual: boolean }): { icon: string; title: string }[] {
+    const out: { icon: string; title: string }[] = []
+    if (s.manual) out.push({ icon: '📌', title: 'Manually added' })
+    if (s.pinned) out.push({ icon: '🔖', title: 'Bookmarked' })
+    if (s.dgg) out.push({ icon: '#️⃣', title: 'DGG embed' })
+    return out
   }
+
+  /** Combined chat: color for an embed key. Bookmarked: use streamer platform/dock color if set, else fixed default. Non-bookmarked: palette color. */
+  const getEmbedColor = useCallback(
+    (key: string, displayName?: string) => {
+      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const s = streamers[0]
+      if (s) {
+        const parsed = parseEmbedKey(key)
+        if (parsed) {
+          const platform = parsed.platform.toLowerCase()
+          const platformColor =
+            platform === 'youtube' ? s.youtubeColor
+            : platform === 'kick' ? s.kickColor
+            : platform === 'twitch' ? s.twitchColor
+            : undefined
+          const hex = (platformColor && /^#[0-9A-Fa-f]{6}$/.test(platformColor)) ? platformColor : (s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : undefined)
+          if (hex) return hex
+          return COLOR_BOOKMARKED_DEFAULT
+        }
+      }
+      return omniColorForKey(key, { displayName })
+    },
+    [pinnedStreamers, youtubeVideoToStreamerId],
+  )
+
+  /** True if the embed key belongs to a bookmarked streamer that has hideLabelInCombinedChat. */
+  const getEmbedLabelHidden = useCallback(
+    (key: string) => {
+      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      return streamers.some((s) => s.hideLabelInCombinedChat === true)
+    },
+    [pinnedStreamers, youtubeVideoToStreamerId],
+  )
 
   useEffect(() => {
     try {
@@ -887,12 +1030,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   useEffect(() => {
     setCombinedMaxMessagesDraft(String(combinedMaxMessages))
   }, [combinedMaxMessages])
+  useEffect(() => {
+    setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
+  }, [combinedMaxMessagesScroll])
 
   // Persist all combined chat and chat pane settings in one place so none are missed on restart.
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
       localStorage.setItem('omni-screen:combined-max-messages', String(combinedMaxMessages))
+      localStorage.setItem('omni-screen:combined-max-messages-scroll', String(combinedMaxMessagesScroll))
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
@@ -903,6 +1050,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
       localStorage.setItem('omni-screen:show-dgg-input', showDggInput ? '1' : '0')
       localStorage.setItem('omni-screen:dgg-focus-keybind', JSON.stringify(dggFocusKeybind))
+      localStorage.setItem('omni-screen:dgg-label-color-override', dggLabelColorOverride)
+      localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
       localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
       localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
     } catch {
@@ -911,10 +1060,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [
     combinedIncludeDgg,
     combinedMaxMessages,
+    combinedMaxMessagesScroll,
     combinedShowTimestamps,
     combinedShowLabels,
     combinedShowPlatformIcons,
     combinedSortMode,
+    dggLabelColorOverride,
+    dggLabelText,
     combinedHighlightTerms,
     combinedPauseEmoteAnimationsOffScreen,
     combinedDisableDggFlairsAndColors,
@@ -990,11 +1142,30 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         setCombinedMaxMessagesDraft(String(combinedMaxMessages))
         return
       }
-      const next = clamp(n, 50, 5000)
+      const next = clamp(n, 50, combinedMaxMessagesScroll)
       setCombinedMaxMessages(next)
       setCombinedMaxMessagesDraft(String(next))
     },
-    [combinedMaxMessages, combinedMaxMessagesDraft],
+    [combinedMaxMessages, combinedMaxMessagesDraft, combinedMaxMessagesScroll],
+  )
+  const commitCombinedMaxMessagesScroll = useCallback(
+    (raw?: string) => {
+      const s = String(raw ?? combinedMaxMessagesScrollDraft).trim()
+      if (!s) {
+        setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
+        return
+      }
+      const n = Math.floor(Number(s))
+      if (!Number.isFinite(n)) {
+        setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
+        return
+      }
+      const next = clamp(n, 50, 50000)
+      setCombinedMaxMessagesScroll(next)
+      setCombinedMaxMessagesScrollDraft(String(next))
+      if (combinedMaxMessages > next) setCombinedMaxMessages(next)
+    },
+    [combinedMaxMessagesScroll, combinedMaxMessagesScrollDraft, combinedMaxMessages],
   )
 
   // Track available size for the embed grid so it can adapt to window resizing.
@@ -1045,38 +1216,44 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           if (legacyKey !== canonicalKey) legacyToCanonical.set(legacyKey, canonicalKey)
         })
 
+        const manual = manualEmbedsRef.current
+        const pinned = pinnedOriginatedEmbedsRef.current
+        const combined = combinedAvailableEmbedsRef.current
+        const watched = new Set([...selectedEmbedKeysRef.current, ...selectedEmbedChatKeysRef.current])
+        const keysToPin = new Set<string>()
+        watched.forEach((k) => {
+          const c = canonicalEmbedKey(k)
+          if (next.has(k) || next.has(c) || manual.has(k) || manual.has(c) || pinned.has(k) || pinned.has(c)) return
+          const migrated = legacyToCanonical.get(k)
+          if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) return
+          const embed = combined.get(k) || combined.get(c) || (migrated ? combined.get(migrated) : undefined)
+          if (embed) keysToPin.add(c)
+        })
+        const manualNext = new Map(manual)
+        keysToPin.forEach((c) => {
+          const embed = combined.get(c)
+          if (embed) manualNext.set(c, embed)
+        })
+        const keepKey = (key: string) => {
+          const c = canonicalEmbedKey(key)
+          if (next.has(key) || next.has(c) || manualNext.has(key) || manualNext.has(c) || pinned.has(key) || pinned.has(c)) return true
+          const migrated = legacyToCanonical.get(key)
+          return Boolean(migrated && (next.has(migrated) || manualNext.has(migrated) || pinned.has(migrated)))
+        }
         startViewTransitionIfSupported(() => {
+          if (keysToPin.size > 0) {
+            setManualEmbeds((prev) => {
+              const m = new Map(prev)
+              keysToPin.forEach((c) => {
+                const embed = combined.get(c)
+                if (embed) m.set(c, embed)
+              })
+              return m
+            })
+          }
           setAvailableEmbeds(next)
-
-          setSelectedEmbedKeys((prev) => {
-            const manual = manualEmbedsRef.current
-            const pinned = pinnedOriginatedEmbedsRef.current
-            const pruned = new Set<string>()
-            prev.forEach((k) => {
-              if (next.has(k) || manual.has(k) || pinned.has(k)) {
-                pruned.add(k)
-                return
-              }
-              const migrated = legacyToCanonical.get(k)
-              if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) pruned.add(migrated)
-            })
-            return pruned
-          })
-
-          setSelectedEmbedChatKeys((prev) => {
-            const manual = manualEmbedsRef.current
-            const pinned = pinnedOriginatedEmbedsRef.current
-            const pruned = new Set<string>()
-            prev.forEach((k) => {
-              if (next.has(k) || manual.has(k) || pinned.has(k)) {
-                pruned.add(k)
-                return
-              }
-              const migrated = legacyToCanonical.get(k)
-              if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) pruned.add(migrated)
-            })
-            return pruned
-          })
+          setSelectedEmbedKeys((prev) => new Set([...prev].filter(keepKey)))
+          setSelectedEmbedChatKeys((prev) => new Set([...prev].filter(keepKey)))
         })
         return
       }
@@ -1500,7 +1677,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       const viewers = e.mediaItem?.metadata?.viewers
 
       const banned = bannedEmbeds.get(item.key)
-      const accent = omniColorForKey(item.key, { displayName: e.mediaItem?.metadata?.displayName })
+      const streamers = findStreamersForKey(item.key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamerColor = streamers[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamers[0].color) ? streamers[0].color : undefined
+      const accent = streamerColor ?? (streamers.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(item.key, { displayName: e.mediaItem?.metadata?.displayName }))
 
       let content: JSX.Element
       if (platform === 'kick') {
@@ -1553,7 +1732,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         </div>
       )
     },
-    [autoplay, bannedEmbeds, cinemaMode, mute, shakeEmbedKey, toggleEmbed],
+    [autoplay, bannedEmbeds, cinemaMode, mute, pinnedStreamers, shakeEmbedKey, toggleEmbed, youtubeVideoToStreamerId],
   )
 
   /** Dock item: merged pinned group (same keys = one button) or single embed. */
@@ -1885,8 +2064,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     enableDgg={combinedIncludeDgg}
                     showDggInput={showDggInput}
                     getEmbedDisplayName={getEmbedDisplayName}
+                    getEmbedColor={getEmbedColor}
+                    getEmbedLabelHidden={getEmbedLabelHidden}
+                    dggLabelColor={dggLabelColorOverride || undefined}
+                    dggLabelText={dggLabelText}
                     onOpenLink={handleChatOpenLink}
                     maxMessages={combinedMaxMessages}
+                    maxMessagesScroll={combinedMaxMessagesScroll}
                     showTimestamps={combinedShowTimestamps}
                     showSourceLabels={combinedShowLabels}
                     showPlatformIcons={combinedShowPlatformIcons}
@@ -1983,10 +2167,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       const label = item.type === 'group'
                         ? item.streamers.map((s) => s.nickname || 'Unnamed').join(', ')
                         : (firstEmbed?.id ?? firstKey)
-                      const groupColor = item.type === 'group' && item.streamers[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(item.streamers[0].color)
-                        ? item.streamers[0].color
-                        : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName })
-                      const accent = item.type === 'group' ? groupColor : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName })
+                      const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId)
+                      const streamerColor = streamersForAccent[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamersForAccent[0].color) ? streamersForAccent[0].color : undefined
+                      const accent = streamerColor ?? (streamersForAccent.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName }))
                       const active = videoOn || chatOn
                       const activeText = textColorOn(accent)
 
@@ -2348,14 +2531,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               >
                 {isGroup && streamers.length > 0 ? (
                   <>
-                    <div className="text-xs text-base-content/60 mb-2">
-                      <div className="font-semibold" style={{ color: accent }}>
-                        {streamers.map((s) => s.nickname || 'Unnamed').join(', ')}
+                    <div className="text-xs text-base-content/60 mb-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span className="font-semibold shrink-0" style={{ color: accent }}>
+                          {streamers.map((s) => s.nickname || 'Unnamed').join(', ')}
+                        </span>
+                        <span className="text-base-content/50 shrink-0">{keys.length} platform{keys.length !== 1 ? 's' : ''}</span>
                       </div>
-                      <div className="text-base-content/50">{keys.length} platform{keys.length !== 1 ? 's' : ''}</div>
-                      <div className="text-base-content/50 mt-1">
-                        Why it&apos;s here: {formatEmbedSource(
-                          keys.reduce<{ pinned: boolean; dgg: boolean; manual: boolean }>(
+                      <span className="flex items-center gap-0.5 shrink-0" title={keys.map((k) => embedSourceIcons(embedSourcesByKey.get(k) ?? { pinned: false, dgg: false, manual: false }).map((x) => x.title).join(', ')).join('; ')}>
+                        {(() => {
+                          const src = keys.reduce<{ pinned: boolean; dgg: boolean; manual: boolean }>(
                             (acc, k) => {
                               const s = embedSourcesByKey.get(k)
                               if (s) {
@@ -2366,9 +2551,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               return acc
                             },
                             { pinned: false, dgg: false, manual: false },
-                          ),
-                        )}
-                      </div>
+                          )
+                          return embedSourceIcons(src).map(({ icon, title }) => (
+                            <span key={icon} title={title} aria-hidden>{icon}</span>
+                          ))
+                        })()}
+                      </span>
                     </div>
                     <div className="flex flex-col gap-2">
                       {keys.map((key) => {
@@ -2439,17 +2627,21 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       `${embed.platform}/${embed.id}`
                     return (
                       <>
-                        <div className="text-xs text-base-content/60 mb-2">
-                          <div className="font-semibold" style={{ color: accent }}>{platform}</div>
-                          <div className="truncate" title={title}>{title}</div>
-                          <div>
-                            {typeof embed?.count === 'number' ? `${embed.count} embeds` : null}
-                            {typeof embed?.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : null}
-                            {banned ? ` • banned` : null}
+                        <div className="text-xs text-base-content/60 mb-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold" style={{ color: accent }}>{platform}</div>
+                            <div className="truncate" title={title}>{title}</div>
+                            <div>
+                              {typeof embed?.count === 'number' ? `${embed.count} embeds` : null}
+                              {typeof embed?.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : null}
+                              {banned ? ` • banned` : null}
+                            </div>
                           </div>
-                          <div className="text-base-content/50 mt-1">
-                            Why it&apos;s here: {formatEmbedSource(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, manual: false })}
-                          </div>
+                          <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, manual: false }).map((x) => x.title).join(', ')}>
+                            {embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, manual: false }).map(({ icon, title: t }) => (
+                              <span key={icon} title={t} aria-hidden>{icon}</span>
+                            ))}
+                          </span>
                         </div>
                         <div className="flex flex-col gap-2">
                           <label className="flex items-center justify-between gap-2 text-sm">
@@ -2593,8 +2785,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     enableDgg={combinedIncludeDgg}
                     showDggInput={showDggInput}
                     getEmbedDisplayName={getEmbedDisplayName}
+                    getEmbedColor={getEmbedColor}
+                    getEmbedLabelHidden={getEmbedLabelHidden}
+                    dggLabelColor={dggLabelColorOverride || undefined}
+                    dggLabelText={dggLabelText}
                     onOpenLink={handleChatOpenLink}
                     maxMessages={combinedMaxMessages}
+                    maxMessagesScroll={combinedMaxMessagesScroll}
                     showTimestamps={combinedShowTimestamps}
                     showSourceLabels={combinedShowLabels}
                     showPlatformIcons={combinedShowPlatformIcons}
@@ -2615,8 +2812,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )}
       </div>
 
-      {/* Unified Settings modal */}
-      {settingsModalOpen && (
+      {/* Unified Settings modal (portal so embed/live updates don't cause flicker) */}
+      {settingsModalOpen && createPortal(
         <div className="modal modal-open z-[100]" role="dialog" aria-modal="true">
           <div className="modal-box max-w-4xl h-[90vh] max-h-[90vh] overflow-hidden flex flex-col w-11/12">
             <h3 className="font-bold text-lg mb-2">Settings</h3>
@@ -2745,11 +2942,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           >
                             ⋮⋮
                           </span>
-                          <label className="flex items-center gap-1.5 shrink-0" title="Dock button color">
+                          <label className="flex items-center gap-1.5 shrink-0" title="Dock button color (empty = auto)">
                             <input
                               type="color"
                               className="w-7 h-7 rounded border border-base-300 cursor-pointer"
-                              value={s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : '#7dcf67'}
+                              value={s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : '#888888'}
                               onChange={(e) => {
                                 const hex = e.target.value
                                 setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, color: hex } : x)))
@@ -2759,6 +2956,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           <span className="font-medium truncate min-w-0 flex-1" title={s.nickname || 'Unnamed'}>
                             {s.nickname || 'Unnamed'}
                           </span>
+                          <label className="flex items-center gap-1.5 shrink-0 cursor-pointer" title="Auto-open preferred video when this streamer comes live">
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-xs"
+                              checked={s.openWhenLive === true}
+                              onChange={(e) => setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, openWhenLive: e.target.checked } : x)))}
+                            />
+                            <span className="text-xs text-base-content/60">Auto-open</span>
+                          </label>
                           <div className="text-xs text-base-content/60 flex items-center gap-x-1.5 shrink-0 flex-wrap">
                             {[
                               s.youtubeChannelId && {
@@ -2852,6 +3058,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           kickSlug: undefined,
                           twitchLogin: undefined,
                           color: undefined,
+                          openWhenLive: false,
                         }}
                         onSave={(next) => {
                           setPinnedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
@@ -2929,15 +3136,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">General</div>
                       <div className="space-y-2 pl-0">
                         <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>Include DGG</span>
-                          <input
-                            type="checkbox"
-                            className="toggle toggle-sm"
-                            checked={combinedIncludeDgg}
-                            onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
-                          />
-                        </label>
-                        <label className="flex items-center justify-between gap-2 text-sm">
                           <span>Max messages</span>
                           <input
                             type="text"
@@ -2956,6 +3154,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             }}
                           />
                         </label>
+                        <span className="label-text-alt text-base-content/60 block">When at bottom, keep at most this many messages. Must be ≤ scroll limit.</span>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Max messages (when scrolled)</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            className="input input-sm w-24"
+                            value={combinedMaxMessagesScrollDraft}
+                            onChange={(e) => {
+                              const next = e.target.value
+                              if (!/^\d*$/.test(next)) return
+                              setCombinedMaxMessagesScrollDraft(next)
+                            }}
+                            onBlur={(e) => commitCombinedMaxMessagesScroll(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+                            }}
+                          />
+                        </label>
+                        <span className="label-text-alt text-base-content/60 block">When scrolled up, keep at most this many. Reduces memory use.</span>
                         <div className="flex items-center justify-between gap-2 text-sm">
                           <span>Order</span>
                           <div className="join">
@@ -3009,6 +3228,33 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
                           />
                         </label>
+                      </div>
+                    </div>
+
+                    {/* DGG */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">DGG</div>
+                      <div className="space-y-2 pl-0">
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Include DGG</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={combinedIncludeDgg}
+                            onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
+                          />
+                        </label>
+                        {combinedIncludeDgg && (
+                          <label className="flex items-center justify-between gap-2 text-sm">
+                            <span>Show DGG chat input</span>
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-sm"
+                              checked={showDggInput}
+                              onChange={(e) => setShowDggInput(e.target.checked)}
+                            />
+                          </label>
+                        )}
                         <label className="flex items-center justify-between gap-2 text-sm">
                           <span>DGG flairs and colors</span>
                           <input
@@ -3019,6 +3265,36 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           />
                         </label>
                         <span className="label-text-alt text-base-content/60 block">When off, DGG nicks use a single color and no flair icons.</span>
+                        <label className="flex flex-col gap-0.5 text-sm" title="Badge/label color in combined chat. Clear = theme default.">
+                          <span>DGG label color</span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="color"
+                              className="w-7 h-7 rounded border border-base-300 cursor-pointer"
+                              value={dggLabelColorOverride && /^#[0-9A-Fa-f]{6}$/.test(dggLabelColorOverride) ? dggLabelColorOverride : '#94b3c3'}
+                              onChange={(e) => setDggLabelColorOverride(e.target.value)}
+                            />
+                            <input
+                              type="text"
+                              className="input input-sm input-bordered w-20 font-mono"
+                              placeholder="#94b3c3"
+                              value={dggLabelColorOverride}
+                              onChange={(e) => setDggLabelColorOverride(e.target.value)}
+                            />
+                            <button type="button" className="btn btn-ghost btn-xs" title="Clear (theme default)" onClick={() => setDggLabelColorOverride('')}>✕</button>
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-0.5 text-sm">
+                          <span>DGG label text</span>
+                          <input
+                            type="text"
+                            className="input input-sm input-bordered w-32"
+                            placeholder="dgg"
+                            value={dggLabelText}
+                            onChange={(e) => setDggLabelText(e.target.value)}
+                          />
+                          <span className="label-text-alt text-base-content/60">Text shown in the source badge for DGG messages.</span>
+                        </label>
                       </div>
                     </div>
 
@@ -3112,22 +3388,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       </label>
                     </div>
 
-                    {/* DGG (when included) */}
-                    {combinedIncludeDgg && (
-                      <div className="mb-4">
-                        <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">DGG</div>
-                        <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>Show DGG chat input</span>
-                          <input
-                            type="checkbox"
-                            className="toggle toggle-sm"
-                            checked={showDggInput}
-                            onChange={(e) => setShowDggInput(e.target.checked)}
-                          />
-                        </label>
-                      </div>
-                    )}
-
                     {/* YouTube / Kick */}
                     <div className="mb-4">
                       <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">YouTube / Kick</div>
@@ -3203,7 +3463,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setSettingsModalOpen(false)} aria-hidden="true" />
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>
@@ -3225,6 +3486,11 @@ function PinnedStreamerForm({
   const [kickSlug, setKickSlug] = useState(streamer.kickSlug ?? '')
   const [twitchLogin, setTwitchLogin] = useState(streamer.twitchLogin ?? '')
   const [color, setColor] = useState(streamer.color && /^#[0-9A-Fa-f]{6}$/.test(streamer.color) ? streamer.color : '')
+  const [youtubeColor, setYoutubeColor] = useState(streamer.youtubeColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.youtubeColor) ? streamer.youtubeColor : '')
+  const [kickColor, setKickColor] = useState(streamer.kickColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.kickColor) ? streamer.kickColor : '')
+  const [twitchColor, setTwitchColor] = useState(streamer.twitchColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.twitchColor) ? streamer.twitchColor : '')
+  const [openWhenLive, setOpenWhenLive] = useState(streamer.openWhenLive === true)
+  const [hideLabelInCombinedChat, setHideLabelInCombinedChat] = useState(streamer.hideLabelInCombinedChat === true)
 
   useEffect(() => {
     setNickname(streamer.nickname)
@@ -3232,7 +3498,12 @@ function PinnedStreamerForm({
     setKickSlug(streamer.kickSlug ?? '')
     setTwitchLogin(streamer.twitchLogin ?? '')
     setColor(streamer.color && /^#[0-9A-Fa-f]{6}$/.test(streamer.color) ? streamer.color : '')
-  }, [streamer.id, streamer.nickname, streamer.youtubeChannelId, streamer.kickSlug, streamer.twitchLogin, streamer.color])
+    setYoutubeColor(streamer.youtubeColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.youtubeColor) ? streamer.youtubeColor : '')
+    setKickColor(streamer.kickColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.kickColor) ? streamer.kickColor : '')
+    setTwitchColor(streamer.twitchColor && /^#[0-9A-Fa-f]{6}$/.test(streamer.twitchColor) ? streamer.twitchColor : '')
+    setOpenWhenLive(streamer.openWhenLive === true)
+    setHideLabelInCombinedChat(streamer.hideLabelInCombinedChat === true)
+  }, [streamer.id, streamer.nickname, streamer.youtubeChannelId, streamer.kickSlug, streamer.twitchLogin, streamer.color, streamer.youtubeColor, streamer.kickColor, streamer.twitchColor, streamer.openWhenLive, streamer.hideLabelInCombinedChat])
 
   const handleSave = () => {
     const nick = nickname.trim() || 'Unnamed'
@@ -3240,6 +3511,9 @@ function PinnedStreamerForm({
     const kick = kickSlug.trim().toLowerCase() || undefined
     const twitch = twitchLogin.trim().toLowerCase() || undefined
     const hex = color.trim()
+    const ytHex = youtubeColor.trim()
+    const kickHex = kickColor.trim()
+    const twitchHex = twitchColor.trim()
     onSave({
       ...streamer,
       nickname: nick,
@@ -3247,69 +3521,85 @@ function PinnedStreamerForm({
       kickSlug: kick,
       twitchLogin: twitch,
       color: /^#[0-9A-Fa-f]{6}$/.test(hex) ? hex : undefined,
+      youtubeColor: /^#[0-9A-Fa-f]{6}$/.test(ytHex) ? ytHex : undefined,
+      kickColor: /^#[0-9A-Fa-f]{6}$/.test(kickHex) ? kickHex : undefined,
+      twitchColor: /^#[0-9A-Fa-f]{6}$/.test(twitchHex) ? twitchHex : undefined,
+      openWhenLive: openWhenLive,
+      hideLabelInCombinedChat: hideLabelInCombinedChat,
     })
   }
 
   return (
     <div className="flex flex-col gap-2 mt-2 p-2 bg-base-200 rounded">
-      <label className="flex flex-col gap-0.5 text-xs">
-        <span>Nickname</span>
-        <input
-          type="text"
-          className="input input-sm input-bordered"
-          placeholder="e.g. Destiny"
-          value={nickname}
-          onChange={(e) => setNickname(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-0.5 text-xs">
-        <span>Dock color</span>
-        <div className="flex items-center gap-2">
-          <input
-            type="color"
-            className="w-8 h-8 rounded border border-base-300 cursor-pointer"
-            value={color || '#7dcf67'}
-            onChange={(e) => setColor(e.target.value)}
-          />
+      <div className="flex items-end gap-2 flex-wrap">
+        <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[120px]">
+          <span>Nickname</span>
           <input
             type="text"
-            className="input input-sm input-bordered flex-1 font-mono"
-            placeholder="#7dcf67"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
+            className="input input-sm input-bordered"
+            placeholder="e.g. Destiny"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
           />
+        </label>
+        <label className="flex flex-col gap-0.5 text-xs shrink-0" title="Dock button (empty = auto color)">
+          <span>Dock color</span>
+          <div className="flex items-center gap-1">
+            <input
+              type="color"
+              className="w-7 h-7 rounded border border-base-300 cursor-pointer"
+              value={color || '#888888'}
+              onChange={(e) => setColor(e.target.value)}
+            />
+            <input
+              type="text"
+              className="input input-sm input-bordered w-20 font-mono"
+              placeholder="No color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+            />
+            <button type="button" className="btn btn-ghost btn-xs" title="Clear (auto color)" onClick={() => setColor('')}>✕</button>
+          </div>
+        </label>
+      </div>
+      <label className="flex items-center gap-2 text-xs cursor-pointer">
+        <input type="checkbox" className="toggle toggle-sm" checked={openWhenLive} onChange={(e) => setOpenWhenLive(e.target.checked)} />
+        <span>Auto-open preferred video when this streamer comes live</span>
+      </label>
+      <label className="flex items-center gap-2 text-xs cursor-pointer">
+        <input type="checkbox" className="toggle toggle-sm" checked={hideLabelInCombinedChat} onChange={(e) => setHideLabelInCombinedChat(e.target.checked)} />
+        <span>Hide source label in combined chat</span>
+      </label>
+      <div className="flex items-center gap-2 flex-wrap">
+        <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[140px]">
+          <span>YouTube channel</span>
+          <input type="text" className="input input-sm input-bordered" placeholder="URL or @Handle" value={youtubeChannelId} onChange={(e) => setYoutubeChannelId(e.target.value)} />
+        </label>
+        <div className="flex items-center gap-1 shrink-0">
+          <input type="color" className="w-6 h-6 rounded border border-base-300 cursor-pointer" value={youtubeColor || '#888888'} onChange={(e) => setYoutubeColor(e.target.value)} title="Chat color" />
+          <button type="button" className="btn btn-ghost btn-xs" title="Clear" onClick={() => setYoutubeColor('')}>✕</button>
         </div>
-      </label>
-      <label className="flex flex-col gap-0.5 text-xs">
-        <span>YouTube channel (full URL e.g. youtube.com/destiny, or @Handle)</span>
-        <input
-          type="text"
-          className="input input-sm input-bordered"
-          placeholder="Optional"
-          value={youtubeChannelId}
-          onChange={(e) => setYoutubeChannelId(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-0.5 text-xs">
-        <span>Kick slug</span>
-        <input
-          type="text"
-          className="input input-sm input-bordered"
-          placeholder="e.g. destiny (optional)"
-          value={kickSlug}
-          onChange={(e) => setKickSlug(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-0.5 text-xs">
-        <span>Twitch login</span>
-        <input
-          type="text"
-          className="input input-sm input-bordered"
-          placeholder="e.g. destiny (optional)"
-          value={twitchLogin}
-          onChange={(e) => setTwitchLogin(e.target.value)}
-        />
-      </label>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[140px]">
+          <span>Kick slug</span>
+          <input type="text" className="input input-sm input-bordered" placeholder="e.g. destiny" value={kickSlug} onChange={(e) => setKickSlug(e.target.value)} />
+        </label>
+        <div className="flex items-center gap-1 shrink-0">
+          <input type="color" className="w-6 h-6 rounded border border-base-300 cursor-pointer" value={kickColor || '#888888'} onChange={(e) => setKickColor(e.target.value)} title="Chat color" />
+          <button type="button" className="btn btn-ghost btn-xs" title="Clear" onClick={() => setKickColor('')}>✕</button>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[140px]">
+          <span>Twitch handle</span>
+          <input type="text" className="input input-sm input-bordered" placeholder="e.g. destiny" value={twitchLogin} onChange={(e) => setTwitchLogin(e.target.value)} />
+        </label>
+        <div className="flex items-center gap-1 shrink-0">
+          <input type="color" className="w-6 h-6 rounded border border-base-300 cursor-pointer" value={twitchColor || '#888888'} onChange={(e) => setTwitchColor(e.target.value)} title="Chat color" />
+          <button type="button" className="btn btn-ghost btn-xs" title="Clear" onClick={() => setTwitchColor('')}>✕</button>
+        </div>
+      </div>
       <div className="flex gap-2 mt-1">
         <button type="button" className="btn btn-sm btn-primary" onClick={handleSave}>
           Save
