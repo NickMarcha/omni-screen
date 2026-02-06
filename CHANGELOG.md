@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.10.0] - 2026-02-06
+
+### Added
+- **Dock position**: Embed dock bar can be placed at the **top** or **bottom** of the embed area (Settings → Bookmarked streamers → Dock bar position). Hover menus open in the correct direction.
+- **Combined chat – DGG subsection**: All DGG options are grouped under a single "DGG" subsection in Settings → Chat (Include DGG, Show DGG chat input, DGG flairs and colors, DGG label color, DGG label text).
+- **DGG label color**: Color picker (same as bookmarked streamer colors) to override the DGG source badge color in combined chat. Clear = theme default.
+- **DGG label text**: Custom text for the DGG source badge (default "dgg"). Leave empty to hide the DGG label in combined chat.
+- **Per-streamer "Hide source label in combined chat"**: Each bookmarked streamer has a checkbox to hide the source badge for that streamer’s messages in combined chat.
+- **Combined chat context menu – Chat pane side**: Right-click in combined chat → "Chat pane side" → Left or Right to move the chat pane.
+- **Two message limits in Settings → Chat**: "Max messages" (when at bottom; default 70) and "Max messages (when scrolled)" (hard cap; default 5000). Changing limits applies immediately without reloading chat.
+
+### Changed
+- **Combined chat**: Cleaner highlighting; source labels and badge colors use bookmarked streamer colors (per-platform or dock color). Bookmarked embeds with no color set use a fixed default instead of a random palette color; only non-bookmarked embeds use the varied palette.
+- **Settings modal**: Rendered in a portal so embed/live updates no longer cause the modal to flicker.
+- **Dock and embed cards**: Dock buttons and non–cinema embed card borders use the bookmarked streamer’s dock color when set.
+
+### Fixed
+- Dock build error.
+- Combined chat message limit: new limit is applied as soon as it is changed in settings (no need to reload the chat window).
+
 ## [1.9.0] - 2026-02-06
 
 ### Changed

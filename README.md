@@ -16,9 +16,27 @@ A client application for the Destiny.gg (dgg) community, designed to enhance you
 
 *Link Scroller: browse links shared in DGG chat mentions.*
 
-## 📥 Download
+## 📥 Download & Install
 
-**Latest Release**: [Download from GitHub Releases](https://github.com/NickMarcha/omni-screen/releases/)
+**Windows, macOS, Linux**: [Download from GitHub Releases](https://github.com/NickMarcha/omni-screen/releases/) — choose the installer or package for your OS (Windows `.exe`, macOS `.dmg`, Linux `.AppImage` or `.deb`).
+
+**Arch Linux (AUR)**: Omni Screen is available on the [Arch User Repository](https://aur.archlinux.org/packages/omni-screen-bin) as **omni-screen-bin**.
+
+Using an AUR helper (e.g. [yay](https://github.com/Jguer/yay)):
+
+```bash
+yay -S omni-screen-bin
+```
+
+Manual build (clone and install with pacman):
+
+```bash
+git clone https://aur.archlinux.org/omni-screen-bin.git
+cd omni-screen-bin
+makepkg -si
+```
+
+*(`makepkg -si` builds the package and installs it plus dependencies via pacman.)*
 
 ## ❓ FAQ
 
