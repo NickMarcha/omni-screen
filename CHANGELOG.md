@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.9.0] - 2026-02-06
+
+### Changed
+- Improved settings and context menu for combined chat.
+- DGG nickname search improved.
+- Better emote handling.
+
 ## [1.8.1] - 2026-02-06
 
 ### Fixed
@@ -209,7 +216,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/NickMarcha/omni-screen/compare/v1.8.1...v1.9.0
 [1.8.0]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/NickMarcha/omni-screen/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/NickMarcha/omni-screen/compare/v1.7.0...v1.7.1
