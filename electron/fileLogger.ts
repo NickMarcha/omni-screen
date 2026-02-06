@@ -27,23 +27,21 @@ class FileLogger {
     if (this.logsDir) {
       return this.logsDir
     }
-    
-    // Create logs directory in project root
-    // APP_ROOT is set in main.ts to point to the project root (one level up from dist-electron)
+
+    // Use user data directory when packaged (AppImage/installer) so we never write into read-only app.asar
+    const appPath = app.getAppPath()
+    if (appPath.includes('app.asar')) {
+      this.logsDir = path.join(app.getPath('userData'), 'logs')
+      this.ensureLogsDirectory()
+      return this.logsDir
+    }
+
+    // Development: use project root (APP_ROOT set in main.ts, or one level up from dist-electron)
     let appRoot: string
     if (process.env.APP_ROOT) {
       appRoot = process.env.APP_ROOT
     } else {
-      // Fallback: try to find project root
-      // In packaged app, app.getAppPath() returns the app.asar path
-      const appPath = app.getAppPath()
-      if (appPath.includes('app.asar')) {
-        // Packaged app - go up from app.asar
-        appRoot = path.dirname(path.dirname(appPath))
-      } else {
-        // Development - __dirname should be dist-electron, go up one level
-        appRoot = path.join(this.__dirname, '..')
-      }
+      appRoot = path.join(this.__dirname, '..')
     }
     this.logsDir = path.join(appRoot, 'logs')
     this.ensureLogsDirectory()
