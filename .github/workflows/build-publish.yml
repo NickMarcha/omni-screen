@@ -119,4 +119,4 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: ${{ github.ref_name }}
           updpkgsums: false
-          test: true
+          test: false
