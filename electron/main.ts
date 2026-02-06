@@ -35,6 +35,12 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
+// Exit early for --version so we don't touch logs or other init (works even when app is old/broken)
+if (process.argv.includes('--version')) {
+  process.stdout.write(`${app.getVersion()}\n`)
+  process.exit(0)
+}
+
 let win: BrowserWindow | null
 let viewerWin: BrowserWindow | null = null
 
@@ -456,6 +462,23 @@ function createApplicationMenu() {
       submenu: isProduction
         ? [
             {
+              label: 'Copy system info',
+              click: () => {
+                const info = [
+                  `Omni Screen ${app.getVersion()}`,
+                  `Packaged: ${app.isPackaged}`,
+                  `Platform: ${process.platform}`,
+                  `Arch: ${process.arch}`,
+                  `Exec path: ${process.execPath || app.getPath('exe')}`,
+                  `Electron: ${process.versions.electron}`,
+                  `Chrome: ${process.versions.chrome}`,
+                  `Node: ${process.versions.node}`,
+                ].join('\n')
+                clipboard.writeText(info)
+              }
+            },
+            { type: 'separator' },
+            {
               label: 'About Omni Screen',
               click: () => {
                 shell.openExternal(githubUrl)
@@ -475,6 +498,23 @@ function createApplicationMenu() {
             }
           ]
         : [
+            {
+              label: 'Copy system info',
+              click: () => {
+                const info = [
+                  `Omni Screen ${app.getVersion()}`,
+                  `Packaged: ${app.isPackaged}`,
+                  `Platform: ${process.platform}`,
+                  `Arch: ${process.arch}`,
+                  `Exec path: ${process.execPath || app.getPath('exe')}`,
+                  `Electron: ${process.versions.electron}`,
+                  `Chrome: ${process.versions.chrome}`,
+                  `Node: ${process.versions.node}`,
+                ].join('\n')
+                clipboard.writeText(info)
+              }
+            },
+            { type: 'separator' },
             {
               label: 'About Electron',
               click: () => {

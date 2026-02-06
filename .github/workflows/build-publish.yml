@@ -83,6 +83,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set version from tag
+        run: |
+          VER="${GITHUB_REF#refs/tags/v}"
+          npm pkg set version="$VER"
+        # Ensures the built app reports the release version (e.g. 1.8.3) even if package.json wasn't bumped before tagging
+
       - name: Build application
         run: npm run build:ci
 
