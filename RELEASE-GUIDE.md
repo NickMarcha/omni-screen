@@ -218,6 +218,31 @@ Add release notes by creating a GitHub release:
 4. Add release notes
 5. Publish the release
 
+### AUR (Arch User Repository)
+
+The workflow publishes an AUR package **omni-screen-bin** (AppImage from GitHub releases) when you push a version tag. One-time setup:
+
+#### 1. Create the AUR package (one time)
+
+1. Create an account at [aur.archlinux.org](https://aur.archlinux.org) if you don’t have one.
+2. Add your **SSH public key** in [AUR Account Settings](https://aur.archlinux.org/account/) (SSH keys).  
+   AUR allows one key per account; many maintainers use a dedicated “machine” account for automation.
+3. Create the package: [Submit a new package](https://aur.archlinux.org/packages/submit/).  
+   - Package name: `omni-screen-bin`  
+   - You can upload a minimal PKGBUILD (e.g. from `aur/PKGBUILD` with a dummy `pkgver`) just to create the repo, or clone the empty AUR repo and push the initial PKGBUILD.
+
+#### 2. GitHub Actions secrets
+
+In the repo: **Settings → Secrets and variables → Actions**, add:
+
+| Secret                 | Description                                      |
+|------------------------|--------------------------------------------------|
+| `AUR_USERNAME`         | Your AUR username (used for commit author).     |
+| `AUR_EMAIL`            | Email for AUR commits (can be a no-reply email).|
+| `AUR_SSH_PRIVATE_KEY`  | **Private** SSH key that has push access to the AUR. Must match the public key you added in AUR. |
+
+After that, each tag push that runs the release workflow will also run the **Publish AUR package** job (after the Linux build), which updates the `omni-screen-bin` AUR package using [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur).
+
 ## 🔗 Related Documentation
 
 - [Electron Builder Documentation](https://www.electron.build/)

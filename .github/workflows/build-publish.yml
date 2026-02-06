@@ -91,3 +91,31 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
         run: |
           npx electron-builder --${{ matrix.platform }} --publish always
+
+  aur-publish:
+    name: Publish AUR package
+    runs-on: ubuntu-latest
+    needs: [create_release, build]
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set PKGBUILD version
+        run: |
+          PKGVER="${GITHUB_REF#refs/tags/v}"
+          sed -i "s/PKGVER_PLACEHOLDER/${PKGVER}/" aur/PKGBUILD
+
+      - name: Publish AUR package
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: omni-screen-bin
+          pkgbuild: aur/PKGBUILD
+          assets: |
+            aur/omni-screen.desktop
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: ${{ github.ref_name }}
+          updpkgsums: true
+          test: true
