@@ -102,6 +102,17 @@ body {
   background-position: center;
 }
 
+/* Own message: subtle highlight so your messages stand out (works in dark and light). */
+.msg-chat.msg-own {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-left: 2px solid rgba(255, 255, 255, 0.25);
+}
+[data-theme="light"] .msg-chat.msg-own,
+[data-theme="pastel"] .msg-chat.msg-own {
+  background-color: rgba(0, 0, 0, 0.06);
+  border-left-color: rgba(0, 0, 0, 0.2);
+}
+
 /* Combo row: emote must not shrink so destiny.gg emotes.css dimensions apply correctly */
 .msg-chat.msg-emote .emote {
   flex-shrink: 0;

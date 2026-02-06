@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 import PollView, { type PollData } from './PollView'
 import dggPlatformIcon from '../assets/icons/third-party/platforms/dgg.png'
@@ -165,6 +166,7 @@ function processTextWithEmotes(
   emotePattern: RegExp | null,
   emotesMap: Map<string, string>,
   baseKey: number = 0,
+  onEmoteDoubleClick?: (prefix: string) => void,
 ): (string | JSX.Element)[] {
   if (!emotePattern || emotesMap.size === 0) return [text]
 
@@ -188,10 +190,19 @@ function processTextWithEmotes(
     parts.push(
       <div
         key={`emote-${keyCounter++}`}
-        className={`emote ${matchedPrefix}`}
-        title={matchedPrefix}
+        className={`emote ${matchedPrefix} ${onEmoteDoubleClick ? 'cursor-pointer' : ''}`}
+        title={onEmoteDoubleClick ? `${matchedPrefix} (double-click to insert)` : matchedPrefix}
         role="img"
         aria-label={matchedPrefix}
+        onDoubleClick={
+          onEmoteDoubleClick
+            ? (e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onEmoteDoubleClick(matchedPrefix)
+              }
+            : undefined
+        }
       />,
     )
     lastIndex = match.index + match[0].length
@@ -210,6 +221,7 @@ function processGreentext(
   emotePattern: RegExp | null,
   emotesMap: Map<string, string>,
   baseKey: number = 0,
+  onEmoteDoubleClick?: (prefix: string) => void,
 ): (string | JSX.Element)[] {
   const lines = text.split('\n')
   const parts: (string | JSX.Element)[] = []
@@ -218,7 +230,7 @@ function processGreentext(
   lines.forEach((line, lineIndex) => {
     const isGreentext = line.trim().startsWith('>')
 
-    const processedLine = processTextWithEmotes(line, emotePattern, emotesMap, keyCounter)
+    const processedLine = processTextWithEmotes(line, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
     processedLine.forEach((part) => {
       if (!isGreentext) {
         parts.push(part)
@@ -259,6 +271,7 @@ function renderTextWithLinks(
   emotePattern: RegExp | null,
   emotesMap: Map<string, string>,
   onOpenLink?: (url: string) => void,
+  onEmoteDoubleClick?: (prefix: string) => void,
 ): JSX.Element {
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
@@ -270,7 +283,7 @@ function renderTextWithLinks(
     hasLinks = true
     if (match.index > lastIndex) {
       const textSegment = text.substring(lastIndex, match.index)
-      const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter)
+      const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
       processedSegment.forEach((part) => {
         parts.push(part)
         keyCounter++
@@ -302,7 +315,7 @@ function renderTextWithLinks(
 
   if (lastIndex < text.length) {
     const textSegment = text.substring(lastIndex)
-    const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter)
+    const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
     processedSegment.forEach((part) => {
       parts.push(part)
       keyCounter++
@@ -310,7 +323,7 @@ function renderTextWithLinks(
   }
 
   if (!hasLinks) {
-    const processedSegment = processGreentext(text, emotePattern, emotesMap, keyCounter)
+    const processedSegment = processGreentext(text, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
     return <>{processedSegment}</>
   }
 
@@ -925,6 +938,27 @@ function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string
   })()
 }
 
+/** Optional config for right-click context menu on the message area (toggle chat options). */
+export type CombinedChatContextMenuConfig = {
+  display: {
+    showTimestamps: boolean
+    setShowTimestamps: (v: boolean) => void
+    showLabels: boolean
+    setShowLabels: (v: boolean) => void
+    showPlatformIcons: boolean
+    setShowPlatformIcons: (v: boolean) => void
+    showDggFlairsAndColors: boolean
+    setShowDggFlairsAndColors: (v: boolean) => void
+  }
+  order: { sortMode: 'timestamp' | 'arrival'; setSortMode: (v: 'timestamp' | 'arrival') => void }
+  emotes: { pauseOffScreen: boolean; setPauseOffScreen: (v: boolean) => void }
+  linkAction: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
+  dgg?: { showInput: boolean; setShowInput: (v: boolean) => void }
+  highlightTerms?: string[]
+  addHighlightTerm?: (term: string) => void
+  removeHighlightTerm?: (term: string) => void
+}
+
 export default function CombinedChat({
   enableDgg,
   showDggInput = true,
@@ -934,8 +968,10 @@ export default function CombinedChat({
   showSourceLabels,
   showPlatformIcons = false,
   sortMode,
-  highlightTerm,
+  highlightTerms = [],
   pauseEmoteAnimationsOffScreen = false,
+  showDggFlairsAndColors = true,
+  contextMenuConfig,
   onCountChange,
   onDggUserCountChange,
   onOpenLink: onOpenLinkProp,
@@ -953,10 +989,14 @@ export default function CombinedChat({
   /** When true, show platform favicon (dgg, kick, youtube, twitch) in the source badge. */
   showPlatformIcons?: boolean
   sortMode: 'timestamp' | 'arrival'
-  /** When set, messages whose text contains this term (case-insensitive) get a light blue background. */
-  highlightTerm?: string
+  /** When set, messages whose text contains any of these terms (case-insensitive) get a light blue background. */
+  highlightTerms?: string[]
   /** When true, pause CSS animations on DGG emotes when they scroll out of view (reduces restart-on-scroll). */
   pauseEmoteAnimationsOffScreen?: boolean
+  /** When false, DGG usernames use a single accent color and no flair icons. Default true. */
+  showDggFlairsAndColors?: boolean
+  /** When set, right-click on the message area shows a menu to toggle these options. */
+  contextMenuConfig?: CombinedChatContextMenuConfig
   onCountChange?: (count: number) => void
   /** Called when DGG user count (from NAMES/JOIN/QUIT) changes, for header display. */
   onDggUserCountChange?: (count: number) => void
@@ -1012,6 +1052,13 @@ export default function CombinedChat({
   const [activeWhisperUsername, setActiveWhisperUsername] = useState<string | null>(null)
   /** Messages for activeWhisperUsername (from inbox API). */
   const [inboxMessages, setInboxMessages] = useState<DggInboxMessage[] | null>(null)
+  /** Right-click context menu position (when contextMenuConfig is provided). */
+  const [contextMenuAt, setContextMenuAt] = useState<{ x: number; y: number } | null>(null)
+  /** Selected text at time of right-click (for "Add to highlight terms"). */
+  const [contextMenuSelection, setContextMenuSelection] = useState<string | null>(null)
+  /** Which parent menu item is hovered (shows that submenu). */
+  const [contextMenuHover, setContextMenuHover] = useState<string | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
   /** Error from last whisper send attempt (e.g. not logged in, chat not connected). */
   const [whisperSendError, setWhisperSendError] = useState<string | null>(null)
   /** When in list view: recipient for "send to new person" (combobox value; can be any username). */
@@ -1024,9 +1071,11 @@ export default function CombinedChat({
   const [dggPublicSendError, setDggPublicSendError] = useState<string | null>(null)
   /** Sub-only mode: when true, only subscribers can type in public chat. */
   const [subOnlyEnabled, setSubOnlyEnabled] = useState(false)
-  /** Current user from ME event (for subscriber check). */
+  /** Current user from ME event (for subscriber check and own-message highlight). */
   const [dggMeUser, setDggMeUser] = useState<{ features?: string[]; subscription?: { tier?: number } } | null>(null)
-  /** User tooltip (right-click on nick): show created date, watching, flairs, Whisper, Rustlesearch. */
+  /** Current user's nick from ME event (for own-message highlight). */
+  const [dggMeNick, setDggMeNick] = useState<string | null>(null)
+  /** User tooltip (right-click on message): show created date, watching, flairs, Whisper, Rustlesearch; if message is highlighted, which terms matched. */
   const [userTooltip, setUserTooltip] = useState<{
     nick: string
     source: 'dgg' | 'kick' | 'youtube' | 'twitch'
@@ -1034,6 +1083,7 @@ export default function CombinedChat({
     watching?: { platform: string | null; id: string | null } | null
     features?: string[]
     colorFlairName?: string
+    matchingTerms?: string[]
   } | null>(null)
   const [userTooltipPosition, setUserTooltipPosition] = useState({ x: 0, y: 0 })
   const userTooltipRef = useRef<HTMLDivElement | null>(null)
@@ -1266,6 +1316,28 @@ export default function CombinedChat({
     return () => observer.disconnect()
   }, [pauseEmoteAnimationsOffScreen, privViewOpen, updateSeq])
 
+  const closeContextMenu = useCallback(() => {
+    setContextMenuAt(null)
+    setContextMenuSelection(null)
+  }, [])
+  useEffect(() => {
+    if (!contextMenuAt) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeContextMenu()
+    }
+    const onPointerDown = (e: MouseEvent) => {
+      const el = contextMenuRef.current
+      if (el && el.contains(e.target as Node)) return
+      closeContextMenu()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [contextMenuAt, closeContextMenu])
+
   const closeUserTooltip = useCallback(() => setUserTooltip(null), [])
 
   const openUserTooltip = useCallback(
@@ -1277,6 +1349,8 @@ export default function CombinedChat({
       const nick = m.nick?.trim()
       if (!nick) return
       const colorFlair = m.source === 'dgg' ? usernameColorFlair(flairsList, { features: (raw as DggChatMessage).features ?? [] }) : undefined
+      const contentLower = (m.content ?? '').toLowerCase()
+      const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
       setUserTooltip({
         nick,
         source: m.source,
@@ -1284,10 +1358,11 @@ export default function CombinedChat({
         watching: (raw as DggChatMessage).watching ?? undefined,
         features: (raw as DggChatMessage).features,
         colorFlairName: colorFlair?.name,
+        matchingTerms: matchingTerms.length > 0 ? matchingTerms : undefined,
       })
       setUserTooltipPosition({ x: e.clientX, y: e.clientY })
     },
-    [flairsList]
+    [flairsList, highlightTerms]
   )
 
   useEffect(() => {
@@ -1373,6 +1448,7 @@ export default function CombinedChat({
       if (alive) setDggAuthenticated(false)
       if (alive) setDggUserNicks([])
       if (alive) setDggMeUser(null)
+      if (alive) setDggMeNick(null)
     }
     const handleSubOnly = (_event: any, payload: { type?: string; subonly?: { data?: string } } | null) => {
       if (!alive) return
@@ -1384,6 +1460,7 @@ export default function CombinedChat({
       const me = payload?.data ?? payload
       const nick = me && typeof me === 'object' && 'nick' in me ? (me as { nick?: string }).nick : undefined
       setDggAuthenticated(Boolean(nick))
+      setDggMeNick(nick?.trim() ?? null)
       if (me && typeof me === 'object') {
         const user = me as { features?: string[]; subscription?: { tier?: number } }
         setDggMeUser({ features: user.features, subscription: user.subscription ?? undefined })
@@ -2016,6 +2093,11 @@ export default function CombinedChat({
     []
   )
 
+  const handleEmoteDoubleClick = useCallback((prefix: string) => {
+    setDggInputValue((prev) => (prev && !prev.endsWith(' ') ? prev + ' ' + prefix : (prev || '') + prefix))
+    dggInputRefInternal.current?.focus()
+  }, [])
+
   const openUserTooltipByNick = useCallback(
     (e: React.MouseEvent, nick: string) => {
       e.preventDefault()
@@ -2039,7 +2121,7 @@ export default function CombinedChat({
     [dggUserDataCache, flairsList]
   )
 
-  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert. */
+  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. */
   const renderDggMessageContent = useCallback(
     (content: string) => {
       const segments = tokenizeDggContent(content ?? '', dggNicks)
@@ -2049,7 +2131,7 @@ export default function CombinedChat({
         if (seg.type === 'text') {
           parts.push(
             <Fragment key={`dgg-txt-${key++}`}>
-              {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink)}
+              {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick)}
             </Fragment>
           )
         } else {
@@ -2068,7 +2150,7 @@ export default function CombinedChat({
       }
       return <>{parts}</>
     },
-    [dggNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick]
+    [dggNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick]
   )
 
   const sendDggMessage = useCallback(() => {
@@ -2280,6 +2362,17 @@ export default function CombinedChat({
         <div
           ref={scrollerRef}
           className={`flex-1 min-h-0 overflow-y-auto p-2 space-y-2 ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''}`}
+          onContextMenu={
+            contextMenuConfig && !privViewOpen
+              ? (e) => {
+                  e.preventDefault()
+                  setContextMenuHover(null)
+                  const sel = window.getSelection()?.toString()?.trim() ?? ''
+                  setContextMenuSelection(sel || null)
+                  setContextMenuAt({ x: e.clientX, y: e.clientY })
+                }
+              : undefined
+          }
         >
         {privViewOpen ? (
           activeWhisperUsername ? (
@@ -2433,21 +2526,25 @@ export default function CombinedChat({
                 ? omniColorForKey(colorKey)
                 : omniColorForKey(colorKey, { displayName })
             const badgeText = textColorOn(accent)
-            const term = highlightTerm?.trim() ?? ''
-            const isHighlighted =
-              term.length > 0 && (m.content?.toLowerCase().includes(term.toLowerCase()) ?? false)
+            const contentLower = (m.content ?? '').toLowerCase()
+            const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
+            const isHighlighted = matchingTerms.length > 0
+            const isOwn =
+              m.source === 'dgg' &&
+              dggMeNick != null &&
+              (m.nick?.trim().toLowerCase() === dggMeNick.toLowerCase())
             const dggColorFlair =
-              m.source === 'dgg'
+              m.source === 'dgg' && showDggFlairsAndColors
                 ? usernameColorFlair(flairsList, { features: m.raw.features ?? [] })
                 : undefined
             const dggFlairFeatures =
-              m.source === 'dgg'
+              m.source === 'dgg' && showDggFlairsAndColors
                 ? (m.raw.features ?? []).filter((f) => flairsMapRef.current.has(f))
                 : []
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
-                className={`text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 ${isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`msg-chat text-sm leading-snug rounded-md px-2 py-1 -mx-2 -my-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
                 {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
                 {showSourceLabels ? (
@@ -2565,10 +2662,15 @@ export default function CombinedChat({
               <span className="inline-flex items-center gap-1 shrink-0">
                 {isDgg && prefix ? (
                   <div
-                    className={`emote ${prefix}`}
-                    title={prefix}
+                    className={`emote ${prefix} cursor-pointer`}
+                    title={`${prefix} (double-click to insert)`}
                     role="img"
                     aria-label={prefix}
+                    onDoubleClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      handleEmoteDoubleClick(prefix)
+                    }}
                   />
                 ) : Number.isFinite(kickId) && kickId > 0 ? (
                   renderKickEmote(kickId, kickName, `combo-kick-${entry.index}`)
@@ -2770,6 +2872,24 @@ export default function CombinedChat({
               </a>
             </p>
           )}
+          {userTooltip.matchingTerms && userTooltip.matchingTerms.length > 0 && contextMenuConfig?.removeHighlightTerm && (
+            <div className="flex flex-wrap gap-1 pt-1 border-t border-base-300">
+              <span className="text-xs text-base-content/60 w-full">Remove from highlight terms:</span>
+              {userTooltip.matchingTerms.map((term) => (
+                <button
+                  key={term}
+                  type="button"
+                  className="btn btn-xs btn-ghost"
+                  onClick={() => {
+                    contextMenuConfig.removeHighlightTerm?.(term)
+                    closeUserTooltip()
+                  }}
+                >
+                  {term} ×
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap gap-2 pt-1 border-t border-base-300">
             {userTooltip.source === 'dgg' && enableDgg && (
               <button
@@ -2796,6 +2916,170 @@ export default function CombinedChat({
           </div>
         </div>
       )}
+      {contextMenuAt &&
+        contextMenuConfig &&
+        (() => {
+          const menuW = 180
+          const submenuW = 228
+          const maxH = 420
+          const pad = 8
+          let left = Math.max(pad, Math.min(contextMenuAt.x, window.innerWidth - menuW - pad))
+          const top = Math.max(pad, Math.min(contextMenuAt.y, window.innerHeight - maxH - pad))
+          const submenuOnRight = left + menuW + submenuW + pad <= window.innerWidth
+          const showSubmenuLeft = contextMenuHover && !submenuOnRight
+          if (showSubmenuLeft) left = Math.max(pad, left - submenuW)
+          return createPortal(
+            <div
+              ref={contextMenuRef}
+              className="fixed z-[200] flex rounded-lg border border-base-300 bg-base-200 shadow-xl py-1 text-sm"
+              style={{
+                left,
+                top,
+                maxHeight: maxH,
+                flexDirection: showSubmenuLeft ? 'row-reverse' : 'row',
+              }}
+              role="menu"
+              onMouseLeave={() => setContextMenuHover(null)}
+            >
+              <div className="w-[180px] shrink-0 flex flex-col py-0.5">
+                {contextMenuSelection && contextMenuConfig.addHighlightTerm && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="px-3 py-1.5 text-left hover:bg-base-300 w-full truncate"
+                      onClick={() => {
+                        contextMenuConfig.addHighlightTerm?.(contextMenuSelection)
+                        closeContextMenu()
+                      }}
+                    >
+                      Add &quot;{contextMenuSelection.length > 20 ? contextMenuSelection.slice(0, 20) + '…' : contextMenuSelection}&quot; to highlights
+                    </button>
+                    <div className="border-t border-base-300 my-1" />
+                  </>
+                )}
+                <div
+                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                  onMouseEnter={() => setContextMenuHover('display')}
+                  role="menuitem"
+                >
+                  <span>Display</span>
+                  <span aria-hidden className="text-base-content/50">▸</span>
+                </div>
+                <div
+                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                  onMouseEnter={() => setContextMenuHover('order')}
+                  role="menuitem"
+                >
+                  <span>Order</span>
+                  <span aria-hidden className="text-base-content/50">▸</span>
+                </div>
+                <div
+                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                  onMouseEnter={() => setContextMenuHover('emotes')}
+                  role="menuitem"
+                >
+                  <span>Emotes</span>
+                  <span aria-hidden className="text-base-content/50">▸</span>
+                </div>
+                <div
+                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                  onMouseEnter={() => setContextMenuHover('links')}
+                  role="menuitem"
+                >
+                  <span>Links</span>
+                  <span aria-hidden className="text-base-content/50">▸</span>
+                </div>
+                {contextMenuConfig.dgg && (
+                  <div
+                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                    onMouseEnter={() => setContextMenuHover('dgg')}
+                    role="menuitem"
+                  >
+                    <span>DGG</span>
+                    <span aria-hidden className="text-base-content/50">▸</span>
+                  </div>
+                )}
+              </div>
+              {contextMenuHover === 'display' && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 overflow-y-auto ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  style={{ maxHeight: maxH - 8 }}
+                  onMouseEnter={() => setContextMenuHover('display')}
+                >
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showTimestamps} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowTimestamps(!contextMenuConfig.display.showTimestamps); closeContextMenu() }}>
+                    <span>Show timestamps</span>
+                    {contextMenuConfig.display.showTimestamps && <span aria-hidden>✓</span>}
+                  </button>
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showLabels} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowLabels(!contextMenuConfig.display.showLabels); closeContextMenu() }}>
+                    <span>Source labels</span>
+                    {contextMenuConfig.display.showLabels && <span aria-hidden>✓</span>}
+                  </button>
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showPlatformIcons} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowPlatformIcons(!contextMenuConfig.display.showPlatformIcons); closeContextMenu() }}>
+                    <span>Platform icons</span>
+                    {contextMenuConfig.display.showPlatformIcons && <span aria-hidden>✓</span>}
+                  </button>
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showDggFlairsAndColors} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowDggFlairsAndColors(!contextMenuConfig.display.showDggFlairsAndColors); closeContextMenu() }}>
+                    <span>DGG flairs and colors</span>
+                    {contextMenuConfig.display.showDggFlairsAndColors && <span aria-hidden>✓</span>}
+                  </button>
+                </div>
+              )}
+              {contextMenuHover === 'order' && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  style={{ maxHeight: maxH - 8 }}
+                  onMouseEnter={() => setContextMenuHover('order')}
+                >
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.order.sortMode === 'timestamp'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.order.setSortMode('timestamp'); closeContextMenu() }}>
+                    <span>By timestamp</span>
+                    {contextMenuConfig.order.sortMode === 'timestamp' && <span aria-hidden>✓</span>}
+                  </button>
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.order.sortMode === 'arrival'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.order.setSortMode('arrival'); closeContextMenu() }}>
+                    <span>By arrival</span>
+                    {contextMenuConfig.order.sortMode === 'arrival' && <span aria-hidden>✓</span>}
+                  </button>
+                </div>
+              )}
+              {contextMenuHover === 'emotes' && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  onMouseEnter={() => setContextMenuHover('emotes')}
+                >
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.emotes.pauseOffScreen} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.emotes.setPauseOffScreen(!contextMenuConfig.emotes.pauseOffScreen); closeContextMenu() }}>
+                    <span>Pause animations when off-screen</span>
+                    {contextMenuConfig.emotes.pauseOffScreen && <span aria-hidden>✓</span>}
+                  </button>
+                </div>
+              )}
+              {contextMenuHover === 'links' && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  onMouseEnter={() => setContextMenuHover('links')}
+                >
+                  {(['none', 'clipboard', 'browser', 'viewer'] as const).map((action) => (
+                    <button key={action} type="button" role="menuitemradio" aria-checked={contextMenuConfig.linkAction.value === action} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.linkAction.setValue(action); closeContextMenu() }}>
+                      <span>{action === 'none' ? "Don't open" : action === 'clipboard' ? 'Copy to clipboard' : action === 'browser' ? 'Open in browser' : 'Open in Viewer'}</span>
+                      {contextMenuConfig.linkAction.value === action && <span aria-hidden>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {contextMenuHover === 'dgg' && contextMenuConfig.dgg && (
+                <div
+                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                  onMouseEnter={() => setContextMenuHover('dgg')}
+                >
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.dgg.showInput} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.dgg!.setShowInput(!contextMenuConfig.dgg!.showInput); closeContextMenu() }}>
+                    <span>Show chat input</span>
+                    {contextMenuConfig.dgg.showInput && <span aria-hidden>✓</span>}
+                  </button>
+                </div>
+              )}
+            </div>,
+            document.body
+          )
+        })()}
     </div>
   )
 }

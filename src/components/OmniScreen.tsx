@@ -4,7 +4,7 @@ import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
-import CombinedChat from './CombinedChat'
+import CombinedChat, { type CombinedChatContextMenuConfig } from './CombinedChat'
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
@@ -543,11 +543,28 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const saved = Number(localStorage.getItem('omni-screen:pinned-youtube-check-multiplier'))
     return Number.isFinite(saved) && saved > 0 ? saved : 1
   })
-  const [combinedHighlightTerm, setCombinedHighlightTerm] = useState<string>(() => {
-    return localStorage.getItem('omni-screen:combined-highlight-term') ?? ''
+  const [combinedHighlightTerms, setCombinedHighlightTerms] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('omni-screen:combined-highlight-terms')
+      if (!raw) {
+        const legacy = localStorage.getItem('omni-screen:combined-highlight-term')
+        if (legacy?.trim()) return [legacy.trim()]
+        return []
+      }
+      const arr = JSON.parse(raw)
+      return Array.isArray(arr) ? arr.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim()) : []
+    } catch {
+      return []
+    }
   })
+  const [combinedHighlightTermDraft, setCombinedHighlightTermDraft] = useState('')
   const [combinedPauseEmoteAnimationsOffScreen, setCombinedPauseEmoteAnimationsOffScreen] = useState<boolean>(() => {
     const saved = localStorage.getItem('omni-screen:combined-pause-emote-offscreen')
+    if (saved === '1' || saved === 'true') return true
+    return false
+  })
+  const [combinedDisableDggFlairsAndColors, setCombinedDisableDggFlairsAndColors] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:combined-disable-dgg-flairs-colors')
     if (saved === '1' || saved === 'true') return true
     return false
   })
@@ -645,6 +662,49 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       document.body.style.paddingRight = prevPadding
     }
   }, [settingsModalOpen])
+
+  const combinedChatContextMenuConfig = useMemo<CombinedChatContextMenuConfig>(
+    () => ({
+      display: {
+        showTimestamps: combinedShowTimestamps,
+        setShowTimestamps: setCombinedShowTimestamps,
+        showLabels: combinedShowLabels,
+        setShowLabels: setCombinedShowLabels,
+        showPlatformIcons: combinedShowPlatformIcons,
+        setShowPlatformIcons: setCombinedShowPlatformIcons,
+        showDggFlairsAndColors: !combinedDisableDggFlairsAndColors,
+        setShowDggFlairsAndColors: (v) => setCombinedDisableDggFlairsAndColors(!v),
+      },
+      order: { sortMode: combinedSortMode, setSortMode: setCombinedSortMode },
+      emotes: {
+        pauseOffScreen: combinedPauseEmoteAnimationsOffScreen,
+        setPauseOffScreen: setCombinedPauseEmoteAnimationsOffScreen,
+      },
+      linkAction: { value: chatLinkOpenAction, setValue: setChatLinkOpenAction },
+      dgg: combinedIncludeDgg ? { showInput: showDggInput, setShowInput: setShowDggInput } : undefined,
+      highlightTerms: combinedHighlightTerms,
+      addHighlightTerm: (term: string) => {
+        const t = term.trim()
+        if (!t) return
+        setCombinedHighlightTerms((prev) => (prev.includes(t) ? prev : [...prev, t]))
+      },
+      removeHighlightTerm: (term: string) => {
+        setCombinedHighlightTerms((prev) => prev.filter((x) => x !== term))
+      },
+    }),
+    [
+      combinedShowTimestamps,
+      combinedShowLabels,
+      combinedShowPlatformIcons,
+      combinedDisableDggFlairsAndColors,
+      combinedSortMode,
+      combinedPauseEmoteAnimationsOffScreen,
+      chatLinkOpenAction,
+      combinedIncludeDgg,
+      showDggInput,
+      combinedHighlightTerms,
+    ]
+  )
 
   const combinedHeaderText = useMemo(() => {
     const parts: string[] = []
@@ -799,61 +859,41 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [chatPaneWidth, chatPaneSide])
 
   useEffect(() => {
-    try {
-      localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
-    } catch {
-      // ignore
-    }
-  }, [combinedIncludeDgg])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('omni-screen:combined-max-messages', String(combinedMaxMessages))
-    } catch {
-      // ignore
-    }
-  }, [combinedMaxMessages])
-
-  useEffect(() => {
     setCombinedMaxMessagesDraft(String(combinedMaxMessages))
   }, [combinedMaxMessages])
 
+  // Persist all combined chat / chat pane settings in one place so none are missed.
   useEffect(() => {
     try {
+      localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
+      localStorage.setItem('omni-screen:combined-max-messages', String(combinedMaxMessages))
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
       localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
-      localStorage.setItem('omni-screen:combined-highlight-term', combinedHighlightTerm)
+      localStorage.setItem('omni-screen:combined-highlight-terms', JSON.stringify(combinedHighlightTerms))
       localStorage.setItem('omni-screen:combined-pause-emote-offscreen', combinedPauseEmoteAnimationsOffScreen ? '1' : '0')
-    } catch {
-      // ignore
-    }
-  }, [combinedShowLabels, combinedShowPlatformIcons, combinedShowTimestamps, combinedSortMode, combinedHighlightTerm, combinedPauseEmoteAnimationsOffScreen])
-
-  useEffect(() => {
-    try {
+      localStorage.setItem('omni-screen:combined-disable-dgg-flairs-colors', combinedDisableDggFlairsAndColors ? '1' : '0')
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
-    } catch {
-      // ignore
-    }
-  }, [chatLinkOpenAction])
-
-  useEffect(() => {
-    try {
       localStorage.setItem('omni-screen:show-dgg-input', showDggInput ? '1' : '0')
-    } catch {
-      // ignore
-    }
-  }, [showDggInput])
-
-  useEffect(() => {
-    try {
       localStorage.setItem('omni-screen:dgg-focus-keybind', JSON.stringify(dggFocusKeybind))
     } catch {
       // ignore
     }
-  }, [dggFocusKeybind])
+  }, [
+    combinedIncludeDgg,
+    combinedMaxMessages,
+    combinedShowTimestamps,
+    combinedShowLabels,
+    combinedShowPlatformIcons,
+    combinedSortMode,
+    combinedHighlightTerms,
+    combinedPauseEmoteAnimationsOffScreen,
+    combinedDisableDggFlairsAndColors,
+    chatLinkOpenAction,
+    showDggInput,
+    dggFocusKeybind,
+  ])
 
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
@@ -1762,8 +1802,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     showSourceLabels={combinedShowLabels}
                     showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
-                    highlightTerm={combinedHighlightTerm || undefined}
+                    highlightTerms={combinedHighlightTerms}
                     pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
+                    showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
+                    contextMenuConfig={combinedChatContextMenuConfig}
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
@@ -2362,8 +2404,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     showSourceLabels={combinedShowLabels}
                     showPlatformIcons={combinedShowPlatformIcons}
                     sortMode={combinedSortMode}
-                    highlightTerm={combinedHighlightTerm || undefined}
+                    highlightTerms={combinedHighlightTerms}
                     pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
+                    showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
+                    contextMenuConfig={combinedChatContextMenuConfig}
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
@@ -2623,157 +2667,247 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   </div>
                   <div className="border-t border-base-300 pt-4">
                     <div className="text-sm font-semibold text-base-content/80 mb-2">Combined chat</div>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Include DGG</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={combinedIncludeDgg}
-                        onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Max messages</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        className="input input-sm w-24"
-                        value={combinedMaxMessagesDraft}
-                        onChange={(e) => {
-                          const next = e.target.value
-                          if (!/^\d*$/.test(next)) return
-                          setCombinedMaxMessagesDraft(next)
-                        }}
-                        onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
-                        }}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Show timestamps</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={combinedShowTimestamps}
-                        onChange={(e) => setCombinedShowTimestamps(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Source labels</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={combinedShowLabels}
-                        onChange={(e) => setCombinedShowLabels(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Platform icons</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={combinedShowPlatformIcons}
-                        onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Pause emote animations when off-screen</span>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-sm"
-                        checked={combinedPauseEmoteAnimationsOffScreen}
-                        onChange={(e) => setCombinedPauseEmoteAnimationsOffScreen(e.target.checked)}
-                      />
-                    </label>
-                    <span className="label-text-alt text-base-content/60 -mt-1 mb-2 block">Reduces DGG emote animation restarts when scrolling.</span>
-                    <label className="flex flex-col gap-1 text-sm mb-2">
-                      <span>Highlight term</span>
-                      <input
-                        type="text"
-                        className="input input-sm w-full"
-                        placeholder="e.g. username"
-                        value={combinedHighlightTerm}
-                        onChange={(e) => setCombinedHighlightTerm(e.target.value)}
-                      />
-                    </label>
-                    <div className="flex items-center justify-between gap-2 text-sm mb-2">
-                      <span>Order</span>
-                      <div className="join">
+
+                    {/* General */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">General</div>
+                      <div className="space-y-2 pl-0">
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Include DGG</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={combinedIncludeDgg}
+                            onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Max messages</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            className="input input-sm w-24"
+                            value={combinedMaxMessagesDraft}
+                            onChange={(e) => {
+                              const next = e.target.value
+                              if (!/^\d*$/.test(next)) return
+                              setCombinedMaxMessagesDraft(next)
+                            }}
+                            onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+                            }}
+                          />
+                        </label>
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span>Order</span>
+                          <div className="join">
+                            <button
+                              type="button"
+                              className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
+                              onClick={() => setCombinedSortMode('timestamp')}
+                            >
+                              Timestamp
+                            </button>
+                            <button
+                              type="button"
+                              className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
+                              onClick={() => setCombinedSortMode('arrival')}
+                            >
+                              Arrival
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Display */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">Display</div>
+                      <div className="space-y-2 pl-0">
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Show timestamps</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={combinedShowTimestamps}
+                            onChange={(e) => setCombinedShowTimestamps(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Source labels</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={combinedShowLabels}
+                            onChange={(e) => setCombinedShowLabels(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Platform icons</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={combinedShowPlatformIcons}
+                            onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>DGG flairs and colors</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={!combinedDisableDggFlairsAndColors}
+                            onChange={(e) => setCombinedDisableDggFlairsAndColors(!e.target.checked)}
+                          />
+                        </label>
+                        <span className="label-text-alt text-base-content/60 block">When off, DGG nicks use a single color and no flair icons.</span>
+                      </div>
+                    </div>
+
+                    {/* Filter */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">Highlight terms</div>
+                      <p className="text-xs text-base-content/60 mb-1">Right-click selected text in chat to add; right-click a highlighted message to remove a term.</p>
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {combinedHighlightTerms.map((t) => (
+                          <span
+                            key={t}
+                            className="badge badge-sm badge-ghost gap-1 pr-1"
+                          >
+                            {t}
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs p-0 min-h-0 h-4 w-4 rounded-full"
+                              onClick={() => setCombinedHighlightTerms((prev) => prev.filter((x) => x !== t))}
+                              aria-label={`Remove ${t}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex gap-1">
+                        <input
+                          type="text"
+                          className="input input-sm flex-1"
+                          placeholder="Add term..."
+                          value={combinedHighlightTermDraft}
+                          onChange={(e) => setCombinedHighlightTermDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              const v = combinedHighlightTermDraft.trim()
+                              if (v && !combinedHighlightTerms.includes(v)) {
+                                setCombinedHighlightTerms((prev) => [...prev, v])
+                                setCombinedHighlightTermDraft('')
+                              }
+                            }
+                          }}
+                        />
                         <button
                           type="button"
-                          className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setCombinedSortMode('timestamp')}
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => {
+                            const v = combinedHighlightTermDraft.trim()
+                            if (v && !combinedHighlightTerms.includes(v)) {
+                              setCombinedHighlightTerms((prev) => [...prev, v])
+                              setCombinedHighlightTermDraft('')
+                            }
+                          }}
                         >
-                          Timestamp
-                        </button>
-                        <button
-                          type="button"
-                          className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setCombinedSortMode('arrival')}
-                        >
-                          Arrival
+                          Add
                         </button>
                       </div>
                     </div>
-                    <label className="flex flex-col gap-1 text-sm mb-2">
-                      <span className="font-semibold">Link click behavior</span>
-                      <select
-                        className="select select-bordered select-sm w-full"
-                        value={chatLinkOpenAction}
-                        onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
-                      >
-                        <option value="none">Don&apos;t open the link</option>
-                        <option value="clipboard">Copy link to clipboard</option>
-                        <option value="browser">Open in default browser</option>
-                        <option value="viewer">Open in Viewer window</option>
-                      </select>
-                      <span className="label-text-alt text-base-content/60">Applies to links in Destiny embed chat and combined chat.</span>
-                    </label>
-                    {combinedIncludeDgg && (
-                      <label className="flex items-center justify-between gap-2 text-sm mb-2">
-                        <span>Show DGG chat input</span>
+
+                    {/* Emotes */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">Emotes</div>
+                      <label className="flex items-center justify-between gap-2 text-sm">
+                        <span>Pause animations when off-screen</span>
                         <input
                           type="checkbox"
                           className="toggle toggle-sm"
-                          checked={showDggInput}
-                          onChange={(e) => setShowDggInput(e.target.checked)}
+                          checked={combinedPauseEmoteAnimationsOffScreen}
+                          onChange={(e) => setCombinedPauseEmoteAnimationsOffScreen(e.target.checked)}
                         />
                       </label>
-                    )}
-                    <label className="flex items-center justify-between gap-2 text-sm mb-2" title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier.">
-                      <span>YT chat poll ×</span>
-                      <input
-                        type="number"
-                        step={0.25}
-                        className="input input-sm w-24"
-                        value={youTubePollMultiplier}
-                        min={0.25}
-                        max={5}
-                        onChange={(e) => {
-                          const v = Number(e.target.value)
-                          if (!Number.isFinite(v)) return
-                          setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
-                        }}
-                      />
-                    </label>
-                    <div className="text-xs text-base-content/60 mb-2">Chat fetch delay multiplier. Pinned live check: 📌 on the bar.</div>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      <button type="button" className="btn btn-xs btn-ghost" onClick={openKickHistorySetup} title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests">
-                        Kick history: open Kick
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-ghost"
-                        onClick={retryKickHistory}
-                        disabled={enabledKickSlugs.length === 0}
-                        title={enabledKickSlugs.length === 0 ? 'Enable at least one Kick chat toggle first' : 'Retry history fetch for enabled Kick chats'}
-                      >
-                        Retry history
-                      </button>
+                      <span className="label-text-alt text-base-content/60 block">Reduces DGG emote animation restarts when scrolling.</span>
                     </div>
-                    <div className="text-xs text-base-content/60">If Kick history fails, open Kick once (Cloudflare may appear), then retry.</div>
+
+                    {/* Links */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">Links</div>
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span>Link click behavior</span>
+                        <select
+                          className="select select-bordered select-sm w-full"
+                          value={chatLinkOpenAction}
+                          onChange={(e) => setChatLinkOpenAction(e.target.value as typeof chatLinkOpenAction)}
+                        >
+                          <option value="none">Don&apos;t open the link</option>
+                          <option value="clipboard">Copy link to clipboard</option>
+                          <option value="browser">Open in default browser</option>
+                          <option value="viewer">Open in Viewer window</option>
+                        </select>
+                        <span className="label-text-alt text-base-content/60">Applies to links in Destiny embed chat and combined chat.</span>
+                      </label>
+                    </div>
+
+                    {/* DGG (when included) */}
+                    {combinedIncludeDgg && (
+                      <div className="mb-4">
+                        <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">DGG</div>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Show DGG chat input</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={showDggInput}
+                            onChange={(e) => setShowDggInput(e.target.checked)}
+                          />
+                        </label>
+                      </div>
+                    )}
+
+                    {/* YouTube / Kick */}
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">YouTube / Kick</div>
+                      <label className="flex items-center justify-between gap-2 text-sm" title="Unitless multiplier. Effective delay ≈ YouTube-provided timeout × multiplier.">
+                        <span>YT chat poll ×</span>
+                        <input
+                          type="number"
+                          step={0.25}
+                          className="input input-sm w-24"
+                          value={youTubePollMultiplier}
+                          min={0.25}
+                          max={5}
+                          onChange={(e) => {
+                            const v = Number(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            setYouTubePollMultiplier(Math.max(0.25, Math.min(5, v)))
+                          }}
+                        />
+                      </label>
+                      <div className="text-xs text-base-content/60 mt-1 mb-2">Chat fetch delay multiplier. Pinned live check: 📌 on the bar.</div>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        <button type="button" className="btn btn-xs btn-ghost" onClick={openKickHistorySetup} title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests">
+                          Kick history: open Kick
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={retryKickHistory}
+                          disabled={enabledKickSlugs.length === 0}
+                          title={enabledKickSlugs.length === 0 ? 'Enable at least one Kick chat toggle first' : 'Retry history fetch for enabled Kick chats'}
+                        >
+                          Retry history
+                        </button>
+                      </div>
+                      <div className="text-xs text-base-content/60">If Kick history fails, open Kick once (Cloudflare may appear), then retry.</div>
+                    </div>
                   </div>
                 </div>
               )}
