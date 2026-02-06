@@ -465,6 +465,13 @@ function Menu({ onNavigate }: MenuProps) {
                   <p className="text-error mb-2">Error downloading the latest version.</p>
                   <p className="text-error text-sm">{updateError.message}</p>
                 </div>
+              ) : versionInfo?.systemInstall ? (
+                <div className="text-base-content/80">
+                  <p className="mb-2">You have the package manager installation (e.g. AUR).</p>
+                  <p className="text-sm mb-2">To update, run:</p>
+                  <pre className="text-xs bg-base-200 p-2 rounded overflow-auto select-all">yay -Syu omni-screen-bin</pre>
+                  <p className="text-xs mt-2 text-base-content/60">or pacman -Syu omni-screen-bin</p>
+                </div>
               ) : updateAvailable ? (
                 <div>
                   <div className="text-success mb-2">The latest version is: v{versionInfo?.newVersion}</div>
