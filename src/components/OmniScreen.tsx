@@ -52,7 +52,7 @@ interface BannedEmbed {
   reason?: string
 }
 
-/** Pinned streamer: up to 3 platforms (YouTube channel, Kick, Twitch); optional nickname and accent color. */
+/** Bookmarked streamer: up to 3 platforms (YouTube channel, Kick, Twitch); optional nickname and accent color. */
 export interface PinnedStreamer {
   id: string
   nickname: string
@@ -501,6 +501,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === '1' || saved === 'true') return true
     return false
   })
+  const [dockAtTop, setDockAtTop] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:dock-at-top')
+    return saved === '1' || saved === 'true'
+  })
 
   // ---- Chat pane (combined chat only; DGG is included via combined chat) ----
   const [chatPaneOpen, setChatPaneOpen] = useState(true)
@@ -532,7 +536,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [combinedSortMode, setCombinedSortMode] = useState<CombinedSortMode>(() => {
     const saved = localStorage.getItem('omni-screen:combined-sort-mode')
-    return saved === 'arrival' ? 'arrival' : 'timestamp'
+    return saved === 'timestamp' ? 'timestamp' : 'arrival'
   })
   const [youTubePollMultiplier, setYouTubePollMultiplier] = useState<number>(() => {
     const saved = Number(localStorage.getItem('omni-screen:youtube-poll-multiplier'))
@@ -644,6 +648,30 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   /** Increment to trigger one immediate run of pinned streamer polls (e.g. Refresh button). */
   const [pinnedPollRefreshTrigger, setPinnedPollRefreshTrigger] = useState(0)
 
+  /** Preferred platform order for "turn on" dock click: first matching platform's video is enabled. */
+  const PREFERRED_PLATFORMS_DEFAULT: ('youtube' | 'kick' | 'twitch')[] = ['youtube', 'kick', 'twitch']
+  const [preferredPlatformOrder, setPreferredPlatformOrder] = useState<('youtube' | 'kick' | 'twitch')[]>(() => {
+    try {
+      const raw = localStorage.getItem('omni-screen:preferred-platform-order')
+      if (!raw) return PREFERRED_PLATFORMS_DEFAULT
+      const arr = JSON.parse(raw)
+      if (!Array.isArray(arr)) return PREFERRED_PLATFORMS_DEFAULT
+      const valid = arr.filter((p: string) => ['youtube', 'kick', 'twitch'].includes(p))
+      const seen = new Set<string>()
+      const order = valid.filter((p: string) => {
+        if (seen.has(p)) return false
+        seen.add(p)
+        return true
+      })
+      for (const p of ['youtube', 'kick', 'twitch'] as const) {
+        if (!seen.has(p)) order.push(p)
+      }
+      return order as ('youtube' | 'kick' | 'twitch')[]
+    } catch {
+      return PREFERRED_PLATFORMS_DEFAULT
+    }
+  })
+
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:pinned-streamers', JSON.stringify(pinnedStreamers))
@@ -651,6 +679,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [pinnedStreamers])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:preferred-platform-order', JSON.stringify(preferredPlatformOrder))
+    } catch {
+      // ignore
+    }
+  }, [preferredPlatformOrder])
 
   // Prevent layout shift (gap on right) when modal opens: body may get overflow hidden and scrollbar disappears
   useEffect(() => {
@@ -798,7 +834,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return m
   }, [availableEmbeds, manualEmbeds, pinnedOriginatedEmbeds])
 
-  /** Why each embed is in the list: Pinned (pinned streamer), DGG (websocket), Manual (pasted/pinned poll). */
+  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Manual (pasted/pinned poll). */
   const embedSourcesByKey = useMemo(() => {
     const out = new Map<string, { pinned: boolean; dgg: boolean; manual: boolean }>()
     for (const key of combinedAvailableEmbeds.keys()) {
@@ -812,7 +848,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   function formatEmbedSource(s: { pinned: boolean; dgg: boolean; manual: boolean }): string {
     const parts: string[] = []
-    if (s.pinned) parts.push('Pinned')
+    if (s.pinned) parts.push('Bookmarked')
     if (s.dgg) parts.push('DGG embed')
     if (s.manual) parts.push('Manually added')
     return parts.length ? parts.join(' • ') : 'Unknown'
@@ -848,21 +884,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
   }, [selectedEmbedChatKeys])
 
-  // Persist chat pane prefs
-  useEffect(() => {
-    try {
-      localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
-      localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
-    } catch {
-      // ignore
-    }
-  }, [chatPaneWidth, chatPaneSide])
-
   useEffect(() => {
     setCombinedMaxMessagesDraft(String(combinedMaxMessages))
   }, [combinedMaxMessages])
 
-  // Persist all combined chat / chat pane settings in one place so none are missed.
+  // Persist all combined chat and chat pane settings in one place so none are missed on restart.
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
@@ -877,6 +903,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
       localStorage.setItem('omni-screen:show-dgg-input', showDggInput ? '1' : '0')
       localStorage.setItem('omni-screen:dgg-focus-keybind', JSON.stringify(dggFocusKeybind))
+      localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
+      localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
     } catch {
       // ignore
     }
@@ -893,6 +921,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     chatLinkOpenAction,
     showDggInput,
     dggFocusKeybind,
+    chatPaneWidth,
+    chatPaneSide,
   ])
 
   useEffect(() => {
@@ -942,10 +972,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:cinema-mode', cinemaMode ? '1' : '0')
+      localStorage.setItem('omni-screen:dock-at-top', dockAtTop ? '1' : '0')
     } catch {
       // ignore
     }
-  }, [cinemaMode])
+  }, [cinemaMode, dockAtTop])
 
   const commitCombinedMaxMessages = useCallback(
     (raw?: string) => {
@@ -1596,8 +1627,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId])
 
   const dockRef = useRef<HTMLDivElement | null>(null)
+  const dockBarRef = useRef<HTMLDivElement | null>(null)
   const dockButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const dockCloseTimerRef = useRef<number | null>(null)
+  /** Right-click on dock bar: context menu position. */
+  const [dockContextMenuAt, setDockContextMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const [dockContextMenuHover, setDockContextMenuHover] = useState<'preferred' | 'dockPosition' | null>(null)
+  const dockContextMenuRef = useRef<HTMLDivElement | null>(null)
   /** Dock item id: "group:"+streamer.id or "single:"+key */
   const [dockHoverItemId, setDockHoverItemId] = useState<string | null>(null)
   const [dockHoverPinned, setDockHoverPinned] = useState(false)
@@ -1637,6 +1673,48 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       setDockHoverItemId(null)
     }, 120)
   }, [clearDockCloseTimer, dockHoverPinned])
+
+  const onDockBarContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDockContextMenuAt({ x: e.clientX, y: e.clientY })
+  }, [])
+
+  const closeDockContextMenu = useCallback(() => {
+    setDockContextMenuAt(null)
+    setDockContextMenuHover(null)
+  }, [])
+
+  const bringPreferredPlatformToTop = useCallback((platform: 'youtube' | 'kick' | 'twitch') => {
+    setPreferredPlatformOrder((prev) => {
+      const rest = prev.filter((p) => p !== platform)
+      return [platform, ...rest]
+    })
+    closeDockContextMenu()
+  }, [closeDockContextMenu])
+
+  const setDockPositionFromMenu = useCallback((atTop: boolean) => {
+    setDockAtTop(atTop)
+    closeDockContextMenu()
+  }, [closeDockContextMenu])
+
+  useEffect(() => {
+    if (!dockContextMenuAt) return
+    const onPointer = (e: PointerEvent) => {
+      const el = dockContextMenuRef.current
+      if (el && (el === e.target || el.contains(e.target as Node))) return
+      closeDockContextMenu()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeDockContextMenu()
+    }
+    window.addEventListener('pointerdown', onPointer, { capture: true })
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointer, { capture: true })
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [dockContextMenuAt, closeDockContextMenu])
 
   useEffect(() => {
     if (!dockHoverItemId) return
@@ -1744,10 +1822,21 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           return next
         })
       } else {
-        setSelectedEmbedKeys((prev) => new Set(prev).add(keys[0]))
+        // Prefer first key whose platform matches preferred order (so clicking the bar turns on preferred platform's video)
+        const keyToAdd =
+          keys.length === 1
+            ? keys[0]
+            : (() => {
+                for (const platform of preferredPlatformOrder) {
+                  const match = keys.find((k) => (k.split(':')[0] || '').toLowerCase() === platform)
+                  if (match) return match
+                }
+                return keys[0]
+              })()
+        setSelectedEmbedKeys((prev) => new Set(prev).add(keyToAdd))
       }
     },
-    [selectedEmbedKeys, selectedEmbedChatKeys],
+    [selectedEmbedKeys, selectedEmbedChatKeys, preferredPlatformOrder],
   )
 
   const gridCols = useMemo(() => {
@@ -1822,7 +1911,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           </>
         )}
 
-        {/* Center column: embeds grid + bottom dock (width stops at chat pane) */}
+        {/* Center column: embeds grid + dock (dock order switches by dockAtTop) */}
         <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'}`}>
           {/* 50% transparent background behind embeds */}
           <div
@@ -1831,12 +1920,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           />
 
           {/* Embed grid area (measured by ResizeObserver) */}
-          <div ref={gridAreaRef} className="relative z-10 flex-1 min-h-0 overflow-hidden">
+          <div ref={gridAreaRef} className={`relative z-10 flex-1 min-h-0 overflow-hidden ${dockAtTop ? 'order-1' : 'order-0'}`}>
             {selectedEmbeds.length === 0 ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="text-xl font-bold mb-2">No embeds selected</div>
-                  <div className="text-base-content/70">Use the dock below to toggle streams on.</div>
+                  <div className="text-base-content/70">Use the dock to toggle streams on.</div>
                 </div>
               </div>
             ) : (
@@ -1857,26 +1946,33 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             )}
           </div>
 
-          {/* Bottom embeds dock (inside center column) */}
+          {/* Embeds dock (inside center column; position by dockAtTop) */}
           <div
+            ref={dockBarRef}
             className={[
-              'relative z-20 flex items-center gap-2',
-              cinemaMode ? 'mt-0 bg-base-200 border-t border-base-300 rounded-none px-2 py-2' : 'mt-3 bg-base-200 border border-base-300 rounded-lg px-2 py-2',
+              'relative z-20 flex items-center',
+              dockAtTop ? 'order-0' : 'order-1',
+              cinemaMode
+                ? `mt-0 bg-base-200 rounded-none gap-0 p-0 ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}`
+                : dockAtTop
+                  ? 'mb-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2'
+                  : 'mt-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
             ].join(' ')}
+            onContextMenu={onDockBarContextMenu}
           >
             {/* Scrollable embeds list */}
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 min-h-0">
               <div
                 ref={dockRef}
-                className="overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll"
+                className={`overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll ${cinemaMode ? 'py-0' : ''}`}
                 onWheel={onDockWheel}
                 style={{ overscrollBehaviorX: 'contain' as any }}
               >
-                <div className="flex items-center gap-1">
+                <div className={`flex items-center ${cinemaMode ? 'gap-0' : 'gap-1'}`}>
                   {dockItems.length === 0 ? (
-                    <div className="text-xs text-base-content/60 px-2 py-1">No embeds. Add a link or add a pinned streamer (when live).</div>
+                    <div className={`text-xs text-base-content/60 ${cinemaMode ? 'px-0 py-0' : 'px-2 py-1'}`}>No embeds. Add a link or add a bookmarked streamer (when live).</div>
                   ) : (
-                    dockItems.map((item, idx) => {
+                    dockItems.map((item) => {
                       const itemId = getDockItemId(item)
                       const keys = item.type === 'group' ? item.keys : [item.key]
                       const firstKey = keys[0]
@@ -1903,7 +1999,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               if (el) map.set(itemId, el)
                               else map.delete(itemId)
                             }}
-                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'}`}
+                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'} ${cinemaMode ? 'rounded-none border-0 border-r border-base-300 first:border-l-0' : ''}`}
                             title={item.type === 'group' ? `${label} (${keys.length} embed${keys.length !== 1 ? 's' : ''})` : `${(firstEmbed?.platform || '').toLowerCase()}: ${firstEmbed?.mediaItem?.metadata?.title || firstKey}`}
                             onClick={() => toggleDockItemMaster(item)}
                             onMouseEnter={() => openDockHover(itemId)}
@@ -1916,8 +2012,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           >
                             {label}
                           </button>
-
-                          {idx < dockItems.length - 1 ? <span className="px-1 text-base-content/40">|</span> : null}
                         </div>
                       )
                     })
@@ -1927,11 +2021,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             </div>
 
             {/* Fixed controls (right side): Pie chart, +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
-            <div className="flex-none flex items-center gap-2">
+            <div className={`flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1' : 'gap-2'}`}>
               <button
                 type="button"
                 ref={pieChartButtonRef}
-                className="btn btn-sm btn-ghost min-h-0 p-0 text-xl"
+                className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
                 title="What's being watched (by platform)"
                 aria-label="Show watch proportions"
                 onMouseEnter={openPiePopup}
@@ -1941,7 +2035,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 🥧
               </button>
               <div className="dropdown dropdown-top dropdown-end">
-                <label tabIndex={0} className="btn btn-sm btn-ghost min-h-0 p-0 text-xl" title="Add embed from link (YouTube, Kick, Twitch)">
+                <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
                   ➕
                 </label>
                 <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
@@ -1998,7 +2092,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <button
                       type="button"
                       className="btn btn-sm btn-primary"
-                      title="Add embed: direct link (YouTube/Kick/Twitch) or YouTube channel (live or add as pinned)"
+                      title="Add embed: direct link (YouTube/Kick/Twitch) or YouTube channel (live or add as bookmarked)"
                       disabled={ytChannelLoading}
                       onClick={async () => {
                         const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null
@@ -2052,7 +2146,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {!chatPaneOpen && (
                 <button
                   type="button"
-                  className="btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl"
+                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
                   title="Chat pane"
                   onClick={() => setChatPaneOpen(true)}
                   aria-label="Show chat pane"
@@ -2062,7 +2156,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               )}
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none' : ''}`}
                 title="Autoplay"
                 onClick={() => setAutoplay((v) => !v)}
                 aria-label="Toggle autoplay"
@@ -2084,7 +2178,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none' : ''}`}
                 title="Mute"
                 onClick={() => setMute((v) => !v)}
                 aria-label="Toggle mute"
@@ -2093,7 +2187,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none' : ''}`}
                 title="Cinema mode"
                 onClick={() => setCinemaMode((v) => !v)}
                 aria-label="Toggle cinema mode"
@@ -2102,7 +2196,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className="btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl"
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
                 title="Settings"
                 onClick={() => setSettingsModalOpen(true)}
                 aria-label="Open settings"
@@ -2110,11 +2204,104 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 ⚙️
               </button>
 
-              <button className="btn btn-sm btn-primary" onClick={onBackToMenu}>
+              <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none' : ''}`} onClick={onBackToMenu}>
                 Back
               </button>
             </div>
           </div>
+
+          {/* Dock bar right-click context menu (above bar when bar at bottom, below when bar at top) */}
+          {dockContextMenuAt && (() => {
+            const menuW = 180
+            const submenuW = 200
+            const pad = 8
+            let left = Math.max(pad, Math.min(dockContextMenuAt.x, window.innerWidth - menuW - pad))
+            const submenuOnRight = left + menuW + submenuW + pad <= window.innerWidth
+            const showSubmenuLeft = dockContextMenuHover && !submenuOnRight
+            if (showSubmenuLeft) left = Math.max(pad, left - submenuW)
+            return (
+              <div
+                ref={dockContextMenuRef}
+                className="fixed z-[9999] flex rounded-lg border border-base-300 bg-base-200 shadow-xl py-1 text-sm"
+                style={{
+                  left,
+                  ...(dockAtTop
+                    ? { top: dockContextMenuAt.y + 8 }
+                    : { top: dockContextMenuAt.y - 4, transform: 'translateY(-100%)' }),
+                  flexDirection: showSubmenuLeft ? 'row-reverse' : 'row',
+                }}
+                role="menu"
+                onContextMenu={(e) => e.preventDefault()}
+                onMouseLeave={() => setDockContextMenuHover(null)}
+              >
+                <div className="w-[180px] shrink-0 flex flex-col py-0.5">
+                  <div
+                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                    onMouseEnter={() => setDockContextMenuHover('preferred')}
+                    role="menuitem"
+                  >
+                    <span>Preferred platforms</span>
+                    <span aria-hidden className="text-base-content/50">▸</span>
+                  </div>
+                  <div
+                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                    onMouseEnter={() => setDockContextMenuHover('dockPosition')}
+                    role="menuitem"
+                  >
+                    <span>Dock position</span>
+                    <span aria-hidden className="text-base-content/50">▸</span>
+                  </div>
+                </div>
+                {dockContextMenuHover === 'preferred' && (
+                  <div
+                    className={`w-[200px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                    onMouseEnter={() => setDockContextMenuHover('preferred')}
+                  >
+                    <div className="px-3 py-1 text-xs text-base-content/50 border-b border-base-300 mb-1">Click to bring to top</div>
+                    {preferredPlatformOrder.map((platform, index) => (
+                      <button
+                        key={platform}
+                        type="button"
+                        role="menuitem"
+                        className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2"
+                        onClick={() => bringPreferredPlatformToTop(platform)}
+                      >
+                        <span className="capitalize">{platform === 'youtube' ? 'YouTube' : platform}</span>
+                        <span className="text-base-content/50">{index + 1}.</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {dockContextMenuHover === 'dockPosition' && (
+                  <div
+                    className={`w-[200px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
+                    onMouseEnter={() => setDockContextMenuHover('dockPosition')}
+                  >
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={dockAtTop}
+                      className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2"
+                      onClick={() => setDockPositionFromMenu(true)}
+                    >
+                      <span>Top</span>
+                      {dockAtTop && <span aria-hidden>✓</span>}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={!dockAtTop}
+                      className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2"
+                      onClick={() => setDockPositionFromMenu(false)}
+                    >
+                      <span>Bottom</span>
+                      {!dockAtTop && <span aria-hidden>✓</span>}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* Dock hover popup (rendered outside scroll container so it won't be clipped) */}
           {dockHoverItemId && hoveredDockItem && dockHoverRect ? (() => {
@@ -2132,7 +2319,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               }
             }
             const left = Math.max(minLeft, Math.min(maxLeft, preferredLeft))
-            const top = Math.max(8, dockHoverRect.top - 8)
+            const aboveBar = !dockAtTop
+            const top = aboveBar
+              ? Math.max(8, dockHoverRect.top - 8)
+              : (() => {
+                  const barRect = dockBarRef.current?.getBoundingClientRect()
+                  const barBottom = barRect ? barRect.bottom : dockHoverRect.bottom
+                  return barBottom + 12
+                })()
             const isGroup = hoveredDockItem.type === 'group'
             const keys = isGroup ? hoveredDockItem.keys : [hoveredDockItem.key]
             const streamers = isGroup ? hoveredDockItem.streamers : []
@@ -2142,7 +2336,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             return (
               <div
                 className="fixed z-[9999] p-3 shadow bg-base-100 rounded-box border border-base-300"
-                style={{ width: popupW, left, top, transform: 'translateY(-100%)' }}
+                style={{ width: popupW, left, top, ...(aboveBar ? { transform: 'translateY(-100%)' } : {}) }}
                 onMouseEnter={() => {
                   clearDockCloseTimer()
                   setDockHoverPinned(true)
@@ -2313,7 +2507,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             else maxLeft = window.innerWidth - chatPaneWidth - popupW - margin
           }
           const left = Math.max(minLeft, Math.min(maxLeft, preferredLeft))
-          const top = Math.max(8, pieChartRect.top - 8)
+          const pieAboveBar = !dockAtTop
+          const top = pieAboveBar ? Math.max(8, pieChartRect.top - 8) : pieChartRect.bottom + 8
           return (
           <div
             className="fixed z-[9999] p-3 shadow bg-base-100 rounded-box border border-base-300"
@@ -2321,7 +2516,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               width: popupW,
               left,
               top,
-              transform: 'translateY(-100%)',
+              ...(pieAboveBar ? { transform: 'translateY(-100%)' } : {}),
             }}
             onMouseEnter={() => {
               if (pieChartCloseTimerRef.current) {
@@ -2431,7 +2626,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 className={`tab ${settingsTab === 'pinned' ? 'tab-active' : ''}`}
                 onClick={() => setSettingsTab('pinned')}
               >
-                Pinned streamers
+                Bookmarked streamers
               </button>
               <button
                 type="button"
@@ -2454,9 +2649,69 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             >
               {settingsTab === 'pinned' && (
                 <div className="space-y-4">
-                  <p className="text-sm text-base-content/60">
-                    Drag to reorder (order on the bar). Color sets the dock button. Each can link YouTube, Kick, and Twitch.
-                  </p>
+                  <div className="border-b border-base-300 pb-4">
+                    <div className="text-sm font-semibold text-base-content/70 mb-2">Dock bar position</div>
+                    <p className="text-xs text-base-content/60 mb-2">Place the embed dock at the top or bottom of the embed area. Hover menus open in the correct direction.</p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${dockAtTop ? 'btn-primary' : 'btn-ghost'}`}
+                        onClick={() => setDockAtTop(true)}
+                      >
+                        Top
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${!dockAtTop ? 'btn-primary' : 'btn-ghost'}`}
+                        onClick={() => setDockAtTop(false)}
+                      >
+                        Bottom
+                      </button>
+                    </div>
+                  </div>
+                  <div className="border-b border-base-300 pb-4">
+                    <div className="text-sm font-semibold text-base-content/70 mb-2">Preferred platforms</div>
+                    <p className="text-xs text-base-content/60 mb-3">
+                      When an embed is off, clicking its dock button turns on the video for your preferred platform first. Drag to reorder; you can also right‑click the dock bar for a quick menu.
+                    </p>
+                    <div className="flex flex-col gap-1">
+                      {preferredPlatformOrder.map((platform, index) => (
+                        <div
+                          key={platform}
+                          draggable
+                          onDragOver={(e) => {
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = 'move'
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            const from = Number(e.dataTransfer.getData('text/plain'))
+                            if (!Number.isFinite(from) || from === index) return
+                            setPreferredPlatformOrder((prev) => {
+                              const next = [...prev]
+                              const [removed] = next.splice(from, 1)
+                              next.splice(index, 0, removed)
+                              return next
+                            })
+                          }}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', String(index))
+                            e.dataTransfer.effectAllowed = 'move'
+                          }}
+                          className="flex items-center gap-2 border border-base-300 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing touch-none"
+                        >
+                          <span className="text-base-content/50 select-none" title="Drag to reorder">⋮⋮</span>
+                          <span className="font-medium capitalize">{platform === 'youtube' ? 'YouTube' : platform}</span>
+                          <span className="text-xs text-base-content/50 ml-auto">{index + 1}.</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-base-content/70 mb-2">Bookmarked streamers</div>
+                    <p className="text-sm text-base-content/60 mb-2">
+                      Drag to reorder (order on the bar). Color sets the dock button. Each can link YouTube, Kick, and Twitch.
+                    </p>
                   <div className="flex flex-col gap-2">
                     {pinnedStreamers.map((s, index) => (
                       <div
@@ -2614,10 +2869,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       + Add streamer
                     </button>
                   )}
+                  </div>
                   <div className="border-t border-base-300 pt-4">
-                    <div className="text-sm font-semibold text-base-content/70 mb-2">Pinned streamers: live check</div>
+                    <div className="text-sm font-semibold text-base-content/70 mb-2">Bookmarked streamers: live check</div>
                     <p className="text-xs text-base-content/60 mb-2">
-                      When live, pinned streamers appear in the dock. YouTube poll and chat delay are in the Chat tab.
+                      When live, bookmarked streamers appear in the dock. YouTube poll and chat delay are in the Chat tab.
                     </p>
                     <label className="flex items-center justify-between gap-2 text-sm">
                       <span>YouTube live check ×</span>
@@ -2638,7 +2894,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <button
                       type="button"
                       className="btn btn-sm btn-ghost btn-outline mt-2"
-                      title="Check all pinned streamers for live now"
+                      title="Check bookmarked streamers for live now"
                       onClick={() => setPinnedPollRefreshTrigger((n) => n + 1)}
                     >
                       Check now
@@ -2891,7 +3147,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           }}
                         />
                       </label>
-                      <div className="text-xs text-base-content/60 mt-1 mb-2">Chat fetch delay multiplier. Pinned live check: 📌 on the bar.</div>
+                      <div className="text-xs text-base-content/60 mt-1 mb-2">Chat fetch delay multiplier. Bookmarked live check: Settings → Bookmarked streamers.</div>
                       <div className="flex flex-wrap gap-2 mb-2">
                         <button type="button" className="btn btn-xs btn-ghost" onClick={openKickHistorySetup} title="Open Kick in-app to establish Cloudflare/Kick cookies for history requests">
                           Kick history: open Kick
