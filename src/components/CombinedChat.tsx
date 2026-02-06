@@ -320,24 +320,47 @@ function renderTextWithLinks(
 /** Segment type for DGG message content: plain text or a mentioned nick. */
 type DggContentSegment = { type: 'text'; value: string } | { type: 'nick'; value: string }
 
-/** Split DGG message content into text and nick segments (nicks are word-boundary matches from nicks list). */
-function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment[] {
-  if (!content || nicks.length === 0) return [{ type: 'text', value: content || '' }]
-  const sorted = [...nicks].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
-  const escaped = sorted.map((n) => escapeRegexLiteral(n))
-  const re = new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi')
+/** Split a non-link string into text and nick segments. Nicks match only as whole words (not inside other words). */
+function tokenizeNicksInText(text: string, re: RegExp): DggContentSegment[] {
   const segments: DggContentSegment[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
-  while ((match = re.exec(content)) !== null) {
+  re.lastIndex = 0
+  while ((match = re.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      segments.push({ type: 'text', value: content.slice(lastIndex, match.index) })
+      segments.push({ type: 'text', value: text.slice(lastIndex, match.index) })
     }
     segments.push({ type: 'nick', value: match[1]! })
     lastIndex = re.lastIndex
   }
+  if (lastIndex < text.length) {
+    segments.push({ type: 'text', value: text.slice(lastIndex) })
+  }
+  return segments.length ? segments : [{ type: 'text', value: text }]
+}
+
+/** Split DGG message content into text and nick segments. Nicks are only matched outside of links, and only as whole words (not inside other words). */
+function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment[] {
+  if (!content) return [{ type: 'text', value: '' }]
+  if (nicks.length === 0) return [{ type: 'text', value: content }]
+  const sorted = [...nicks].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
+  const escaped = sorted.map((n) => escapeRegexLiteral(n))
+  /* Whole-word only: not preceded/followed by word char (so "John" in "Johnny" or "someJohn" does not match) */
+  const nickRe = new RegExp(`(?<!\\w)(${escaped.join('|')})(?!\\w)`, 'gi')
+  const segments: DggContentSegment[] = []
+  let lastIndex = 0
+  let linkMatch: RegExpExecArray | null
+  LINK_REGEX.lastIndex = 0
+  while ((linkMatch = LINK_REGEX.exec(content)) !== null) {
+    const textBeforeLink = content.slice(lastIndex, linkMatch.index)
+    if (textBeforeLink.length > 0) {
+      segments.push(...tokenizeNicksInText(textBeforeLink, nickRe))
+    }
+    segments.push({ type: 'text', value: linkMatch[0] })
+    lastIndex = linkMatch.index + linkMatch[0].length
+  }
   if (lastIndex < content.length) {
-    segments.push({ type: 'text', value: content.slice(lastIndex) })
+    segments.push(...tokenizeNicksInText(content.slice(lastIndex), nickRe))
   }
   return segments.length ? segments : [{ type: 'text', value: content }]
 }
