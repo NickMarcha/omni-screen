@@ -1,4 +1,4 @@
-# Omni Screen
+# Omni Screen [![Latest Build](https://github.com/NickMarcha/omni-screen/actions/workflows/build-publish.yml/badge.svg)](https://github.com/NickMarcha/omni-screen/actions/workflows/build-publish.yml)
 
 A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
 
