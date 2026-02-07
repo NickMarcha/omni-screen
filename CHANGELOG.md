@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.11.0] - 2026-02-07
+
+### Added
+- **Lite link scroller – bottom bar**: Autoplay toggle and mute moved to the bottom bar. Bottom bar is always visible; when the auto-advance timer is not running, the progress bar is shown as a full bar.
+- **Lite link scroller – Skip**: Skip button in the bottom bar: advances to the next card, or if on the last card, ends playback and waits for the next link.
+- **Lite link scroller – Start from here**: Right-click any card → "Start autoscroll from here" to begin autoplay from that card.
+- **Lite link scroller – tracking by id**: Playing position is tracked by card id (from message + URL) instead of index, so it survives list changes and toggling autoplay off and on.
+- **Live WebSocket – new types**: Backend now handles and forwards `dggApi:hosting`, `dggApi:youtubeVods`, `dggApi:videos`, `dggApi:streamInfo`, `dggApi:events`, and `dggApi:bannedEmbeds` with shape validation and dedicated IPC channels for future use.
+- **Combined chat – highlight (Kick/YouTube)**: Highlight terms are matched only against plain message text; emote names (e.g. "destinycool") no longer trigger a match for a term like "destiny".
+
+### Changed
+- **DGG label color**: Default is now white (`#ffffff`) instead of the previous blue.
+- **ws-discrepancies log**: Only logs new unknown message types, parse errors, and malformed/unexpected shapes. Lifecycle and operational events (connect, disconnect, targets set, etc.) were moved to the main app log or removed so the discrepancy file stays focused on protocol/schema issues.
+- **Lite link scroller**: When the active card’s height changes (e.g. Twitter/Reddit embed loads), the list re-scrolls to keep that card in view. Programmatic scrolls are ignored for 1.5s so embed resize does not turn off autoplay.
+
+### Fixed
+- **Combined chat – greentext**: Greentext lines are no longer interrupted by clickable/underlined nicks; the whole line (including nicks) is wrapped in the green style.
+- **Combined chat – Kick combos**: Kick combo rows now respect platform and label display settings (source label, platform icon, per-channel color and label visibility).
+- **Lite link scroller**: Autoplay no longer turns off when Twitter/Reddit embed resize triggers a scroll event.
+- Build: removed unused variables and the unused `getKickCookieNameSummary` function.
+
 ## [1.10.0] - 2026-02-06
 
 ### Added
