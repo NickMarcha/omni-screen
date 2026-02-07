@@ -272,18 +272,22 @@ function renderTextWithLinks(
   emotesMap: Map<string, string>,
   onOpenLink?: (url: string) => void,
   onEmoteDoubleClick?: (prefix: string) => void,
+  skipGreentext?: boolean,
 ): JSX.Element {
   const parts: (string | JSX.Element)[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
   let hasLinks = false
   let keyCounter = 0
+  const processSegment = skipGreentext
+    ? (seg: string) => processTextWithEmotes(seg, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
+    : (seg: string) => processGreentext(seg, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
 
   while ((match = LINK_REGEX.exec(text)) !== null) {
     hasLinks = true
     if (match.index > lastIndex) {
       const textSegment = text.substring(lastIndex, match.index)
-      const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
+      const processedSegment = processSegment(textSegment)
       processedSegment.forEach((part) => {
         parts.push(part)
         keyCounter++
@@ -315,7 +319,7 @@ function renderTextWithLinks(
 
   if (lastIndex < text.length) {
     const textSegment = text.substring(lastIndex)
-    const processedSegment = processGreentext(textSegment, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
+    const processedSegment = processSegment(textSegment)
     processedSegment.forEach((part) => {
       parts.push(part)
       keyCounter++
@@ -323,11 +327,31 @@ function renderTextWithLinks(
   }
 
   if (!hasLinks) {
-    const processedSegment = processGreentext(text, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
+    const processedSegment = processSegment(text)
     return <>{processedSegment}</>
   }
 
   return <>{parts}</>
+}
+
+/** Plain text used for highlight-term matching only (excludes emote names so "destiny" doesn't match "destinycool" emote). */
+function getContentForHighlight(m: CombinedItem): string {
+  if (m.source === 'dgg') return m.content ?? ''
+  if (m.source === 'kick') {
+    const raw = (m as any).raw?.content ?? m.content ?? ''
+    return String(raw).replace(/\[emote:\d+:[^\]]+\]/g, '')
+  }
+  if (m.source === 'youtube') {
+    const runs = (m as any).raw?.runs
+    if (Array.isArray(runs)) {
+      return runs
+        .filter((r: any) => r && 'text' in r && typeof r.text === 'string')
+        .map((r: any) => r.text)
+        .join('')
+    }
+    return m.content ?? ''
+  }
+  return m.content ?? ''
 }
 
 /** Segment type for DGG message content: plain text or a mentioned nick. */
@@ -1389,8 +1413,8 @@ export default function CombinedChat({
       const nick = m.nick?.trim()
       if (!nick) return
       const colorFlair = m.source === 'dgg' ? usernameColorFlair(flairsList, { features: (raw as DggChatMessage).features ?? [] }) : undefined
-      const contentLower = (m.content ?? '').toLowerCase()
-      const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
+      const contentForHighlight = getContentForHighlight(m)
+      const matchingTerms = highlightTerms.filter((term) => term.trim() && contentForHighlight.toLowerCase().includes(term.trim().toLowerCase()))
       setUserTooltip({
         nick,
         source: m.source,
@@ -2044,7 +2068,7 @@ export default function CombinedChat({
 
   type RenderEntry =
     | { type: 'message'; index: number; item: CombinedItemWithSeq }
-    | { type: 'combo'; index: number; count: number; emoteKey: string; source: string; tsMs: number }
+    | { type: 'combo'; index: number; count: number; emoteKey: string; source: string; tsMs: number; slug?: string }
 
   const renderList = useMemo((): RenderEntry[] => {
     const list: RenderEntry[] = []
@@ -2091,8 +2115,10 @@ export default function CombinedChat({
     for (let i = 0; i < displayItems.length; i++) {
       if (comboSkip.has(i)) continue
       const combo = comboAt.get(i)
-      if (combo) {
-        list.push({ type: 'combo', index: i, count: combo.count, emoteKey: combo.emoteKey, source: combo.source, tsMs: combo.tsMs })
+        if (combo) {
+        const lastItem = displayItems[i]
+        const slug = lastItem && (lastItem as any).source === 'kick' ? (lastItem as any).slug : undefined
+        list.push({ type: 'combo', index: i, count: combo.count, emoteKey: combo.emoteKey, source: combo.source, tsMs: combo.tsMs, slug })
       } else {
         list.push({ type: 'message', index: i, item: displayItems[i] })
       }
@@ -2161,32 +2187,59 @@ export default function CombinedChat({
     [dggUserDataCache, flairsList]
   )
 
-  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. */
+  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. Greentext lines (starting with >) wrap the whole line so nicks don't interrupt the green style. */
   const renderDggMessageContent = useCallback(
     (content: string) => {
-      const segments = tokenizeDggContent(content ?? '', dggNicks)
+      const lines = (content ?? '').split('\n')
       const parts: React.ReactNode[] = []
       let key = 0
-      for (const seg of segments) {
-        if (seg.type === 'text') {
-          parts.push(
-            <Fragment key={`dgg-txt-${key++}`}>
-              {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick)}
-            </Fragment>
-          )
-        } else {
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const line = lines[lineIndex]!
+        const isGreentext = line.trim().startsWith('>')
+        const lineSegments = tokenizeDggContent(line, dggNicks)
+        const lineParts: React.ReactNode[] = []
+        for (const seg of lineSegments) {
+          if (seg.type === 'text') {
+            lineParts.push(
+              <Fragment key={`dgg-txt-${key++}`}>
+                {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
+              </Fragment>
+            )
+          } else {
+            lineParts.push(
+              <span
+                key={`dgg-nick-${key++}`}
+                className="dgg-mention hover:underline cursor-context-menu"
+                onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
+                onDoubleClick={() => handleNickDoubleClick(seg.value)}
+                onMouseUp={(e) => e.stopPropagation()}
+              >
+                {seg.value}
+              </span>
+            )
+          }
+        }
+        if (isGreentext) {
           parts.push(
             <span
-              key={`dgg-nick-${key++}`}
-              className="dgg-mention hover:underline cursor-context-menu"
-              onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
-              onDoubleClick={() => handleNickDoubleClick(seg.value)}
-              onMouseUp={(e) => e.stopPropagation()}
+              key={`greentext-${key++}`}
+              style={{
+                color: 'rgb(108, 165, 40)',
+                fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
+                fontSize: '16px',
+                lineHeight: '26.4px',
+                boxSizing: 'border-box',
+                textRendering: 'optimizeLegibility',
+                overflowWrap: 'break-word',
+              }}
             >
-              {seg.value}
+              {lineParts}
             </span>
           )
+        } else {
+          parts.push(...lineParts)
         }
+        if (lineIndex < lines.length - 1) parts.push('\n')
       }
       return <>{parts}</>
     },
@@ -2566,7 +2619,8 @@ export default function CombinedChat({
                 ? dggAccentColor
                 : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
             const badgeText = textColorOn(accent)
-            const contentLower = (m.content ?? '').toLowerCase()
+            const contentForHighlight = getContentForHighlight(m)
+            const contentLower = contentForHighlight.toLowerCase()
             const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
             const isHighlighted = matchingTerms.length > 0
             const isOwn =
@@ -2663,10 +2717,10 @@ export default function CombinedChat({
               </div>
             )
           }
-          const { count, emoteKey, source, tsMs } = entry
+          const { count, emoteKey, source, tsMs, slug } = entry
           const ts = Number.isFinite(tsMs) ? new Date(tsMs).toLocaleTimeString() : ''
           const isDgg = source === 'dgg'
-          const colorKey = isDgg ? 'dgg' : 'kick'
+          const colorKey = isDgg ? 'dgg' : (slug ? `kick:${slug}` : 'kick')
           const displayName = getEmbedDisplayName(colorKey)
           const accent = isDgg ? dggAccentColor : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
           const badgeText = textColorOn(accent)
@@ -2688,7 +2742,7 @@ export default function CombinedChat({
                   className="badge badge-sm align-middle mr-2"
                   style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                 >
-                  {source === 'dgg' ? (dggLabelText ?? '').trim() : displayName || 'Kick'}
+                  {source === 'dgg' ? (dggLabelText ?? '').trim() : (displayName || (slug ? `K:${slug}` : 'Kick'))}
                 </span>
               ) : null}
               {showPlatformIcons && getPlatformIcon(colorKey) ? (
