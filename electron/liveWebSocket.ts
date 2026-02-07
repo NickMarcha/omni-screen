@@ -34,16 +34,6 @@ export class LiveWebSocket extends EventEmitter {
     this.isIntentionallyClosed = false
 
     try {
-      fileLogger.writeWsDiscrepancy('live', 'connect_attempt', {
-        url: this.url,
-        reconnectAttempts: this.reconnectAttempts,
-        options: {
-          origin: 'https://www.destiny.gg',
-          perMessageDeflate: true,
-          handshakeTimeout: 10000,
-        },
-      })
-
       // live.destiny.gg appears to validate Origin (the website sends Origin: https://www.destiny.gg)
       // Incognito works without cookies, so we intentionally do NOT forward cookies here.
       this.ws = new WebSocket(this.url, {
@@ -73,25 +63,6 @@ export class LiveWebSocket extends EventEmitter {
         this.connectionTimeout = null
         this.reconnectAttempts = 0
         this.reconnectDelay = 1000
-        const anyWs = this.ws as any
-        const sock = anyWs?._socket
-        const socketInfo =
-          sock && typeof sock === 'object'
-            ? {
-                remoteAddress: sock.remoteAddress,
-                remotePort: sock.remotePort,
-                localAddress: sock.localAddress,
-                localPort: sock.localPort,
-                alpnProtocol: sock.alpnProtocol,
-                servername: sock.servername,
-              }
-            : undefined
-        fileLogger.writeWsDiscrepancy('live', 'connected', {
-          url: this.url,
-          socketInfo,
-          protocol: (this.ws as any)?.protocol,
-          extensions: (this.ws as any)?.extensions,
-        })
         this.emit('connected')
       })
 
@@ -103,13 +74,24 @@ export class LiveWebSocket extends EventEmitter {
           if (typeof type === 'string') {
             const nextCount = (this.typeCounts.get(type) || 0) + 1
             this.typeCounts.set(type, nextCount)
+            const knownLiveTypes = new Set([
+              'dggApi:embeds',
+              'dggApi:bannedEmbeds',
+              'dggApi:hosting',
+              'dggApi:youtubeVods',
+              'dggApi:videos',
+              'dggApi:streamInfo',
+              'dggApi:events',
+            ])
             if (!this.seenTypes.has(type)) {
               this.seenTypes.add(type)
-              fileLogger.writeWsDiscrepancy('live', 'new_type_observed', {
-                type,
-                sampleKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
-                sample: parsed,
-              })
+              if (!knownLiveTypes.has(type)) {
+                fileLogger.writeWsDiscrepancy('live', 'new_type_observed', {
+                  type,
+                  sampleKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
+                  sample: parsed,
+                })
+              }
             }
 
             // Extra shape validation for types we actively use
@@ -140,6 +122,51 @@ export class LiveWebSocket extends EventEmitter {
                   sample: parsed,
                 })
               }
+            } else if (type === 'dggApi:hosting') {
+              const dataField = (parsed as any).data
+              if (dataField !== null && dataField !== undefined) {
+                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:hosting', {
+                  expected: 'data: null',
+                  actualType: typeof dataField,
+                  sample: parsed,
+                })
+              }
+            } else if (type === 'dggApi:youtubeVods') {
+              const dataField = (parsed as any).data
+              if (!Array.isArray(dataField)) {
+                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:youtubeVods', {
+                  expected: 'data: array',
+                  actualType: typeof dataField,
+                  sample: parsed,
+                })
+              }
+            } else if (type === 'dggApi:videos') {
+              const dataField = (parsed as any).data
+              if (!(dataField && typeof dataField === 'object' && Array.isArray(dataField.videos) && typeof dataField.source === 'string')) {
+                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:videos', {
+                  expected: 'data: { videos: array, source: string }',
+                  actual: dataField && typeof dataField === 'object' ? { hasVideos: Array.isArray(dataField.videos), sourceType: typeof dataField.source } : typeof dataField,
+                  sample: parsed,
+                })
+              }
+            } else if (type === 'dggApi:streamInfo') {
+              const dataField = (parsed as any).data
+              if (!(dataField && typeof dataField === 'object' && dataField.streams && typeof dataField.streams === 'object')) {
+                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:streamInfo', {
+                  expected: 'data: { streams: object }',
+                  actualType: dataField && typeof dataField === 'object' ? typeof dataField.streams : typeof dataField,
+                  sample: parsed,
+                })
+              }
+            } else if (type === 'dggApi:events') {
+              const dataField = (parsed as any).data
+              if (!Array.isArray(dataField)) {
+                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:events', {
+                  expected: 'data: array',
+                  actualType: typeof dataField,
+                  sample: parsed,
+                })
+              }
             }
           } else {
             // JSON but unexpected shape
@@ -160,11 +187,7 @@ export class LiveWebSocket extends EventEmitter {
 
       this.ws.on('error', (error: Error) => {
         const msg = error?.message || String(error) || 'Unknown error'
-        fileLogger.writeWsDiscrepancy('live', 'socket_error', {
-          message: msg,
-          stack: error?.stack,
-          url: this.url,
-        })
+        fileLogger.writeLog('warn', 'main', '[LiveWebSocket] socket_error', [this.url, msg])
         try {
           this.emit('error', { message: msg })
         } catch {
@@ -175,13 +198,6 @@ export class LiveWebSocket extends EventEmitter {
       this.ws.on('close', (code: number, reason: Buffer) => {
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
-        fileLogger.writeWsDiscrepancy('live', 'disconnected', {
-          url: this.url,
-          code,
-          reason: reason.toString(),
-          reconnectAttempts: this.reconnectAttempts,
-          typeCounts: Object.fromEntries(this.typeCounts.entries()),
-        })
         this.emit('disconnected', { code, reason: reason.toString() })
         if (!this.isIntentionallyClosed) {
           this.handleReconnect()
@@ -189,10 +205,7 @@ export class LiveWebSocket extends EventEmitter {
       })
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error) || 'Unknown error'
-      fileLogger.writeWsDiscrepancy('live', 'connect_exception', {
-        url: this.url,
-        error: msg,
-      })
+      fileLogger.writeLog('error', 'main', '[LiveWebSocket] connect_exception', [this.url, msg])
       this.emit('error', { message: msg })
       this.handleReconnect()
     }
@@ -254,23 +267,13 @@ export class LiveWebSocket extends EventEmitter {
   private handleReconnect(): void {
     if (this.isIntentionallyClosed) return
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      fileLogger.writeWsDiscrepancy('live', 'max_reconnect_attempts_reached', {
-        url: this.url,
-        maxReconnectAttempts: this.maxReconnectAttempts,
-        typeCounts: Object.fromEntries(this.typeCounts.entries()),
-      })
+      fileLogger.writeLog('warn', 'main', '[LiveWebSocket] max_reconnect_attempts_reached', [this.url, this.maxReconnectAttempts])
       this.emit('maxReconnectAttemptsReached')
       return
     }
 
     this.reconnectAttempts++
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay)
-
-    fileLogger.writeWsDiscrepancy('live', 'reconnect_scheduled', {
-      url: this.url,
-      attempt: this.reconnectAttempts,
-      delayMs: delay,
-    })
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null

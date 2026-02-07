@@ -6,6 +6,8 @@ interface VideoEmbedProps {
   muted?: boolean
   controls?: boolean
   className?: string
+  /** When set, loop is disabled so the video can end and fire onEnded. */
+  onEnded?: () => void
 }
 
 function VideoEmbed({ 
@@ -13,7 +15,8 @@ function VideoEmbed({
   autoplay = false, 
   muted = false, 
   controls = true,
-  className = 'w-full max-h-[70vh] rounded-lg mb-4'
+  className = 'w-full max-h-[70vh] rounded-lg mb-4',
+  onEnded,
 }: VideoEmbedProps) {
   return (
     <video
@@ -22,8 +25,9 @@ function VideoEmbed({
       controls={controls}
       autoPlay={autoplay}
       muted={muted}
-      loop
+      loop={onEnded == null}
       playsInline
+      onEnded={onEnded}
       onError={(e) => {
         const target = e.target as HTMLVideoElement
         target.style.display = 'none'
@@ -38,6 +42,7 @@ export default memo(VideoEmbed, (prevProps, nextProps) => {
     prevProps.autoplay === nextProps.autoplay &&
     prevProps.muted === nextProps.muted &&
     prevProps.controls === nextProps.controls &&
-    prevProps.className === nextProps.className
+    prevProps.className === nextProps.className &&
+    prevProps.onEnded === nextProps.onEnded
   )
 })

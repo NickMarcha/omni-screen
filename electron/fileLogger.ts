@@ -152,7 +152,8 @@ class FileLogger {
 
   /**
    * Write websocket discrepancy entries to a dedicated file.
-   * Intended for reverse-engineering / schema drift tracking.
+   * Only for: new unknown message types, parse errors, malformed/unexpected message shapes.
+   * Do not use for lifecycle (connect/disconnect), operational success, or routine errors; use writeLog instead.
    */
   writeWsDiscrepancy(source: 'chat' | 'live' | 'kick' | 'youtube' | 'twitch', kind: string, details: any = {}) {
     this.ensureSessionInitialized()

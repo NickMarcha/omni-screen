@@ -308,11 +308,6 @@ export class ChatWebSocket extends EventEmitter {
 
     this.isIntentionallyClosed = false
     console.log(`[ChatWebSocket] Connecting to ${this.url}...`)
-    fileLogger.writeWsDiscrepancy('chat', 'connect_attempt', {
-      url: this.url,
-      reconnectAttempts: this.reconnectAttempts,
-      hasCookies: Boolean(this.connectionHeaders?.Cookie),
-    })
 
     const headers: Record<string, string> = {
       ...(this.connectionHeaders ?? {}),
@@ -333,9 +328,6 @@ export class ChatWebSocket extends EventEmitter {
 
       this.ws.on('open', () => {
         console.log('[ChatWebSocket] Connected')
-        fileLogger.writeWsDiscrepancy('chat', 'connected', {
-          url: this.url,
-        })
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         this.reconnectAttempts = 0
@@ -349,16 +341,9 @@ export class ChatWebSocket extends EventEmitter {
       })
 
       this.ws.on('error', (error: Error) => {
-        // Log error details safely
         const errorMessage = error?.message || String(error) || 'Unknown error'
-        const errorStack = error?.stack || 'No stack trace'
         console.error('[ChatWebSocket] Error:', errorMessage)
-        console.error('[ChatWebSocket] Error stack:', errorStack)
-        fileLogger.writeWsDiscrepancy('chat', 'socket_error', {
-          url: this.url,
-          message: errorMessage,
-          stack: errorStack,
-        })
+        fileLogger.writeLog('warn', 'main', '[ChatWebSocket] socket_error', [this.url, errorMessage])
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         // Emit error but don't throw - let reconnection handle it
@@ -371,13 +356,6 @@ export class ChatWebSocket extends EventEmitter {
 
       this.ws.on('close', (code: number, reason: Buffer) => {
         console.log(`[ChatWebSocket] Closed: code=${code}, reason=${reason.toString()}`)
-        fileLogger.writeWsDiscrepancy('chat', 'disconnected', {
-          url: this.url,
-          code,
-          reason: reason.toString(),
-          reconnectAttempts: this.reconnectAttempts,
-          typeCounts: Object.fromEntries(this.typeCounts.entries()),
-        })
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
         this.stopHeartbeat()
@@ -397,10 +375,7 @@ export class ChatWebSocket extends EventEmitter {
       })
     } catch (error) {
       console.error('[ChatWebSocket] Failed to create connection:', error)
-      fileLogger.writeWsDiscrepancy('chat', 'connect_exception', {
-        url: this.url,
-        error: error instanceof Error ? error.message : String(error) || 'Unknown error',
-      })
+      fileLogger.writeLog('error', 'main', '[ChatWebSocket] connect_exception', [this.url, error instanceof Error ? error.message : String(error)])
       this.emit('error', error)
       this.handleReconnect()
     }
@@ -512,20 +487,22 @@ export class ChatWebSocket extends EventEmitter {
     const typeToken = message.split(' ', 1)[0] || 'UNKNOWN'
     const nextCount = (this.typeCounts.get(typeToken) || 0) + 1
     this.typeCounts.set(typeToken, nextCount)
+    const knownChatTypes = new Set(['MSG', 'HISTORY', 'JOIN', 'QUIT', 'NAMES', 'PIN', 'PAIDEVENTS', 'ME', 'UPDATEUSER', 'POLLSTART', 'POLLSTOP', 'VOTECOUNTED', 'POLLVOTEERROR', 'ERR', 'PRIVMSG', 'DEATH', 'UNBAN', 'SUBSCRIPTION', 'BROADCAST', 'BAN', 'SUBONLY', 'RELOAD', 'PRIVMSGSENT', 'ADDPHRASE', 'REMOVEPHRASE', 'GIFTSUB', 'MASSGIFT', 'DONATION'])
     if (!this.seenTypes.has(typeToken)) {
       this.seenTypes.add(typeToken)
-      // Avoid logging the full HISTORY payload (can be huge)
-      if (typeToken === 'HISTORY') {
-        fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
-          type: typeToken,
-          length: message.length,
-        })
-      } else {
-        fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
-          type: typeToken,
-          length: message.length,
-          preview: message.substring(0, 400),
-        })
+      if (!knownChatTypes.has(typeToken)) {
+        if (typeToken === 'HISTORY') {
+          fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
+            type: typeToken,
+            length: message.length,
+          })
+        } else {
+          fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
+            type: typeToken,
+            length: message.length,
+            preview: message.substring(0, 400),
+          })
+        }
       }
     }
     
@@ -1089,10 +1066,7 @@ export class ChatWebSocket extends EventEmitter {
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('[ChatWebSocket] Max reconnection attempts reached')
-      fileLogger.writeWsDiscrepancy('chat', 'max_reconnect_attempts_reached', {
-        url: this.url,
-        maxReconnectAttempts: this.maxReconnectAttempts,
-      })
+      fileLogger.writeLog('warn', 'main', '[ChatWebSocket] max_reconnect_attempts_reached', [this.url, this.maxReconnectAttempts])
       this.emit('maxReconnectAttemptsReached')
       return
     }
@@ -1101,13 +1075,7 @@ export class ChatWebSocket extends EventEmitter {
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay)
     
     console.log(`[ChatWebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`)
-    fileLogger.writeWsDiscrepancy('chat', 'reconnect_scheduled', {
-      url: this.url,
-      attempt: this.reconnectAttempts,
-      maxReconnectAttempts: this.maxReconnectAttempts,
-      delayMs: delay,
-    })
-    
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()

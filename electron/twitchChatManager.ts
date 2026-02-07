@@ -51,8 +51,6 @@ export class TwitchChatManager extends EventEmitter {
 
   async setTargets(channels: string[]): Promise<void> {
     const next = new Set(channels.map(safeLower).filter(Boolean))
-    fileLogger.writeWsDiscrepancy('twitch', 'targets_set', { channels: Array.from(next.values()) })
-
     // Part removed
     for (const ch of Array.from(this.desiredChannels.values())) {
       if (next.has(ch)) continue
@@ -78,8 +76,6 @@ export class TwitchChatManager extends EventEmitter {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
 
     this.intentionallyClosed = false
-    fileLogger.writeWsDiscrepancy('twitch', 'connect_attempt', { url: this.url, nick: this.nick })
-
     const ws = new WebSocket(this.url, {
       headers: {
         Origin: 'https://www.twitch.tv',
@@ -92,7 +88,6 @@ export class TwitchChatManager extends EventEmitter {
     this.ws = ws
 
     ws.on('open', () => {
-      fileLogger.writeWsDiscrepancy('twitch', 'connected', { url: this.url, nick: this.nick })
       // Anonymous login
       this.sendRaw('CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership')
       this.sendRaw('PASS SCHMOOPIIE')
@@ -105,7 +100,6 @@ export class TwitchChatManager extends EventEmitter {
         if (this.joinedChannels.has(norm)) continue
         this.sendRaw(`JOIN #${norm}`)
         this.joinedChannels.add(norm)
-        fileLogger.writeWsDiscrepancy('twitch', 'join_sent', { channel: norm, reason: 'on_open' })
       }
     })
 
@@ -116,19 +110,16 @@ export class TwitchChatManager extends EventEmitter {
     })
 
     ws.on('error', (err) => {
-      fileLogger.writeWsDiscrepancy('twitch', 'socket_error', { message: err?.message || String(err) })
-      // Important: EventEmitter's "error" event will crash the process if nobody is listening.
-      // This commonly happens during rapid connect/disconnect (e.g. dev StrictMode).
+      fileLogger.writeLog('warn', 'main', '[Twitch] socket_error', [this.url, err?.message || String(err)])
       try {
         this.emit('error', err)
-      } catch (emitErr) {
-        fileLogger.writeWsDiscrepancy('twitch', 'error_emit_failed', { error: String(emitErr || '') })
+      } catch {
+        // ignore
       }
     })
 
     ws.on('close', (code, reason) => {
       const text = reason?.toString?.() || ''
-      fileLogger.writeWsDiscrepancy('twitch', 'disconnected', { code, reason: text })
       this.ws = null
       this.joinedChannels.clear()
       if (!this.intentionallyClosed && this.desiredChannels.size > 0) this.scheduleReconnect()
@@ -181,12 +172,10 @@ export class TwitchChatManager extends EventEmitter {
     this.connect()
     // Only mark as joined once we can actually send the JOIN line.
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      fileLogger.writeWsDiscrepancy('twitch', 'join_queued', { channel: ch, readyState: this.ws?.readyState ?? null })
       return
     }
     this.sendRaw(`JOIN #${ch}`)
     this.joinedChannels.add(ch)
-    fileLogger.writeWsDiscrepancy('twitch', 'join_sent', { channel: ch, reason: 'immediate' })
   }
 
   private part(channel: string): void {
@@ -195,7 +184,6 @@ export class TwitchChatManager extends EventEmitter {
     if (!this.joinedChannels.has(ch)) return
     this.sendRaw(`PART #${ch}`)
     this.joinedChannels.delete(ch)
-    fileLogger.writeWsDiscrepancy('twitch', 'part_sent', { channel: ch })
   }
 
   private handleLine(line: string): void {

@@ -251,11 +251,6 @@ export class YouTubeChatManager extends EventEmitter {
     if (typeof mulRaw === 'number' && Number.isFinite(mulRaw)) {
       this.delayMultiplier = Math.max(0.25, Math.min(5, mulRaw))
     }
-    fileLogger.writeWsDiscrepancy('youtube', 'targets_set', {
-      videoIds: Array.from(next.values()),
-      opts: { delayMultiplier: this.delayMultiplier },
-    })
-
     for (const old of Array.from(this.targets.values())) {
       if (next.has(old)) continue
       this.stopVideo(old)
@@ -265,7 +260,7 @@ export class YouTubeChatManager extends EventEmitter {
       if (this.targets.has(v)) continue
       this.targets.add(v)
       this.startVideo(v).catch((e) => {
-        fileLogger.writeWsDiscrepancy('youtube', 'start_failed', { videoId: v, error: e instanceof Error ? e.message : String(e) })
+        fileLogger.writeLog('warn', 'main', '[YouTube] start_failed', [v, e instanceof Error ? e.message : String(e)])
         // Important: if init fails (rate limit / consent page / transient), allow future retries.
         this.stopVideo(v)
       })
@@ -301,8 +296,6 @@ export class YouTubeChatManager extends EventEmitter {
 
   private async init(videoId: string, state: PollState): Promise<void> {
     const url = `https://www.youtube.com/live_chat?v=${encodeURIComponent(videoId)}`
-    fileLogger.writeWsDiscrepancy('youtube', 'init_fetch', { videoId, url })
-
     const html = await fetchText(url, {
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'User-Agent':
@@ -361,7 +354,6 @@ export class YouTubeChatManager extends EventEmitter {
     // Fallback: fetch watch page; it often has live chat continuation in ytInitialData
     if (!state.continuation || !state.context) {
       const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
-      fileLogger.writeWsDiscrepancy('youtube', 'init_fallback_watch', { videoId, url: watchUrl })
       try {
         const watchHtml = await fetchText(watchUrl, {
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -406,19 +398,9 @@ export class YouTubeChatManager extends EventEmitter {
           }
         }
       } catch (fallbackErr) {
-        fileLogger.writeWsDiscrepancy('youtube', 'init_fallback_watch_error', {
-          videoId,
-          error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
-        })
+        fileLogger.writeLog('warn', 'main', '[YouTube] init_fallback_watch_error', [videoId, fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)])
       }
     }
-
-    fileLogger.writeWsDiscrepancy('youtube', 'init_parsed', {
-      videoId,
-      hasApiKey: Boolean(state.apiKey),
-      hasContext: Boolean(state.context),
-      hasContinuation: Boolean(state.continuation),
-    })
 
     if (!state.context || !state.continuation) {
       throw new Error('Failed to extract INNERTUBE_CONTEXT or continuation from live_chat page')
@@ -465,12 +447,6 @@ export class YouTubeChatManager extends EventEmitter {
         const msgs = extractMessagesFromActions(videoId, actions)
         if (!state.sawAnyMessages && msgs.length > 0) {
           state.sawAnyMessages = true
-          const sample = msgs[0]
-          fileLogger.writeWsDiscrepancy('youtube', 'first_messages', {
-            videoId,
-            count: msgs.length,
-            sample: sample ? { id: sample.id, authorName: sample.authorName, message: sample.message.slice(0, 160) } : null,
-          })
         }
 
         for (const m of msgs) {
@@ -520,25 +496,12 @@ export class YouTubeChatManager extends EventEmitter {
           state.pollNum <= 2 || !state.lastSummaryAtMs || now - (state.lastSummaryAtMs || 0) >= 30000 || msgs.length > 0
         if (shouldSummary) {
           state.lastSummaryAtMs = now
-          fileLogger.writeWsDiscrepancy('youtube', 'poll_summary', {
-            videoId,
-            pollNum: state.pollNum,
-            actions: Array.isArray(actions) ? actions.length : 0,
-            msgs: msgs.length,
-            hasContinuation: Boolean(state.continuation),
-            delayMultiplier: this.delayMultiplier,
-            baseDelayMs,
-            actualDelayMs,
-          })
         }
 
         await sleep(actualDelayMs)
       } catch (e) {
         if (state.stopped) break
-        fileLogger.writeWsDiscrepancy('youtube', 'poll_error', {
-          videoId,
-          error: e instanceof Error ? e.message : String(e),
-        })
+        fileLogger.writeLog('warn', 'main', '[YouTube] poll_error', [videoId, e instanceof Error ? e.message : String(e)])
         await sleep(2000)
       } finally {
         state.abort = undefined

@@ -87,23 +87,6 @@ async function kickRequestText(
   })
 }
 
-async function getKickCookieNameSummary(): Promise<{ kick: string[]; web: string[] }> {
-  try {
-    const s = getKickSession()
-    const [kick, web] = await Promise.all([
-      s.cookies.get({ url: 'https://kick.com/' }).catch(() => []),
-      s.cookies.get({ url: 'https://web.kick.com/' }).catch(() => []),
-    ])
-
-    const names = (arr: Electron.Cookie[]) =>
-      Array.from(new Set(arr.map((c) => c?.name).filter((n): n is string => typeof n === 'string' && n.length > 0))).sort()
-
-    return { kick: names(kick as any), web: names(web as any) }
-  } catch {
-    return { kick: [], web: [] }
-  }
-}
-
 async function fetchKickJson(url: string): Promise<any> {
   // Note: Kick history often requires Cloudflare/Kick cookies (cf_clearance, etc).
   // Ensure we include cookies from the Electron session.
@@ -286,8 +269,6 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
   let lastErr: unknown = null
   for (const url of urls) {
     try {
-      fileLogger.writeWsDiscrepancy('kick', 'channel_info_fetch_attempt', { slug, url })
-
       const { status, headers, bodyText } = await kickRequestText(url, {
         accept: 'application/json,text/plain,*/*',
         origin: 'https://kick.com',
@@ -296,7 +277,6 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
       if (status < 200 || status >= 300) {
         const ct = headerValue(headers, 'content-type')
         lastErr = new Error(`HTTP ${status} for ${url} ct=${ct}`)
-        fileLogger.writeWsDiscrepancy('kick', 'channel_info_fetch_failed', { slug, url, status })
         continue
       }
       const data = safeJsonParse<any>(bodyText || '')
@@ -316,17 +296,12 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
         ) || 0
 
       if (chatroomId > 0) {
-        fileLogger.writeWsDiscrepancy('kick', 'channel_info_fetch_success', { slug, url, channelId, chatroomId })
         return { channelId: channelId > 0 ? channelId : undefined, chatroomId }
       }
       lastErr = new Error(`Missing channelId/chatroomId for slug "${slug}" from ${url}`)
     } catch (e) {
       lastErr = e
-      fileLogger.writeWsDiscrepancy('kick', 'channel_info_fetch_exception', {
-        slug,
-        url,
-        error: e instanceof Error ? e.message : String(e),
-      })
+      fileLogger.writeLog('warn', 'main', '[Kick] channel_info_fetch_exception', [slug, url, e instanceof Error ? e.message : String(e)])
     }
   }
 
@@ -338,20 +313,11 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
 
   for (const url of fallbackUrls) {
     try {
-      fileLogger.writeWsDiscrepancy('kick', 'chatroom_scrape_attempt', { slug, url })
       const html = await fetchKickHtml(url, slug)
       const chatroomId = extractChatroomIdFromHtml(html)
-      if (chatroomId > 0) {
-        fileLogger.writeWsDiscrepancy('kick', 'chatroom_scrape_success', { slug, url, chatroomId })
-        return { chatroomId }
-      }
-      fileLogger.writeWsDiscrepancy('kick', 'chatroom_scrape_failed', { slug, url, reason: 'no_chatroom_id_found' })
+      if (chatroomId > 0) return { chatroomId }
     } catch (e) {
-      fileLogger.writeWsDiscrepancy('kick', 'chatroom_scrape_exception', {
-        slug,
-        url,
-        error: e instanceof Error ? e.message : String(e),
-      })
+      fileLogger.writeLog('warn', 'main', '[Kick] chatroom_scrape_exception', [slug, url, e instanceof Error ? e.message : String(e)])
     }
   }
 
@@ -371,9 +337,6 @@ class KickPusherClient extends EventEmitter {
 
     this.intentionallyClosed = false
     this.connectionId++
-    const id = this.connectionId
-
-    fileLogger.writeWsDiscrepancy('kick', 'connect_attempt', { url: PUSHER_URL, connectionId: id })
 
     const ws = new WebSocket(PUSHER_URL, {
       headers: {
@@ -387,7 +350,6 @@ class KickPusherClient extends EventEmitter {
     this.ws = ws
 
     ws.on('open', () => {
-      fileLogger.writeWsDiscrepancy('kick', 'connected', { url: PUSHER_URL, connectionId: id })
       this.emit('connected')
     })
 
@@ -408,11 +370,7 @@ class KickPusherClient extends EventEmitter {
 
       if (ev === 'pusher:connection_established') {
         // data is a JSON string
-        const established = safeJsonParse<any>(String(msg.data || ''))
-        fileLogger.writeWsDiscrepancy('kick', 'connection_established', {
-          socketId: established?.socket_id,
-          activityTimeout: established?.activity_timeout,
-        })
+        safeJsonParse<any>(String(msg.data || ''))
 
         // flush any pending subscriptions
         const toSub = Array.from(this.pendingSubscribe.values())
@@ -431,19 +389,16 @@ class KickPusherClient extends EventEmitter {
     })
 
     ws.on('error', (err) => {
-      fileLogger.writeWsDiscrepancy('kick', 'socket_error', { message: err?.message || String(err) })
-      // Important: EventEmitter's "error" event will crash the process if nobody is listening.
-      // This can happen during rapid connect/disconnect (e.g. dev StrictMode).
+      fileLogger.writeLog('warn', 'main', '[Kick] Pusher socket_error', [err?.message || String(err)])
       try {
         this.emit('error', err)
-      } catch (emitErr) {
-        fileLogger.writeWsDiscrepancy('kick', 'error_emit_failed', { error: String(emitErr || '') })
+      } catch {
+        // ignore
       }
     })
 
     ws.on('close', (code, reason) => {
       const text = reason?.toString?.() || ''
-      fileLogger.writeWsDiscrepancy('kick', 'disconnected', { code, reason: text })
       this.ws = null
       this.subscribedChannels.clear()
       if (!this.intentionallyClosed) this.scheduleReconnect()
@@ -560,7 +515,6 @@ export class KickChatManager extends EventEmitter {
     for (const requestId of requestIds) {
       const url = `https://web.kick.com/api/v1/chat/${requestId}/history`
       try {
-        fileLogger.writeWsDiscrepancy('kick', 'history_fetch_attempt', { slug, chatroomId, requestId, channelId: channelId || null, url })
         const json = await fetchKickJson(url)
 
         const candidates = [json?.data?.messages, json?.data, json?.messages, json?.history, json]
@@ -578,18 +532,6 @@ export class KickChatManager extends EventEmitter {
 
         if (arr.length === 0) {
           sawEmpty = true
-          const cookieNames = await getKickCookieNameSummary()
-          fileLogger.writeWsDiscrepancy('kick', 'history_fetch_empty', {
-            slug,
-            chatroomId,
-            requestId,
-            channelId: channelId || null,
-            url,
-            cookieNames,
-            message: typeof json?.message === 'string' ? json.message : null,
-            dataKeys: json?.data && typeof json.data === 'object' ? Object.keys(json.data).slice(0, 40) : null,
-          })
-          // Try next requestId.
           continue
         }
 
@@ -619,26 +561,10 @@ export class KickChatManager extends EventEmitter {
           emitted++
           this.emit('message', { ...msg, isHistory: true })
         }
-        fileLogger.writeWsDiscrepancy('kick', 'history_fetch_success', {
-          slug,
-          chatroomId,
-          requestId,
-          channelId: channelId || null,
-          url,
-          count: arr.length,
-          emitted,
-        })
         return
       } catch (e) {
         lastErr = e
-        fileLogger.writeWsDiscrepancy('kick', 'history_fetch_attempt_failed', {
-          slug,
-          chatroomId,
-          requestId,
-          channelId: channelId || null,
-          url,
-          error: e instanceof Error ? e.message : String(e),
-        })
+        fileLogger.writeLog('warn', 'main', '[Kick] history_fetch_attempt_failed', [slug, requestId, e instanceof Error ? e.message : String(e)])
       }
     }
 
@@ -647,25 +573,18 @@ export class KickChatManager extends EventEmitter {
     if (sawEmpty) {
       const popoutUrl = `https://kick.com/popout/${encodeURIComponent(slug)}/chat`
       try {
-        fileLogger.writeWsDiscrepancy('kick', 'history_id_scrape_attempt', { slug, chatroomId, channelId: channelId || null, url: popoutUrl })
         const html = await fetchKickHtml(popoutUrl, slug)
         const scraped = extractChatroomIdFromHtml(html)
         if (scraped > 0 && scraped !== chatroomId && !tried.has(scraped)) {
-          fileLogger.writeWsDiscrepancy('kick', 'history_id_scrape_success', { slug, previousChatroomId: chatroomId, scrapedChatroomId: scraped })
           await this.fetchHistoryForSlug(slug, scraped, tried)
           return
         }
-        fileLogger.writeWsDiscrepancy('kick', 'history_id_scrape_no_change', { slug, chatroomId, scrapedChatroomId: scraped || 0 })
       } catch (e) {
-        fileLogger.writeWsDiscrepancy('kick', 'history_id_scrape_failed', { slug, chatroomId, error: e instanceof Error ? e.message : String(e) })
+        fileLogger.writeLog('warn', 'main', '[Kick] history_id_scrape_failed', [slug, chatroomId, e instanceof Error ? e.message : String(e)])
       }
     }
 
-    fileLogger.writeWsDiscrepancy('kick', 'history_fetch_failed', {
-      slug,
-      chatroomId,
-      error: lastErr instanceof Error ? lastErr.message : String(lastErr),
-    })
+    fileLogger.writeLog('warn', 'main', '[Kick] history_fetch_failed', [slug, chatroomId, lastErr instanceof Error ? lastErr.message : String(lastErr)])
   }
 
   constructor() {
@@ -683,7 +602,6 @@ export class KickChatManager extends EventEmitter {
 
   async setTargets(slugs: string[]): Promise<void> {
     const next = new Set(slugs.map((s) => String(s || '').trim()).filter(Boolean))
-    fileLogger.writeWsDiscrepancy('kick', 'targets_set', { slugs: Array.from(next.values()) })
 
     // Unsubscribe removed
     for (const oldSlug of Array.from(this.desiredSlugs.values())) {
@@ -716,10 +634,9 @@ export class KickChatManager extends EventEmitter {
         this.pusher.connect()
         channels.forEach((ch) => this.pusher.subscribe(ch))
 
-        fileLogger.writeWsDiscrepancy('kick', 'targets_added', { slug, info, channels })
         this.fetchHistoryForSlug(slug, info.chatroomId).catch(() => {})
       } catch (e) {
-        fileLogger.writeWsDiscrepancy('kick', 'targets_add_failed', { slug, error: e instanceof Error ? e.message : String(e) })
+        fileLogger.writeLog('warn', 'main', '[Kick] targets_add_failed', [slug, e instanceof Error ? e.message : String(e)])
       }
     }
 
@@ -744,7 +661,7 @@ export class KickChatManager extends EventEmitter {
         if (info.chatroomId) this.seenIdsByChatroom.delete(info.chatroomId)
         await this.fetchHistoryForSlug(slug, info.chatroomId)
       } catch (e) {
-        fileLogger.writeWsDiscrepancy('kick', 'history_refetch_failed', { slug, error: e instanceof Error ? e.message : String(e) })
+        fileLogger.writeLog('warn', 'main', '[Kick] history_refetch_failed', [slug, e instanceof Error ? e.message : String(e)])
       }
     }
   }

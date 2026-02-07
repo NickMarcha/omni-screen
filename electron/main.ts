@@ -2380,13 +2380,11 @@ ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
 ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, options?: { streamerNickname?: string; useDggFallback?: boolean }) => {
   const raw = (channelIdOrUrl || '').trim()
   const channelIdOrUrlNormalized = normalizeYouTubeChannelInput(raw)
-  const inputPreview = (channelIdOrUrlNormalized || raw).slice(0, 60)
   const streamerNickname = options?.streamerNickname
   const useDggFallback = options?.useDggFallback !== false
   try {
     const result = await getYouTubeLiveOrLatest(channelIdOrUrlNormalized)
     if ('error' in result) {
-      fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, error: result.error })
       return result
     }
     let isLive = result.isLive
@@ -2401,11 +2399,9 @@ ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, 
       }
     }
     const out = { ...result, isLive, videoId }
-    fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, isLive: out.isLive, videoId: out.videoId })
     return out
   } catch (e) {
     const err = e instanceof Error ? e.message : 'Unknown error'
-    fileLogger.writeWsDiscrepancy('youtube', 'live_or_latest', { input: inputPreview, error: err })
     return { error: err }
   }
 })
@@ -3326,10 +3322,12 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
       })
       liveWebSocket.on('message', (data: any) => {
         safeSend('live-websocket-message', data)
-        if (data?.type === 'dggApi:embeds' && Array.isArray(data.data)) {
+        const type = data?.type
+        const payload = data?.data
+        if (type === 'dggApi:embeds' && Array.isArray(payload)) {
           currentDggEmbedKeys.clear()
           currentDggEmbedByKey.clear()
-          data.data.forEach((embed: { platform?: string; id?: string; mediaItem?: { metadata?: { displayName?: string } } }) => {
+          payload.forEach((embed: { platform?: string; id?: string; mediaItem?: { metadata?: { displayName?: string } } }) => {
             if (embed?.platform && embed?.id) {
               const key = makeDggEmbedKey(embed.platform, embed.id)
               currentDggEmbedKeys.add(key)
@@ -3338,6 +3336,13 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
             }
           })
         }
+        // Dedicated IPC channels for new live WS types (for future use by renderer)
+        if (type === 'dggApi:hosting') safeSend('live-websocket-hosting', payload)
+        else if (type === 'dggApi:youtubeVods') safeSend('live-websocket-youtube-vods', payload)
+        else if (type === 'dggApi:videos') safeSend('live-websocket-videos', payload)
+        else if (type === 'dggApi:streamInfo') safeSend('live-websocket-stream-info', payload)
+        else if (type === 'dggApi:events') safeSend('live-websocket-events', payload)
+        else if (type === 'dggApi:bannedEmbeds') safeSend('live-websocket-banned-embeds', payload)
       })
     }
 

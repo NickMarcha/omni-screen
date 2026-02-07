@@ -915,12 +915,17 @@ export function getPlatformFooterColor(platform: string | undefined, style: 'tin
   return style === 'tint' ? 'border-l-4 border-l-secondary bg-secondary/5' : 'border-l-4 border-l-secondary/40 bg-secondary/5'
 }
 
+/** Strip trailing punctuation often captured when extracting URLs from message text (e.g. "https://x.com/u/status/123."). */
+function normalizeUrlFromMessage(url: string): string {
+  return url.trim().replace(/[.,;:)!?\]]+$/, '')
+}
+
 /** Returns embed-related LinkCard fields derived from a URL. Use for building synthetic cards (e.g. Debug page) so the same components receive the same shape as real data. */
 export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url' | 'isDirectMedia' | 'mediaType' | 'embedUrl' | 'isYouTube' | 'isTwitter' | 'isTwitterTimeline' | 'isTikTok' | 'isReddit' | 'isImgur' | 'isStreamable' | 'isWikipedia' | 'isBluesky' | 'isKick' | 'isLSF'> {
   if (!url || typeof url !== 'string' || url.trim() === '') {
     return { url: url || '', isDirectMedia: false }
   }
-  let actualUrl = url
+  let actualUrl = normalizeUrlFromMessage(url)
   let isRedditMedia = false
   if (isRedditMediaLink(url)) {
     try {
@@ -967,7 +972,58 @@ export function getLinkCardEmbedFieldsFromUrl(url: string): Pick<LinkCard, 'url'
   }
 }
 
-// Shared overview card content (used by MasonryGrid and DebugPage)
+/** Build LinkCards from a single chat message (e.g. combined chat). Used by LiteLinkScroller. */
+export function buildLinkCardsFromMessage(
+  platform: string,
+  channel: string,
+  nick: string,
+  dateMs: number,
+  text: string,
+  kickEmotes?: LinkCard['kickEmotes']
+): LinkCard[] {
+  const rawUrls = extractUrls(text)
+  if (rawUrls.length === 0) return []
+  const msgId = messageId(platform, channel, dateMs, nick)
+  const cards: LinkCard[] = []
+  const seenNormalized = new Set<string>()
+  rawUrls.forEach((rawUrl, urlIndex) => {
+    const url = normalizeUrlFromMessage(rawUrl)
+    if (!url || seenNormalized.has(url)) return
+    seenNormalized.add(url)
+    const embedFields = getLinkCardEmbedFieldsFromUrl(url)
+    const urlHash = url.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+    const uniqueId = `${msgId}-${urlIndex}-${urlHash}-${url.slice(-20)}`
+    cards.push({
+      id: uniqueId,
+      messageId: msgId,
+      platform,
+      channel,
+      kickEmotes,
+      url: embedFields.url,
+      text,
+      nick,
+      date: dateMs,
+      isDirectMedia: embedFields.isDirectMedia ?? false,
+      mediaType: embedFields.mediaType,
+      linkType: getLinkType(url),
+      embedUrl: embedFields.embedUrl,
+      isYouTube: embedFields.isYouTube,
+      isTwitter: embedFields.isTwitter,
+      isTwitterTimeline: embedFields.isTwitterTimeline,
+      isTikTok: embedFields.isTikTok,
+      isReddit: embedFields.isReddit,
+      isImgur: embedFields.isImgur,
+      isStreamable: embedFields.isStreamable,
+      isWikipedia: embedFields.isWikipedia,
+      isBluesky: embedFields.isBluesky,
+      isKick: embedFields.isKick,
+      isLSF: embedFields.isLSF,
+    })
+  })
+  return cards
+}
+
+// Shared overview card content (used by MasonryGrid, DebugPage, LiteLinkScroller)
 function renderLinkCardOverviewContent(
   card: LinkCard,
   onCardClick: (cardId: string) => void,
@@ -977,8 +1033,13 @@ function renderLinkCardOverviewContent(
   platformSettings: Record<string, PlatformDisplayMode>,
   emotesMap: Map<string, string>,
   footerDisplay: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' } | undefined,
-  embedReloadKey: number
+  embedReloadKey: number,
+  /** When provided (e.g. LiteLinkScroller), override autoplay/mute for this card and optionally listen for video end. */
+  cardEmbedOverrides?: { autoplay?: boolean; muted?: boolean; onEnded?: () => void }
 ) {
+  const embedAutoplay = cardEmbedOverrides?.autoplay ?? false
+  const embedMuted = cardEmbedOverrides?.muted ?? true
+  const embedOnEnded = cardEmbedOverrides?.onEnded
   const handleAnchorClick = (e: React.MouseEvent, url: string) => { e.preventDefault(); e.stopPropagation(); onOpenLink?.(url) }
   const reloadKey = embedReloadKey
   // Check platform display mode (calculate outside IIFE so we can use it for hasEmbed check)
@@ -1024,10 +1085,11 @@ function renderLinkCardOverviewContent(
               <VideoEmbed 
                 key={`video-${card.id}-${reloadKey}`}
                 url={card.url}
-                autoplay={false}
-                muted={true}
+                autoplay={embedAutoplay}
+                muted={embedMuted}
                 controls={true}
                 className="w-full rounded-t-lg"
+                onEnded={embedOnEnded}
               />
             )}
           </div>
@@ -1037,23 +1099,23 @@ function renderLinkCardOverviewContent(
             <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-sm" onClick={(e) => { e.stopPropagation(); onOpenLink?.(card.url) }}>Open on X</a>
           </div>
         ) : card.isYouTube && youtubeMode === 'embed' && card.embedUrl ? (
-          <YouTubeEmbed key={`yt-${card.id}-${reloadKey}`} url={card.url} embedUrl={card.embedUrl as string} autoplay={false} mute={true} />
+          <YouTubeEmbed key={`yt-${card.id}-${reloadKey}`} url={card.url} embedUrl={card.embedUrl as string} autoplay={embedAutoplay} mute={embedMuted} />
         ) : card.isTwitter && twitterMode === 'embed' ? (
           <TwitterEmbed key={`tw-${card.id}-${reloadKey}`} url={card.url} theme={getEmbedTheme()} />
         ) : card.isTikTok && tiktokMode === 'embed' ? (
-          <TikTokEmbed key={`tt-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} loop={false} />
+          <TikTokEmbed key={`tt-${card.id}-${reloadKey}`} url={card.url} autoplay={embedAutoplay} mute={embedMuted} loop={false} />
         ) : card.isReddit && redditMode === 'embed' ? (
           <RedditEmbed key={`rd-${card.id}-${reloadKey}`} url={card.url} theme={getEmbedTheme()} />
         ) : card.isStreamable && streamableMode === 'embed' ? (
-          <StreamableEmbed key={`streamable-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} loop={false} />
+          <StreamableEmbed key={`streamable-${card.id}-${reloadKey}`} url={card.url} autoplay={embedAutoplay} mute={embedMuted} loop={false} />
         ) : card.isWikipedia && wikipediaMode === 'embed' ? (
           <WikipediaEmbed key={`wiki-${card.id}-${reloadKey}`} url={card.url} />
         ) : card.isBluesky && blueskyMode === 'embed' ? (
           <BlueskyEmbed key={`bsky-${card.id}-${reloadKey}`} url={card.url} />
         ) : card.isKick && kickMode === 'embed' ? (
-          <KickEmbed key={`kick-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={true} />
+          <KickEmbed key={`kick-${card.id}-${reloadKey}`} url={card.url} autoplay={embedAutoplay} mute={embedMuted} />
         ) : card.isLSF && lsfMode === 'embed' ? (
-          <LSFEmbed key={`lsf-${card.id}-${reloadKey}`} url={card.url} autoplay={false} mute={false} />
+          <LSFEmbed key={`lsf-${card.id}-${reloadKey}`} url={card.url} autoplay={embedAutoplay} mute={embedMuted} />
         ) : null}
       </div>
       {/* Text content and metadata at bottom - always visible */}
@@ -1123,8 +1185,10 @@ export function LinkCardOverviewCard(props: {
   emotesMap: Map<string, string>
   footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' }
   embedReloadKey?: number
+  /** Override autoplay/mute/onEnded for this card (e.g. LiteLinkScroller active card). */
+  cardEmbedOverrides?: { autoplay?: boolean; muted?: boolean; onEnded?: () => void }
 }) {
-  return renderLinkCardOverviewContent(props.card, props.onCardClick, props.onOpenLink, props.onContextMenu, props.getEmbedTheme, props.platformSettings, props.emotesMap, props.footerDisplay, props.embedReloadKey ?? 0)
+  return renderLinkCardOverviewContent(props.card, props.onCardClick, props.onOpenLink, props.onContextMenu, props.getEmbedTheme, props.platformSettings, props.emotesMap, props.footerDisplay, props.embedReloadKey ?? 0, props.cardEmbedOverrides)
 }
 
 /** Expanded modal content (left panel + embed area). Used by LinkScroller modal and DebugPage. */

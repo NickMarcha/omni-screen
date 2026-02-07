@@ -5,6 +5,9 @@ import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
 import YouTubeEmbed from './embeds/YouTubeEmbed'
 import CombinedChat, { type CombinedChatContextMenuConfig } from './CombinedChat'
+import { LiteLinkScroller, type LiteLinkScrollerSettings } from './LiteLinkScroller'
+import { buildLinkCardsFromMessage } from './LinkScroller'
+import type { LinkCard } from './LinkScroller'
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
@@ -613,10 +616,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     } catch {}
     return { key: ' ', ctrl: true, shift: false, alt: false }
   })
-  /** DGG label/badge color in combined chat. Empty = use theme default. Default #94b3c3 for picker display. */
+  /** DGG label/badge color in combined chat. Empty = use theme default. Default #ffffff (white). */
   const [dggLabelColorOverride, setDggLabelColorOverride] = useState<string>(() => {
     const saved = localStorage.getItem('omni-screen:dgg-label-color-override')
-    if (saved === '' || saved == null) return ''
+    if (saved === '' || saved == null) return '#ffffff'
     if (/^#[0-9A-Fa-f]{6}$/.test(saved)) return saved
     if (/^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)$/.test(saved)) {
       const m = saved.match(/\d+/g)
@@ -637,6 +640,30 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return (saved != null && saved !== '') ? saved : 'dgg'
   })
   const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
+  const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
+  const [liteLinkScrollerCards, setLiteLinkScrollerCards] = useState<LinkCard[]>([])
+  const initialLiteLinkScrollerSettings = useMemo((): LiteLinkScrollerSettings => {
+    try {
+      const max = Number(localStorage.getItem('omni-screen:lite-link-scroller-max-messages'))
+      const autoScroll = localStorage.getItem('omni-screen:lite-link-scroller-auto-scroll') !== '0'
+      const autoplay = localStorage.getItem('omni-screen:lite-link-scroller-autoplay') === '1'
+      const mute = localStorage.getItem('omni-screen:lite-link-scroller-mute') !== '0'
+      const autoAdvance = Number(localStorage.getItem('omni-screen:lite-link-scroller-auto-advance-seconds'))
+      return {
+        maxMessages: Number.isFinite(max) && max >= 10 ? Math.floor(max) : 100,
+        autoScroll,
+        autoplay,
+        mute,
+        autoAdvanceSeconds: Number.isFinite(autoAdvance) && autoAdvance >= 1 ? Math.min(120, Math.floor(autoAdvance)) : 10,
+      }
+    } catch {
+      return { maxMessages: 100, autoScroll: false, autoplay: false, mute: true, autoAdvanceSeconds: 10 }
+    }
+  }, [])
+  const [liteLinkScrollerSettings, setLiteLinkScrollerSettings] = useState<LiteLinkScrollerSettings>(initialLiteLinkScrollerSettings)
+
   const [chatPaneSide, setChatPaneSide] = useState<ChatPaneSide>(() => {
     const saved = localStorage.getItem('omni-screen:chat-pane-side')
     return saved === 'right' ? 'right' : 'left'
@@ -676,7 +703,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return []
     }
   })
-  type SettingsTab = 'pinned' | 'chat' | 'keybinds'
+  type SettingsTab = 'pinned' | 'chat' | 'liteLinkScroller' | 'keybinds'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('pinned')
   const settingsTabContentRef = useRef<HTMLDivElement>(null)
@@ -1054,6 +1081,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
       localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
       localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
+      localStorage.setItem('omni-screen:lite-link-scroller-max-messages', String(liteLinkScrollerSettings.maxMessages))
+      localStorage.setItem('omni-screen:lite-link-scroller-auto-scroll', liteLinkScrollerSettings.autoScroll ? '1' : '0')
+      localStorage.setItem('omni-screen:lite-link-scroller-autoplay', liteLinkScrollerSettings.autoplay ? '1' : '0')
+      localStorage.setItem('omni-screen:lite-link-scroller-mute', liteLinkScrollerSettings.mute ? '1' : '0')
+      localStorage.setItem('omni-screen:lite-link-scroller-auto-advance-seconds', String(liteLinkScrollerSettings.autoAdvanceSeconds))
     } catch {
       // ignore
     }
@@ -1075,11 +1107,82 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     dggFocusKeybind,
     chatPaneWidth,
     chatPaneSide,
+    liteLinkScrollerSettings,
   ])
 
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
   }, [chatLinkOpenAction])
+
+  // Collect messages with links for lite link scroller (same sources as combined chat)
+  useEffect(() => {
+    const max = liteLinkScrollerSettings.maxMessages
+    const appendCards = (newCards: LinkCard[]) => {
+      if (newCards.length === 0) return
+      setLiteLinkScrollerCards((prev) => {
+        const existingIds = new Set(prev.map((c) => c.id))
+        const added = newCards.filter((c) => !existingIds.has(c.id))
+        if (added.length === 0) return prev
+        const combined = [...prev, ...added]
+        combined.sort((a, b) => (a.date || 0) - (b.date || 0))
+        if (combined.length <= max) return combined
+        return combined.slice(-max)
+      })
+    }
+
+    const handleDggMessage = (_e: unknown, data: { type?: string; message?: { nick?: string; data?: string; timestamp?: number } }) => {
+      if (!data || data.type !== 'MSG' || !data.message) return
+      const msg = data.message
+      const text = msg.data ?? ''
+      const cards = buildLinkCardsFromMessage('dgg', 'Destinygg', msg.nick ?? '', typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(), text)
+      appendCards(cards)
+    }
+    const handleDggHistory = (_e: unknown, history: { type?: string; messages?: Array<{ nick?: string; data?: string; timestamp?: number }> }) => {
+      if (!history || history.type !== 'HISTORY' || !Array.isArray(history.messages)) return
+      const cards: LinkCard[] = []
+      history.messages.forEach((m) => {
+        const text = m.data ?? ''
+        const dateMs = typeof m.timestamp === 'number' ? m.timestamp : Date.now()
+        cards.push(...buildLinkCardsFromMessage('dgg', 'Destinygg', m.nick ?? '', dateMs, text))
+      })
+      appendCards(cards)
+    }
+    const handleKick = (_e: unknown, msg: { platform?: string; slug?: string; sender?: { username?: string }; content?: string; createdAt?: string }) => {
+      if (!msg || msg.platform !== 'kick') return
+      const text = msg.content ?? ''
+      const tsMs = Number.isFinite(Date.parse(msg.createdAt ?? '')) ? Date.parse(msg.createdAt!) : Date.now()
+      appendCards(buildLinkCardsFromMessage('kick', msg.slug ?? 'kick', msg.sender?.username ?? 'kick', tsMs, text))
+    }
+    const handleYouTube = (_e: unknown, msg: { platform?: string; videoId?: string; authorName?: string; message?: string; timestampUsec?: string }) => {
+      if (!msg || msg.platform !== 'youtube') return
+      const usec = typeof msg.timestampUsec === 'string' ? Number(msg.timestampUsec) : NaN
+      const tsMs = Number.isFinite(usec) ? Math.floor(usec / 1000) : Date.now()
+      appendCards(buildLinkCardsFromMessage('youtube', msg.videoId ?? 'unknown', msg.authorName ?? 'youtube', tsMs, msg.message ?? ''))
+    }
+    const handleTwitch = (_e: unknown, msg: { platform?: string; channel?: string; displayName?: string; text?: string; tmiSentTs?: number }) => {
+      if (!msg || msg.platform !== 'twitch') return
+      const tsMs = typeof msg.tmiSentTs === 'number' && Number.isFinite(msg.tmiSentTs) ? msg.tmiSentTs : Date.now()
+      appendCards(buildLinkCardsFromMessage('twitch', msg.channel ?? 'unknown', msg.displayName ?? 'twitch', tsMs, msg.text ?? ''))
+    }
+
+    window.ipcRenderer.on('chat-websocket-message', handleDggMessage)
+    window.ipcRenderer.on('chat-websocket-history', handleDggHistory)
+    window.ipcRenderer.on('kick-chat-message', handleKick)
+    window.ipcRenderer.on('youtube-chat-message', handleYouTube)
+    window.ipcRenderer.on('twitch-chat-message', handleTwitch)
+    return () => {
+      window.ipcRenderer.off('chat-websocket-message', handleDggMessage)
+      window.ipcRenderer.off('chat-websocket-history', handleDggHistory)
+      window.ipcRenderer.off('kick-chat-message', handleKick)
+      window.ipcRenderer.off('youtube-chat-message', handleYouTube)
+      window.ipcRenderer.off('twitch-chat-message', handleTwitch)
+    }
+  }, [liteLinkScrollerSettings.maxMessages])
+
+  useEffect(() => {
+    const max = liteLinkScrollerSettings.maxMessages
+    setLiteLinkScrollerCards((prev) => (prev.length <= max ? prev : prev.slice(-max)))
+  }, [liteLinkScrollerSettings.maxMessages])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -2033,6 +2136,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     <div className="h-full min-h-0 bg-base-100 text-base-content flex flex-col overflow-hidden">
       {/* Main layout */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Lite link scroller on left when chat is on the right (opposite side of chat) */}
+        {liteLinkScrollerOpen && chatPaneSide === 'right' && (
+          <div className="flex-shrink-0 min-h-0 flex flex-col overflow-hidden border-r border-base-300" style={{ width: 380 }}>
+            <LiteLinkScroller
+              open={true}
+              onClose={() => setLiteLinkScrollerOpen(false)}
+              cards={liteLinkScrollerCards}
+              settings={liteLinkScrollerSettings}
+              onSettingsChange={(partial) => setLiteLinkScrollerSettings((prev) => ({ ...prev, ...partial }))}
+              onOpenLink={(url) => {
+                window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: chatLinkOpenAction }).catch(() => {})
+              }}
+              getEmbedTheme={() => (document.documentElement?.getAttribute('data-theme') === 'light' ? 'light' : 'dark')}
+              onOpenSettings={() => {
+                setSettingsModalOpen(true)
+                setSettingsTab('liteLinkScroller')
+              }}
+            />
+          </div>
+        )}
+
         {/* Left pane */}
         {chatPaneOpen && chatPaneSide === 'left' && (
           <>
@@ -2335,6 +2459,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   aria-label="Show chat pane"
                 >
                   💬
+                </button>
+              )}
+              {!liteLinkScrollerOpen && (
+                <button
+                  type="button"
+                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
+                  title="Lite link scroller (links from chat)"
+                  onClick={() => setLiteLinkScrollerOpen(true)}
+                  aria-label="Open lite link scroller"
+                >
+                  📜
                 </button>
               )}
               <button
@@ -2687,6 +2822,27 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           })() : null}
         </div>
 
+        {/* Lite link scroller on right when chat is on the left (opposite side of chat) */}
+        {liteLinkScrollerOpen && chatPaneSide === 'left' && (
+          <div className="flex-shrink-0 min-h-0 flex flex-col overflow-hidden border-l border-base-300" style={{ width: 380 }}>
+            <LiteLinkScroller
+              open={true}
+              onClose={() => setLiteLinkScrollerOpen(false)}
+              cards={liteLinkScrollerCards}
+              settings={liteLinkScrollerSettings}
+              onSettingsChange={(partial) => setLiteLinkScrollerSettings((prev) => ({ ...prev, ...partial }))}
+              onOpenLink={(url) => {
+                window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: chatLinkOpenAction }).catch(() => {})
+              }}
+              getEmbedTheme={() => (document.documentElement?.getAttribute('data-theme') === 'light' ? 'light' : 'dark')}
+              onOpenSettings={() => {
+                setSettingsModalOpen(true)
+                setSettingsTab('liteLinkScroller')
+              }}
+            />
+          </div>
+        )}
+
         {/* Pie chart popup (what's being watched by platform) */}
         {showPiePopup && pieChartRect && (() => {
           const popupW = 380
@@ -2831,6 +2987,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 onClick={() => setSettingsTab('chat')}
               >
                 Chat
+              </button>
+              <button
+                type="button"
+                className={`tab ${settingsTab === 'liteLinkScroller' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('liteLinkScroller')}
+              >
+                📜 Lite link scroller
               </button>
               <button
                 type="button"
@@ -3271,13 +3434,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             <input
                               type="color"
                               className="w-7 h-7 rounded border border-base-300 cursor-pointer"
-                              value={dggLabelColorOverride && /^#[0-9A-Fa-f]{6}$/.test(dggLabelColorOverride) ? dggLabelColorOverride : '#94b3c3'}
+                              value={dggLabelColorOverride && /^#[0-9A-Fa-f]{6}$/.test(dggLabelColorOverride) ? dggLabelColorOverride : '#ffffff'}
                               onChange={(e) => setDggLabelColorOverride(e.target.value)}
                             />
                             <input
                               type="text"
                               className="input input-sm input-bordered w-20 font-mono"
-                              placeholder="#94b3c3"
+                              placeholder="#ffffff"
                               value={dggLabelColorOverride}
                               onChange={(e) => setDggLabelColorOverride(e.target.value)}
                             />
@@ -3425,6 +3588,54 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       <div className="text-xs text-base-content/60">If Kick history fails, open Kick once (Cloudflare may appear), then retry.</div>
                     </div>
                   </div>
+                </div>
+              )}
+              {settingsTab === 'liteLinkScroller' && (
+                <div className="space-y-4">
+                  <div className="text-sm font-semibold text-base-content/80 mb-2">Lite link scroller</div>
+                  <p className="text-xs text-base-content/60 mb-3">
+                    Saves messages that contain links from combined chat (DGG, YouTube, Kick, Twitch) and shows them in a scrollable panel. Open with the 📜 button in the embed dock. Autoplay and mute are toggled in the panel&apos;s top bar.
+                  </p>
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    <span>Max messages to save</span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={2000}
+                      className="input input-sm w-24"
+                      value={liteLinkScrollerSettings.maxMessages}
+                      onChange={(e) => {
+                        const n = Math.floor(Number(e.target.value))
+                        if (Number.isFinite(n) && n >= 10) setLiteLinkScrollerSettings((prev) => ({ ...prev, maxMessages: Math.min(2000, n) }))
+                      }}
+                    />
+                  </label>
+                  <span className="label-text-alt text-base-content/60 block">Keep at most this many link messages (oldest dropped when over limit).</span>
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    <span>Auto-scroll</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm"
+                      checked={liteLinkScrollerSettings.autoScroll}
+                      onChange={(e) => setLiteLinkScrollerSettings((prev) => ({ ...prev, autoScroll: e.target.checked }))}
+                    />
+                  </label>
+                  <span className="label-text-alt text-base-content/60 block">When on, with autoplay: play newest link first, then older as each finishes (one column, top = old, bottom = new).</span>
+                  <label className="flex items-center justify-between gap-2 text-sm mt-3">
+                    <span>Auto-advance timer (seconds)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={120}
+                      className="input input-sm w-24"
+                      value={liteLinkScrollerSettings.autoAdvanceSeconds}
+                      onChange={(e) => {
+                        const n = Math.floor(Number(e.target.value))
+                        if (Number.isFinite(n) && n >= 1) setLiteLinkScrollerSettings((prev) => ({ ...prev, autoAdvanceSeconds: Math.min(120, n) }))
+                      }}
+                    />
+                  </label>
+                  <span className="label-text-alt text-base-content/60 block">For embeds that don&apos;t fire an end event (YouTube, TikTok, etc.), advance to the next card after this many seconds.</span>
                 </div>
               )}
               {settingsTab === 'keybinds' && (
