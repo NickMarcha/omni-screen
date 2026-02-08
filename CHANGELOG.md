@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.12.0] - 2026-02-08
+
+### Added
+- **Title bar – hide with Alt**: Press **Alt** to toggle the title bar off/on. View → **Hide title bar (Alt)** does the same and documents the shortcut.
+- **Combined chat overlay**: Chat can be shown as an overlay on top of the embed grid (toggle in the chat header); overlay can be resized, made semi-transparent, and set to click-through so you can interact with the video underneath. Header auto-hides when the pointer leaves the overlay.
+- **Broadcast message support**: Combined chat supports broadcast-style messages (chat rendering fixes for broadcast and related message types).
+
+### Changed
+- **Logs – errors file on demand**: The errors-only log file (`app-*-errors.log`) is created only when the first error is logged in a session (same pattern as ws-discrepancies). No errors means no errors file.
+- **Embed dock**: Styling improvements for the embed bar; context menu for the embed dock improved.
+- **Logos**: New and updated app logos.
+
+### Fixed
+- **Overlay and modals – flash**: Removed the View Transitions API usage on DGG embed list updates, which was causing a full-document `::view-transition` overlay and a visible flash over the chat overlay and settings modal (and any UI over the video region).
+- **Chat rendering**: Various chat rendering fixes and better emote alignment.
+- **ws-discrepancies**: MUTE and UNMUTE are now in the known chat types list so they are no longer logged as new_type_observed.
+
 ## [1.11.0] - 2026-02-07
 
 ### Added
