@@ -2287,10 +2287,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           <div
             ref={dockBarRef}
             className={[
-              'relative z-20 flex items-center',
+              'embed-dock-bar relative z-20 flex items-center',
               dockAtTop ? 'order-0' : 'order-1',
               cinemaMode
-                ? `mt-0 bg-base-200 rounded-none gap-0 p-0 ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}`
+                ? `embed-dock-cinema mt-0 bg-base-200 rounded-none gap-0 p-0 items-stretch ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}`
                 : dockAtTop
                   ? 'mb-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2'
                   : 'mt-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
@@ -2298,14 +2298,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             onContextMenu={onDockBarContextMenu}
           >
             {/* Scrollable embeds list */}
-            <div className="flex-1 min-w-0 min-h-0">
+            <div className={`flex-1 min-w-0 min-h-0 ${cinemaMode ? 'self-stretch flex flex-col min-h-0' : ''}`}>
               <div
                 ref={dockRef}
-                className={`overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll ${cinemaMode ? 'py-0' : ''}`}
+                className={`overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll ${cinemaMode ? 'py-0 h-full min-h-0 flex-1' : ''}`}
                 onWheel={onDockWheel}
                 style={{ overscrollBehaviorX: 'contain' as any }}
               >
-                <div className={`flex items-center ${cinemaMode ? 'gap-0' : 'gap-1'}`}>
+                <div className={`flex items-center ${cinemaMode ? 'gap-0 h-full items-stretch' : 'gap-1'}`}>
                   {dockItems.length === 0 ? (
                     <div className={`text-xs text-base-content/60 ${cinemaMode ? 'px-0 py-0' : 'px-2 py-1'}`}>No embeds. Add a link or add a bookmarked streamer (when live).</div>
                   ) : (
@@ -2328,7 +2328,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       const isWatching = watchedEmbedKey != null && keys.includes(watchedEmbedKey)
 
                       return (
-                        <div key={itemId} className="flex items-center">
+                        <div key={itemId} className={`flex items-center ${cinemaMode ? 'self-stretch' : ''}`}>
                           <button
                             type="button"
                             ref={(el) => {
@@ -2336,7 +2336,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               if (el) map.set(itemId, el)
                               else map.delete(itemId)
                             }}
-                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'} ${cinemaMode ? 'rounded-none border-0 border-r border-base-300 first:border-l-0' : ''}`}
+                            className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'} ${cinemaMode ? 'rounded-none border-0 self-stretch h-full min-h-0' : ''}`}
                             title={item.type === 'group' ? `${label} (${keys.length} embed${keys.length !== 1 ? 's' : ''})` : `${(firstEmbed?.platform || '').toLowerCase()}: ${firstEmbed?.mediaItem?.metadata?.title || firstKey}`}
                             onClick={() => toggleDockItemMaster(item)}
                             onContextMenu={(e) => {
@@ -2365,11 +2365,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             </div>
 
             {/* Fixed controls (right side): Pie chart, +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
-            <div className={`flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1' : 'gap-2'}`}>
+            <div className={`embed-dock-controls flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1 self-stretch' : 'gap-2'}`}>
               <button
                 type="button"
                 ref={pieChartButtonRef}
-                className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
+                className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                 title="What's being watched (by platform)"
                 aria-label="Show watch proportions"
                 onMouseEnter={openPiePopup}
@@ -2378,8 +2378,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               >
                 🥧
               </button>
-              <div className="dropdown dropdown-top dropdown-end">
-                <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
+              <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
+                <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
                   ➕
                 </label>
                 <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
@@ -2490,7 +2490,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {!chatPaneOpen && (
                 <button
                   type="button"
-                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
+                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                   title="Chat pane"
                   onClick={() => setChatPaneOpen(true)}
                   aria-label="Show chat pane"
@@ -2501,7 +2501,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {!liteLinkScrollerOpen && (
                 <button
                   type="button"
-                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
+                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                   title="Lite link scroller (links from chat)"
                   onClick={() => setLiteLinkScrollerOpen(true)}
                   aria-label="Open lite link scroller"
@@ -2511,13 +2511,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               )}
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                 title="Autoplay"
                 onClick={() => setAutoplay((v) => !v)}
                 aria-label="Toggle autoplay"
               >
                 <span
-                  className="w-6 h-6 inline-block bg-base-content"
+                  className="inline-block bg-base-content w-[2.1rem] h-[2.1rem]"
                   style={{
                     maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
                     WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
@@ -2533,7 +2533,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                 title="Mute"
                 onClick={() => setMute((v) => !v)}
                 aria-label="Toggle mute"
@@ -2542,7 +2542,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none self-stretch h-full min-h-0' : ''}`}
                 title="Cinema mode"
                 onClick={() => setCinemaMode((v) => !v)}
                 aria-label="Toggle cinema mode"
@@ -2551,7 +2551,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none' : ''}`}
+                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
                 title="Settings"
                 onClick={() => setSettingsModalOpen(true)}
                 aria-label="Open settings"
@@ -2559,7 +2559,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 ⚙️
               </button>
 
-              <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none' : ''}`} onClick={onBackToMenu}>
+              <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} onClick={onBackToMenu}>
                 Back
               </button>
             </div>

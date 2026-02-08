@@ -53,6 +53,57 @@ body {
   animation: poll-timer-shrink var(--poll-duration) linear calc(-1 * var(--poll-elapsed)) both;
 }
 
+/* Embed dock and combined chat input bar: same height */
+:root {
+  --embed-dock-height: 36px;
+}
+.chat-input-bar,
+.embed-dock-bar {
+  min-height: var(--embed-dock-height);
+}
+
+/* Message input area: no padding */
+.chat-input-bar {
+  padding: 0;
+}
+
+/* Message input: focus outline renders inset */
+.chat-input-bar .input:focus,
+.chat-input-bar .input:focus-within {
+  outline-offset: -1px;
+}
+
+/* Message input: regular border 1px inset */
+.chat-input-bar .input {
+  box-shadow: inset 0 0 0 1px var(--input-color);
+}
+.chat-input-bar .input:focus,
+.chat-input-bar .input:focus-within {
+  box-shadow: inset 0 0 0 1px var(--input-color);
+}
+
+/* Dock: embed label buttons – bold, slightly larger text */
+.embed-dock-bar .embed-dock-scroll .btn {
+  font-weight: 600 !important;
+  font-size: 1rem;
+}
+
+/* Dock: ~40% larger icons and text (right-side controls only, not embed buttons) */
+.embed-dock-bar .embed-dock-controls .btn {
+  font-size: 1.4rem;
+}
+.embed-dock-bar .embed-dock-controls .btn.text-xl {
+  font-size: 1.75rem; /* 1.25 * 1.4 */
+}
+
+/* Cinema mode: center emoji/symbol content vertically in full-height control buttons */
+.embed-dock-bar.embed-dock-cinema .embed-dock-controls .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 /* OmniScreen bottom dock: thin, unobtrusive horizontal scrollbar */
 .embed-dock-scroll::-webkit-scrollbar {
   height: 0px; /* hide horizontal scrollbar track while keeping scroll behavior */

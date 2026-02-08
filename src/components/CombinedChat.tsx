@@ -687,7 +687,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
   )
 
   return (
-    <div className="flex-none border-t border-base-300 bg-base-200 p-2 flex items-center gap-2 relative shrink-0">
+    <div className="chat-input-bar flex-none border-t border-base-300 bg-base-200 flex items-center gap-2 relative shrink-0">
       <div className="flex-1 min-w-0 relative flex flex-col">
         {shortcutLabel ? (
           <div className="input input-sm input-bordered flex flex-1 min-w-0 items-center gap-2 overflow-hidden w-full">
