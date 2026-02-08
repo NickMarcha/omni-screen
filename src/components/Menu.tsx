@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import yeeCharmGif from '../assets/media/YeeCharm.gif'
-import logoPng from '../assets/logo.png'
+import { AnimatedLogo } from './AnimatedLogo'
 import abaGrinchPng from '../assets/media/AbaGrinch.png'
 import achshullyRetardedPng from '../assets/media/ACHshullyRetarded.png'
 import bennyLovePng from '../assets/media/BennyLove.png'
@@ -133,10 +133,32 @@ interface MenuProps {
   onNavigate: (page: 'link-scroller' | 'omni-screen' | 'debug') => void
 }
 
+function OmniScreenCard({ onNavigate }: { onNavigate: (page: 'omni-screen') => void }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button
+      className="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-shadow cursor-pointer"
+      onClick={() => onNavigate('omni-screen')}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="card-body flex-row items-center gap-6">
+        <AnimatedLogo className="w-32 h-32 flex-shrink-0" hovered={hovered} />
+        <div className="flex flex-col text-left">
+          <h2 className="card-title text-2xl mb-2">Omni Screen</h2>
+          <p className="text-base-content/70">
+            Split-screen embeds + live chat
+          </p>
+        </div>
+      </div>
+    </button>
+  )
+}
+
 function Menu({ onNavigate }: MenuProps) {
   const CONNECTIONS_PLATFORMS = useConnectionsPlatforms()
 
-  // Random icon for Link Scroller
+  // Scrolling icons for Link Scroller (same set, scrolls upward with pause per image)
   const linkScrollerIcons = [
     abaGrinchPng,
     achshullyRetardedPng,
@@ -147,9 +169,13 @@ function Menu({ onNavigate }: MenuProps) {
     noHopePng,
     whickedSteinPng
   ]
-  const [randomIcon] = useState(() => 
-    linkScrollerIcons[Math.floor(Math.random() * linkScrollerIcons.length)]
-  )
+  const [scrollIconIndex, setScrollIconIndex] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => {
+      setScrollIconIndex((i) => (i + 1) % linkScrollerIcons.length)
+    }, 2500)
+    return () => clearInterval(id)
+  }, [])
 
   // Update UI state
   const [checking, setChecking] = useState(false)
@@ -425,7 +451,21 @@ function Menu({ onNavigate }: MenuProps) {
           onClick={() => onNavigate('link-scroller')}
         >
           <div className="card-body flex-row items-center gap-6">
-            <img src={randomIcon} alt="" className="w-32 h-32 object-contain flex-shrink-0" />
+            <div className="w-32 h-32 flex-shrink-0 overflow-hidden rounded-lg">
+              <div
+                className="flex flex-col transition-transform duration-500 ease-in-out"
+                style={{
+                  height: `${linkScrollerIcons.length * 100}%`,
+                  transform: `translateY(-${scrollIconIndex * (100 / linkScrollerIcons.length)}%)`,
+                }}
+              >
+                {linkScrollerIcons.map((src) => (
+                  <div key={src} className="w-32 h-32 flex-shrink-0 flex items-center justify-center">
+                    <img src={src} alt="" className="w-full h-full object-contain" />
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="flex flex-col text-left">
               <h2 className="card-title text-2xl mb-2">Link Scroller</h2>
               <p className="text-base-content/70">
@@ -436,20 +476,7 @@ function Menu({ onNavigate }: MenuProps) {
         </button>
 
         {/* Omni Screen */}
-        <button
-          className="card bg-base-200 shadow-xl p-8 hover:shadow-2xl transition-shadow cursor-pointer"
-          onClick={() => onNavigate('omni-screen')}
-        >
-          <div className="card-body flex-row items-center gap-6">
-            <img src={logoPng} alt="" className="w-32 h-32 object-contain flex-shrink-0" />
-            <div className="flex flex-col text-left">
-              <h2 className="card-title text-2xl mb-2">Omni Screen</h2>
-              <p className="text-base-content/70">
-                Split-screen embeds + live chat
-              </p>
-            </div>
-          </div>
-        </button>
+        <OmniScreenCard onNavigate={onNavigate} />
       </div>
 
       {/* Update Button */}

@@ -28,7 +28,7 @@
       "dmg"
     ],
     "artifactName": "${productName}-Mac-${version}-Installer.${ext}",
-    "icon": "src/assets/logo.png"
+    "icon": "build/icon.png"
   },
   "linux": {
     "target": [
@@ -46,7 +46,7 @@
       }
     ],
     "artifactName": "${productName}-Linux-${version}-${arch}.${ext}",
-    "icon": "src/assets/logo.png",
+    "icon": "build/icon.png",
     "category": "Utility"
   },
   "nsis": {

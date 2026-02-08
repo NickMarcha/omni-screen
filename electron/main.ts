@@ -623,7 +623,7 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    icon: path.join(process.env.VITE_PUBLIC, 'feelswierdman.png'),
+    icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
     webPreferences: {
@@ -1105,7 +1105,7 @@ function getOrCreateViewerWindow(): BrowserWindow {
     minHeight: 400,
     show: false,
     title: 'Viewer',
-    icon: path.join(process.env.VITE_PUBLIC, 'feelswierdman.png'),
+    icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),
     webPreferences: {
       // Keep viewer isolated like a normal browser window
       nodeIntegration: false,
