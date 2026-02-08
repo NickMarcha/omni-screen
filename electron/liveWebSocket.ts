@@ -21,9 +21,12 @@ export class LiveWebSocket extends EventEmitter {
   private typeCounts: Map<string, number> = new Map()
   private seenTypes: Set<string> = new Set()
 
-  constructor(url: string = 'wss://live.destiny.gg/') {
+  private readonly origin: string
+
+  constructor(url: string = 'wss://live.destiny.gg/', origin: string = 'https://www.destiny.gg') {
     super()
     this.url = url
+    this.origin = origin
   }
 
   connect(): void {
@@ -34,10 +37,9 @@ export class LiveWebSocket extends EventEmitter {
     this.isIntentionallyClosed = false
 
     try {
-      // live.destiny.gg appears to validate Origin (the website sends Origin: https://www.destiny.gg)
-      // Incognito works without cookies, so we intentionally do NOT forward cookies here.
+      // live server validates Origin; incognito works without cookies so we do NOT forward cookies here.
       this.ws = new WebSocket(this.url, {
-        origin: 'https://www.destiny.gg',
+        origin: this.origin,
         headers: {
           // A normal UA can help if the server does heuristic filtering.
           'User-Agent':

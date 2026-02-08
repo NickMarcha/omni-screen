@@ -62,7 +62,20 @@ function formatWhisperTimestamp(ts: string): string {
 }
 
 type DggChatWsMessage = { type: 'MSG'; message: DggChatMessage }
-type DggChatWsHistory = { type: 'HISTORY'; messages: DggChatMessage[] }
+/** Broadcast payload from DGG (BROADCAST {...}). */
+interface DggBroadcastPayload {
+  timestamp: number
+  nick: string
+  data: string
+  user: { id: number; nick: string; roles: string[]; features: string[]; createdDate: string | null }
+  uuid: string
+}
+type DggChatWsHistory = {
+  type: 'HISTORY'
+  messages: DggChatMessage[]
+  /** When set, MSG and BROADCAST in order for correct timeline. */
+  items?: Array<{ type: 'MSG'; message: DggChatMessage } | { type: 'BROADCAST'; broadcast: DggBroadcastPayload }>
+}
 
 interface KickChatMessage {
   platform: 'kick'
@@ -336,7 +349,7 @@ function renderTextWithLinks(
 
 /** Plain text used for highlight-term matching only (excludes emote names so "destiny" doesn't match "destinycool" emote). */
 function getContentForHighlight(m: CombinedItem): string {
-  if (m.source === 'dgg') return m.content ?? ''
+  if (m.source === 'dgg' || m.source === 'dgg-broadcast') return m.content ?? ''
   if (m.source === 'kick') {
     const raw = (m as any).raw?.content ?? m.content ?? ''
     return String(raw).replace(/\[emote:\d+:[^\]]+\]/g, '')
@@ -777,6 +790,14 @@ type CombinedItem =
       raw: unknown
       isHistory?: boolean
     }
+  | {
+      source: 'dgg-broadcast'
+      tsMs: number
+      nick: string
+      content: string
+      raw: DggBroadcastPayload
+      isHistory?: boolean
+    }
 
 type CombinedItemWithSeq = CombinedItem & { seq: number }
 
@@ -1085,6 +1106,10 @@ export default function CombinedChat({
   const [dggAuthenticated, setDggAuthenticated] = useState(false)
   const [pinnedMessage, setPinnedMessage] = useState<DggChatMessage | null>(null)
   const [pinnedHidden, setPinnedHidden] = useState(false)
+  const pinnedColorFlair = useMemo(
+    () => (pinnedMessage ? usernameColorFlair(flairsList, { features: pinnedMessage.features ?? [] }) : undefined),
+    [pinnedMessage, flairsList],
+  )
   const [showMoreMessagesBelow, setShowMoreMessagesBelow] = useState(false)
   /** DGG nicks from NAMES/JOIN/QUIT (used for autocomplete and count). */
   const [dggUserNicks, setDggUserNicks] = useState<string[]>([])
@@ -1245,20 +1270,30 @@ export default function CombinedChat({
     }
   }, [emotesMap])
 
-  // Load Destiny emotes + flairs (CSS + JSON, no-store). Same pattern as chat-gui loadEmotes/loadFlairs.
+  // Default DGG CDN URLs (used when get-app-config is unavailable, e.g. tests).
+  const defaultDggUrls = {
+    emotesCssUrl: 'https://cdn.destiny.gg/emotes/emotes.css',
+    emotesJsonUrl: 'https://cdn.destiny.gg/emotes/emotes.json',
+    flairsCssUrl: 'https://cdn.destiny.gg/flairs/flairs.css',
+    flairsJsonUrl: 'https://cdn.destiny.gg/flairs/flairs.json',
+  }
+
+  // Load Destiny emotes + flairs (CSS + JSON, no-store). URLs from main process config (env).
   useEffect(() => {
     let cancelled = false
     const cacheKey = Date.now()
 
     const run = async () => {
+      const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
+      const dgg = config?.dgg ?? defaultDggUrls
       try {
         const existingEmotesCss = document.getElementById('destiny-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSOnceById(
-          `https://cdn.destiny.gg/emotes/emotes.css?_=${cacheKey}`,
+          `${dgg.emotesCssUrl}?_=${cacheKey}`,
           'destiny-emotes-css',
         )
-        const emotesRes = await fetch(`https://cdn.destiny.gg/emotes/emotes.json?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) throw new Error(`Failed to fetch emotes: ${emotesRes.status}`)
@@ -1277,10 +1312,10 @@ export default function CombinedChat({
         const existingFlairsCss = document.getElementById('destiny-flairs-css')
         if (existingFlairsCss) existingFlairsCss.remove()
         await loadCSSOnceById(
-          `https://cdn.destiny.gg/flairs/flairs.css?_=${cacheKey}`,
+          `${dgg.flairsCssUrl}?_=${cacheKey}`,
           'destiny-flairs-css',
         )
-        const flairsRes = await fetch(`https://cdn.destiny.gg/flairs/flairs.json?_=${cacheKey}`, {
+        const flairsRes = await fetch(`${dgg.flairsJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!flairsRes.ok) return
@@ -1302,15 +1337,17 @@ export default function CombinedChat({
   useEffect(() => {
     if (!enableDgg) return
     const handleReload = async () => {
+      const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
+      const dgg = config?.dgg ?? defaultDggUrls
       const cacheKey = Date.now()
       try {
         const existingEmotesCss = document.getElementById('destiny-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSOnceById(
-          `https://cdn.destiny.gg/emotes/emotes.css?_=${cacheKey}`,
+          `${dgg.emotesCssUrl}?_=${cacheKey}`,
           'destiny-emotes-css',
         )
-        const emotesRes = await fetch(`https://cdn.destiny.gg/emotes/emotes.json?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) return
@@ -1327,10 +1364,10 @@ export default function CombinedChat({
         const existingFlairsCss = document.getElementById('destiny-flairs-css')
         if (existingFlairsCss) existingFlairsCss.remove()
         await loadCSSOnceById(
-          `https://cdn.destiny.gg/flairs/flairs.css?_=${cacheKey}`,
+          `${dgg.flairsCssUrl}?_=${cacheKey}`,
           'destiny-flairs-css',
         )
-        const flairsRes = await fetch(`https://cdn.destiny.gg/flairs/flairs.json?_=${cacheKey}`, {
+        const flairsRes = await fetch(`${dgg.flairsJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!flairsRes.ok) return
@@ -1420,7 +1457,7 @@ export default function CombinedChat({
 
   const openUserTooltip = useCallback(
     (e: React.MouseEvent, m: CombinedItem) => {
-      if (m.source === 'dgg-event' || m.source === 'dgg-system') return
+      if (m.source === 'dgg-event' || m.source === 'dgg-system' || m.source === 'dgg-broadcast') return
       e.preventDefault()
       e.stopPropagation()
       const raw = m.source === 'dgg' ? m.raw : m.source === 'kick' ? m.raw : m.source === 'youtube' ? m.raw : m.raw
@@ -1460,11 +1497,11 @@ export default function CombinedChat({
     }
   }, [userTooltip, closeUserTooltip])
 
-  // If DGG is disabled, drop existing DGG items from the feed.
+  // If DGG is disabled, drop existing DGG items (and broadcasts) from the feed.
   useEffect(() => {
     if (enableDgg) return
     setItems((prev) => {
-      const next = prev.filter((m) => m.source !== 'dgg')
+      const next = prev.filter((m) => m.source !== 'dgg' && m.source !== 'dgg-broadcast')
       return next.length === prev.length ? prev : next
     })
     setUpdateSeq((v) => v + 1)
@@ -1497,23 +1534,69 @@ export default function CombinedChat({
 
     const handleHistory = (_event: any, history: DggChatWsHistory) => {
       if (!alive) return
-      if (!history || history.type !== 'HISTORY' || !Array.isArray(history.messages)) return
-      const slice = history.messages.slice(-hardCapRef.current)
-      const mapped: CombinedItemWithSeq[] = slice.map((m) => ({
-        source: 'dgg',
-        tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
-        nick: m.nick,
-        content: m.data ?? '',
-        raw: m,
-        isHistory: true,
-        seq: seqRef.current++,
-      }))
+      if (!history || history.type !== 'HISTORY') return
+      const items = history.items
+      const useItems = Array.isArray(items) && items.length > 0
+      const mapped: CombinedItemWithSeq[] = useItems
+        ? items.map((item) => {
+            if (item.type === 'MSG') {
+              const m = item.message
+              return {
+                source: 'dgg' as const,
+                tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
+                nick: m.nick,
+                content: m.data ?? '',
+                raw: m,
+                isHistory: true,
+                seq: seqRef.current++,
+              }
+            }
+            const b = item.broadcast
+            return {
+              source: 'dgg-broadcast' as const,
+              tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
+              nick: b.nick ?? '',
+              content: b.data ?? '',
+              raw: b,
+              isHistory: true,
+              seq: seqRef.current++,
+            }
+          })
+        : (Array.isArray(history.messages) ? history.messages : [])
+            .slice(-hardCapRef.current)
+            .map((m) => ({
+              source: 'dgg' as const,
+              tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
+              nick: m.nick,
+              content: m.data ?? '',
+              raw: m,
+              isHistory: true,
+              seq: seqRef.current++,
+            }))
+      if (mapped.length === 0) return
+      const slice = useItems ? mapped.slice(-hardCapRef.current) : mapped
       markStickIfAtBottom()
       setItems((prev) => {
-        const nonDgg = prev.filter((m) => m.source !== 'dgg')
-        return trimToLimitRef.current([...nonDgg, ...mapped], wasAtBottomRef.current)
+        const nonDgg = prev.filter((m) => m.source !== 'dgg' && m.source !== 'dgg-broadcast')
+        return trimToLimitRef.current([...nonDgg, ...slice], wasAtBottomRef.current)
       })
       setUpdateSeq((v) => v + 1)
+    }
+
+    const handleBroadcast = (_event: any, payload: { type?: string; broadcast?: DggBroadcastPayload } | null) => {
+      if (!alive) return
+      const b = payload?.broadcast
+      if (!b) return
+      appendItems([
+        {
+          source: 'dgg-broadcast',
+          tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
+          nick: b.nick ?? '',
+          content: b.data ?? '',
+          raw: b,
+          seq: seqRef.current++,
+        },
+      ])
     }
 
     const handleConnected = () => {
@@ -1587,6 +1670,7 @@ export default function CombinedChat({
     window.ipcRenderer.on('chat-websocket-me', handleMe)
     window.ipcRenderer.on('chat-websocket-message', handleMessage)
     window.ipcRenderer.on('chat-websocket-history', handleHistory)
+    window.ipcRenderer.on('chat-websocket-broadcast', handleBroadcast)
     window.ipcRenderer.on('chat-websocket-pin', handlePin)
     window.ipcRenderer.on('chat-websocket-names', handleNames)
     window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
@@ -1725,6 +1809,7 @@ export default function CombinedChat({
       window.ipcRenderer.off('chat-websocket-me', handleMe)
       window.ipcRenderer.off('chat-websocket-message', handleMessage)
       window.ipcRenderer.off('chat-websocket-history', handleHistory)
+      window.ipcRenderer.off('chat-websocket-broadcast', handleBroadcast)
       window.ipcRenderer.off('chat-websocket-pin', handlePin)
       window.ipcRenderer.off('chat-websocket-names', handleNames)
       window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
@@ -2427,11 +2512,16 @@ export default function CombinedChat({
                     {new Date(pinnedMessage.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                   </time>
                 )}
-                <span className="flex-1 min-w-0">
-                  <span className="font-semibold shrink-0" style={{ color: dggAccentColor }}>
-                    {pinnedMessage.nick}
+                <span className="flex-1 min-w-0 flex flex-col gap-y-1">
+                  <span className="shrink-0">
+                    <span
+                      className={`font-semibold ${pinnedColorFlair ? `user ${pinnedColorFlair.name}` : ''}`}
+                      style={pinnedColorFlair ? undefined : { color: dggAccentColor }}
+                    >
+                      {pinnedMessage.nick}
+                    </span>
+                    <span className="ctrl">: </span>
                   </span>
-                  <span className="ctrl">: </span>
                   <span className="msg-chat-content text whitespace-pre-wrap break-words">
                     {renderTextWithLinks(pinnedMessage.data ?? '', emotePattern, emotesMap, onOpenLink)}
                   </span>
@@ -2624,6 +2714,24 @@ export default function CombinedChat({
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                   <span className="mr-1.5" aria-hidden>{icon}</span>
                   <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                </div>
+              )
+            }
+            if (m.source === 'dgg-broadcast') {
+              const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
+              return (
+                <div
+                  key={`msg-dgg-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.raw?.uuid ?? ''}`}
+                  className="msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border"
+                  style={{ borderColor: '#edea12' }}
+                >
+                  {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
+                  <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0 flex-1">
+                    <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
+                      {renderDggMessageContent(m.content ?? '')}
+                    </span>
+                  </span>
+                  <span className="shrink-0 ml-auto" aria-hidden title="Broadcast">📢</span>
                 </div>
               )
             }

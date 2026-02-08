@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import yeeCharmGif from '../assets/media/YeeCharm.gif'
 import logoPng from '../assets/logo.png'
 import abaGrinchPng from '../assets/media/AbaGrinch.png'
@@ -21,7 +21,8 @@ import {
 
 const STORAGE_KEY_UPDATE_LAST_CHECKED = 'omni-screen:update-last-checked'
 
-const CONNECTIONS_PLATFORMS: Array<{
+/** Base platform list; loginUrl may be overridden from get-app-config. */
+const CONNECTIONS_PLATFORMS_BASE: Array<{
   id: string
   label: string
   loginUrl: string
@@ -98,6 +99,26 @@ const CONNECTIONS_PLATFORMS: Array<{
   },
 ]
 
+/** Resolve CONNECTIONS_PLATFORMS with login URLs from app config when available. */
+function useConnectionsPlatforms() {
+  const [config, setConfig] = useState<{
+    dgg: { loginUrl: string }
+    platformUrls: Record<string, string>
+  } | null>(null)
+  useEffect(() => {
+    window.ipcRenderer.invoke('get-app-config').then(setConfig).catch(() => {})
+  }, [])
+  return useMemo(() => {
+    return CONNECTIONS_PLATFORMS_BASE.map((p) => {
+      const loginUrl =
+        p.id === 'dgg' || p.id === 'destiny'
+          ? config?.dgg.loginUrl ?? p.loginUrl
+          : (config?.platformUrls[p.id] ?? p.loginUrl)
+      return { ...p, loginUrl }
+    })
+  }, [config])
+}
+
 function formatLastCheckedAgo(ts: number): string {
   const now = Date.now()
   const d = Math.floor((now - ts) / 1000)
@@ -113,6 +134,8 @@ interface MenuProps {
 }
 
 function Menu({ onNavigate }: MenuProps) {
+  const CONNECTIONS_PLATFORMS = useConnectionsPlatforms()
+
   // Random icon for Link Scroller
   const linkScrollerIcons = [
     abaGrinchPng,

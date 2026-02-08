@@ -1,3 +1,4 @@
+import dotenv from 'dotenv'
 import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -5,6 +6,7 @@ import { createServer } from 'http'
 import { readFileSync, statSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
+import { getDggConfig, getPlatformUrls } from './envConfig'
 import { ChatWebSocket } from './chatWebSocket'
 import { LiveWebSocket } from './liveWebSocket'
 import { mentionCache } from './mentionCache'
@@ -27,6 +29,43 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // │
 // Set APP_ROOT to project root (one level up from dist-electron)
 process.env.APP_ROOT = path.join(__dirname, '..')
+
+// Load env: .env first, then .env.development overrides when NODE_ENV=development
+const appRoot = process.env.APP_ROOT
+if (appRoot) {
+  dotenv.config({ path: path.join(appRoot, '.env') })
+  if (process.env.NODE_ENV === 'development') {
+    dotenv.config({ path: path.join(appRoot, '.env.development'), override: true })
+  }
+}
+
+const dggConfig = getDggConfig()
+const platformUrls = getPlatformUrls()
+
+/** Serializable app config for renderer (DGG URLs + platform base URLs). */
+export function getAppConfigForRenderer() {
+  return {
+    dgg: {
+      baseUrl: dggConfig.baseUrl,
+      loginUrl: dggConfig.loginUrl,
+      emotesJsonUrl: dggConfig.emotesJsonUrl,
+      emotesCssUrl: dggConfig.emotesCssUrl,
+      flairsJsonUrl: dggConfig.flairsJsonUrl,
+      flairsCssUrl: dggConfig.flairsCssUrl,
+    },
+    platformUrls: {
+      dgg: platformUrls.dgg,
+      destiny: platformUrls.destiny,
+      youtube: platformUrls.youtube,
+      kick: platformUrls.kick,
+      twitch: platformUrls.twitch,
+      twitter: platformUrls.twitter,
+      reddit: platformUrls.reddit,
+    },
+  }
+}
+
+ipcMain.handle('get-app-config', () => getAppConfigForRenderer())
 
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
@@ -169,9 +208,9 @@ async function getCookiesForUrl(url: string): Promise<string> {
       return cookieString
     }
     
-    // For destiny.gg, include cookies from www and chat subdomains so API requests have full session
-    if (hostname.includes('destiny.gg')) {
-      const dggDomains = ['www.destiny.gg', 'chat.destiny.gg', '.destiny.gg']
+    // For DGG (destiny.gg or configured backend), include cookies from configured cookie domains
+    if (dggConfig.cookieDomains.some((d) => d === hostname || (d.startsWith('.') && (hostname === d.slice(1) || hostname.endsWith('.' + d.slice(1)))))) {
+      const dggDomains = dggConfig.cookieDomains
       const allCookies: Electron.Cookie[] = []
       for (const domain of dggDomains) {
         try {
@@ -861,14 +900,13 @@ function createWindow() {
     }
   )
 
-  // Destiny.gg embeds (e.g. chat embed)
+  // DGG embeds (e.g. chat embed) – URLs from config
   session.webRequest.onHeadersReceived(
     {
       urls: [
-        'https://www.destiny.gg/*',
-        'https://destiny.gg/*',
-        'https://chat.destiny.gg/*',
-      ]
+        dggConfig.baseUrl + '/*',
+        ...dggConfig.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d + '/*'),
+      ],
     },
     (details, callback) => {
       console.log(`[Main Process] Modified CSP for Destiny: ${details.url.substring(0, 80)}`)
@@ -2501,14 +2539,16 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
 })
 
 // Connections / Accounts: set cookies from pasted string (per platform). Uses persist:main so embeds and chat use them.
-const CONNECTIONS_PLATFORMS: Record<string, string> = {
-  dgg: 'https://www.destiny.gg',
-  destiny: 'https://www.destiny.gg',
-  youtube: 'https://www.youtube.com',
-  kick: 'https://kick.com',
-  twitch: 'https://www.twitch.tv',
-  twitter: 'https://twitter.com',
-  reddit: 'https://www.reddit.com',
+function getConnectionsPlatforms(): Record<string, string> {
+  return {
+    dgg: platformUrls.dgg,
+    destiny: platformUrls.destiny,
+    youtube: platformUrls.youtube,
+    kick: platformUrls.kick,
+    twitch: platformUrls.twitch,
+    twitter: platformUrls.twitter,
+    reddit: platformUrls.reddit,
+  }
 }
 
 function parseCookieString(cookieString: string): Array<{ name: string; value: string }> {
@@ -2555,7 +2595,8 @@ ipcMain.handle(
   ) => {
   try {
     const platform = String(payload?.platform || '').toLowerCase().trim()
-    const baseUrl = CONNECTIONS_PLATFORMS[platform] || CONNECTIONS_PLATFORMS[platform === 'dgg' ? 'destiny' : platform]
+    const platforms = getConnectionsPlatforms()
+    const baseUrl = platforms[platform] || platforms[platform === 'dgg' ? 'destiny' : platform]
     if (!baseUrl) {
       return { success: false, error: `Unknown platform: ${platform}. Use one of: dgg, youtube, kick, twitch, twitter, reddit.` }
     }
@@ -2592,14 +2633,9 @@ ipcMain.handle(
   }
 })
 
-// Domains that "Delete all sessions" clears. Cookies from other domains (e.g. googlevideo.com, ytimg.com)
-// survive and can reappear after restart—that's why you may still see ~7 cookies; they're from domains
-// we don't clear. Use "Clear entire cookie store" to remove every cookie in the partition.
+// Domains that "Delete all sessions" clears. DGG domains from config; others fixed.
 const CONNECTIONS_CLEAR_DOMAINS = [
-  'destiny.gg',
-  'www.destiny.gg',
-  'chat.destiny.gg',
-  '.destiny.gg',
+  ...dggConfig.cookieDomains,
   'youtube.com',
   'www.youtube.com',
   '.youtube.com',
@@ -2713,9 +2749,12 @@ ipcMain.handle('connections-clear-entire-cookie-store', async () => {
   }
 })
 
-// URLs used to read cookies per platform (persist:main session). Used by Connections modal to show current session.
+// URLs used to read cookies per platform (persist:main session). DGG from config.
 const CONNECTIONS_GET_COOKIE_URLS: Record<string, string[]> = {
-  dgg: ['https://www.destiny.gg', 'https://destiny.gg', 'https://chat.destiny.gg'],
+  dgg: [
+    dggConfig.baseUrl,
+    ...dggConfig.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d),
+  ],
   youtube: ['https://www.youtube.com', 'https://youtube.com', 'https://www.google.com', 'https://google.com'],
   kick: ['https://www.kick.com', 'https://kick.com', 'https://web.kick.com'],
   twitch: ['https://www.twitch.tv', 'https://twitch.tv'],
@@ -2830,11 +2869,11 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
       twitter: 'https://twitter.com/i/flow/login',
       tiktok: 'https://www.tiktok.com/login',
       reddit: 'https://www.reddit.com/login',
-      destiny: 'https://www.destiny.gg/login',
-      dgg: 'https://www.destiny.gg/login',
-      youtube: 'https://www.youtube.com',
-      kick: 'https://kick.com',
-      twitch: 'https://www.twitch.tv',
+      destiny: dggConfig.loginUrl,
+      dgg: dggConfig.loginUrl,
+      youtube: platformUrls.youtube,
+      kick: platformUrls.kick,
+      twitch: platformUrls.twitch,
     }
 
     const url = loginUrls[service.toLowerCase()] || 'https://www.google.com'
@@ -2928,7 +2967,7 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
 ipcMain.handle('chat-websocket-connect', async (_event) => {
   try {
     if (!chatWebSocket) {
-      chatWebSocket = new ChatWebSocket()
+      chatWebSocket = new ChatWebSocket(dggConfig.chatWssUrl, dggConfig.chatOrigin)
       
       // Helper function to safely send messages to renderer
       const safeSend = (channel: string, ...args: any[]) => {
@@ -3122,11 +3161,11 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
     }
 
     if (!chatWebSocket.isConnected()) {
-      const cookieStr = await getCookiesForUrl('https://www.destiny.gg')
+      const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
       chatWebSocket.connect({
         headers: {
           Cookie: cookieStr,
-          Origin: 'https://www.destiny.gg',
+          Origin: dggConfig.chatOrigin,
         },
       })
     }
@@ -3186,8 +3225,6 @@ ipcMain.handle('chat-websocket-cast-poll-vote', async (_event, payload: { option
   return { success: sent }
 })
 
-const DGG_ORIGIN = 'https://www.destiny.gg'
-
 /** Send a DGG whisper via the chat WebSocket: PRIVMSG {"nick":"<recipient>","data":"<message>"}. */
 ipcMain.handle('dgg-send-whisper', async (_event, payload: { recipient: string; message: string }) => {
   const recipient = typeof payload?.recipient === 'string' ? payload.recipient.trim() : ''
@@ -3225,15 +3262,15 @@ ipcMain.handle('dgg-send-whisper', async (_event, payload: { recipient: string; 
 /** GET https://www.destiny.gg/api/messages/unread — returns list of unread private message summaries. */
 ipcMain.handle('dgg-messages-unread', async (_event) => {
   try {
-    const cookieStr = await getCookiesForUrl(DGG_ORIGIN)
+    const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
     if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
-    const res = await fetch(`${DGG_ORIGIN}/api/messages/unread`, {
+    const res = await fetch(`${dggConfig.baseUrl}${dggConfig.apiUnread}`, {
       method: 'GET',
       headers: {
         Cookie: cookieStr,
         Accept: 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-        Referer: `${DGG_ORIGIN}/`,
+        Referer: `${dggConfig.baseUrl}/`,
       },
       redirect: 'follow',
     })
@@ -3251,16 +3288,16 @@ ipcMain.handle('dgg-messages-inbox', async (_event, payload: { username: string 
   const username = typeof payload?.username === 'string' ? payload.username.trim() : ''
   if (!username) return { success: false, error: 'Missing username', data: null }
   try {
-    const cookieStr = await getCookiesForUrl(DGG_ORIGIN)
+    const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
     if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
     const encoded = encodeURIComponent(username)
-    const res = await fetch(`${DGG_ORIGIN}/api/messages/usr/${encoded}/inbox`, {
+    const res = await fetch(`${dggConfig.baseUrl}${dggConfig.apiInboxPath}/${encoded}/inbox`, {
       method: 'GET',
       headers: {
         Cookie: cookieStr,
         Accept: 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-        Referer: `${DGG_ORIGIN}/`,
+        Referer: `${dggConfig.baseUrl}/`,
       },
       redirect: 'follow',
     })
@@ -3288,7 +3325,7 @@ ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platfor
 ipcMain.handle('live-websocket-connect', async (_event) => {
   try {
     if (!liveWebSocket) {
-      liveWebSocket = new LiveWebSocket()
+      liveWebSocket = new LiveWebSocket(dggConfig.liveWssUrl, dggConfig.liveOrigin)
 
       const safeSend = (channel: string, ...args: any[]) => {
         try {

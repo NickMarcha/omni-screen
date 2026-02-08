@@ -38,9 +38,16 @@ export interface ChatPinMessage extends ChatMessage {
   uuid: string
 }
 
+/** Unified history item (preserves order of MSG and BROADCAST in HISTORY array). */
+export type ChatHistoryItem =
+  | { type: 'MSG'; message: ChatMessage }
+  | { type: 'BROADCAST'; broadcast: ChatBroadcastEvent['broadcast'] }
+
 export interface ChatHistoryMessage {
   type: 'HISTORY'
   messages: ChatMessage[]
+  /** When set, includes both MSG and BROADCAST in chronological order for correct render. */
+  items?: ChatHistoryItem[]
 }
 
 export interface ChatUserEvent {
@@ -264,7 +271,8 @@ export type ChatWebSocketEvent =
   | ChatBroadcastEvent
   | { type: 'MSG'; message: ChatMessage }
 
-const DESTINY_ORIGIN = 'https://www.destiny.gg'
+/** Default origin when not provided (e.g. from env config). */
+const DEFAULT_ORIGIN = 'https://www.destiny.gg'
 
 export interface ChatWebSocketConnectOptions {
   /** Request headers (Cookie, Origin) for authenticated connection. Uses persist:main session. */
@@ -287,7 +295,10 @@ export class ChatWebSocket extends EventEmitter {
   /** Stored headers (Cookie, Origin) for reconnects so session is preserved. */
   private connectionHeaders: Record<string, string> | null = null
 
-  constructor(url: string = 'wss://chat.destiny.gg/ws') {
+  constructor(
+    url: string = 'wss://chat.destiny.gg/ws',
+    private readonly origin: string = DEFAULT_ORIGIN
+  ) {
     super()
     this.url = url
   }
@@ -311,11 +322,11 @@ export class ChatWebSocket extends EventEmitter {
 
     const headers: Record<string, string> = {
       ...(this.connectionHeaders ?? {}),
-      Origin: this.connectionHeaders?.Origin ?? this.connectionHeaders?.origin ?? DESTINY_ORIGIN,
+      Origin: this.connectionHeaders?.Origin ?? this.connectionHeaders?.origin ?? this.origin,
     }
 
     try {
-      this.ws = new WebSocket(this.url, [], { headers, origin: DESTINY_ORIGIN })
+      this.ws = new WebSocket(this.url, [], { headers, origin: this.origin })
 
       // Set connection timeout
       this.connectionTimeout = setTimeout(() => {
@@ -518,13 +529,15 @@ export class ChatWebSocket extends EventEmitter {
             const messagesArray = JSON.parse(historyMatch[1]) as string[]
             console.log(`[ChatWebSocket] Parsed HISTORY array with ${messagesArray.length} items`)
             const parsedMessages: ChatMessage[] = []
-            
+            const parsedItems: ChatHistoryItem[] = []
+
             messagesArray.forEach(msgStr => {
               try {
                 if (msgStr.startsWith('MSG ')) {
                   try {
                     const msgData = JSON.parse(msgStr.substring(4)) as ChatMessage
                     parsedMessages.push(msgData)
+                    parsedItems.push({ type: 'MSG', message: msgData })
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse MSG in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
                   }
@@ -652,6 +665,7 @@ export class ChatWebSocket extends EventEmitter {
                 } else if (msgStr.startsWith('BROADCAST ')) {
                   try {
                     const broadcastData = JSON.parse(msgStr.substring('BROADCAST '.length)) as ChatBroadcastEvent['broadcast']
+                    parsedItems.push({ type: 'BROADCAST', broadcast: broadcastData })
                     this.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
                   } catch (e) {
                     console.error('[ChatWebSocket] Failed to parse BROADCAST in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
@@ -721,9 +735,13 @@ export class ChatWebSocket extends EventEmitter {
               }
             })
 
-            if (parsedMessages.length > 0) {
-              console.log(`[ChatWebSocket] Emitting history event with ${parsedMessages.length} messages`)
-              this.emit('history', { type: 'HISTORY', messages: parsedMessages } as ChatHistoryMessage)
+            if (parsedMessages.length > 0 || parsedItems.length > 0) {
+              console.log(`[ChatWebSocket] Emitting history event with ${parsedMessages.length} messages, ${parsedItems.length} items`)
+              this.emit('history', {
+                type: 'HISTORY',
+                messages: parsedMessages,
+                items: parsedItems.length > 0 ? parsedItems : undefined,
+              } as ChatHistoryMessage)
             } else {
               console.log('[ChatWebSocket] No messages parsed from HISTORY, skipping history event')
             }

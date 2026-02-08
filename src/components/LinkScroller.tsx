@@ -2354,16 +2354,19 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [])
   
-  // Fetch emotes and load CSS on mount
+  // Fetch emotes and load CSS on mount (URLs from main process config)
   useEffect(() => {
     const fetchEmotes = async () => {
       try {
-        // Load CSS file first (with cache-busting parameter)
-        const cssUrl = `https://cdn.destiny.gg/emotes/emotes.css?_=${Date.now()}`
+        const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
+        const dgg = config?.dgg ?? {
+          emotesCssUrl: 'https://cdn.destiny.gg/emotes/emotes.css',
+          emotesJsonUrl: 'https://cdn.destiny.gg/emotes/emotes.json',
+        }
+        const cacheKey = Date.now()
+        const cssUrl = `${dgg.emotesCssUrl}?_=${cacheKey}`
         await loadCSSOnce(cssUrl, 'destiny-emotes-css')
-        
-        // Then fetch emote data (no-store so new emotes are picked up, not cached)
-        const response = await fetch('https://cdn.destiny.gg/emotes/emotes.json', { cache: 'no-store' })
+        const response = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, { cache: 'no-store' })
         if (!response.ok) {
           throw new Error(`Failed to fetch emotes: ${response.status}`)
         }
