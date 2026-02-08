@@ -673,6 +673,101 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const saved = Number(localStorage.getItem('omni-screen:chat-pane-width'))
     return Number.isFinite(saved) && saved > 0 ? saved : 420
   })
+  const [combinedChatOverlayMode, setCombinedChatOverlayMode] = useState<boolean>(() => {
+    return localStorage.getItem('omni-screen:combined-chat-overlay-mode') === '1'
+  })
+  const [combinedChatOverlayOpacity, setCombinedChatOverlayOpacity] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('omni-screen:combined-chat-overlay-opacity'))
+    return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 0.85
+  })
+  const [overlayOpacityDropdownOpen, setOverlayOpacityDropdownOpen] = useState(false)
+  const overlayOpacityDropdownRef = useRef<HTMLDivElement | null>(null)
+  const [overlayMessagesClickThrough, setOverlayMessagesClickThrough] = useState<boolean>(() => {
+    return localStorage.getItem('omni-screen:overlay-messages-click-through') === '1'
+  })
+  const [overlayHeaderVisible, setOverlayHeaderVisible] = useState(true)
+  const overlayHeaderHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const leftChatContainerRef = useRef<HTMLDivElement | null>(null)
+  const rightChatContainerRef = useRef<HTMLDivElement | null>(null)
+  const overlayChatContainerRef = useRef<HTMLDivElement | null>(null)
+  const chatOverlayInputContainerRef = useRef<HTMLDivElement | null>(null)
+  const overlayPortalClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [chatPortalTarget, setChatPortalTarget] = useState<HTMLDivElement | null>(null)
+  const combinedChatContextMenuRef = useRef<{ openContextMenu: (e: React.MouseEvent) => void } | null>(null)
+  useEffect(() => {
+    if (!chatPaneOpen) {
+      setChatPortalTarget(null)
+      return
+    }
+    const el = combinedChatOverlayMode
+      ? overlayChatContainerRef.current
+      : chatPaneSide === 'left'
+        ? leftChatContainerRef.current
+        : rightChatContainerRef.current
+    // When in overlay mode, avoid setting target to null if the overlay ref isn't set yet
+    // (ref is set in a callback after the same commit), so we don't briefly unmount the chat and cause a flash.
+    if (el) setChatPortalTarget(el)
+    else if (!combinedChatOverlayMode) setChatPortalTarget(null)
+  }, [chatPaneOpen, combinedChatOverlayMode, chatPaneSide])
+
+  // Debug: set to true to log when chat portal target or pane state changes (helps track chat flash/disappear).
+  const DEBUG_CHAT_PORTAL = false
+  useEffect(() => {
+    if (!DEBUG_CHAT_PORTAL) return
+    console.log('[OmniScreen:chat-portal]', {
+      chatPaneOpen,
+      combinedChatOverlayMode,
+      chatPaneSide,
+      hasPortalTarget: !!chatPortalTarget,
+      portalTargetId: chatPortalTarget?.id ?? null,
+    })
+  }, [chatPaneOpen, combinedChatOverlayMode, chatPaneSide, chatPortalTarget])
+
+  const setLeftChatContainerRef = useCallback((el: HTMLDivElement | null) => {
+    leftChatContainerRef.current = el
+    if (!combinedChatOverlayMode && chatPaneSide === 'left' && el) setChatPortalTarget(el)
+  }, [combinedChatOverlayMode, chatPaneSide])
+  const setRightChatContainerRef = useCallback((el: HTMLDivElement | null) => {
+    rightChatContainerRef.current = el
+    if (!combinedChatOverlayMode && chatPaneSide === 'right' && el) setChatPortalTarget(el)
+  }, [combinedChatOverlayMode, chatPaneSide])
+  useEffect(() => {
+    if (!overlayOpacityDropdownOpen) return
+    const onPointerDown = (e: PointerEvent) => {
+      const el = overlayOpacityDropdownRef.current
+      if (el && !el.contains(e.target as Node)) setOverlayOpacityDropdownOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [overlayOpacityDropdownOpen])
+
+  useEffect(() => {
+    if (!combinedChatOverlayMode) setOverlayHeaderVisible(true)
+  }, [combinedChatOverlayMode])
+
+  useEffect(() => {
+    return () => {
+      if (overlayHeaderHideTimeoutRef.current) clearTimeout(overlayHeaderHideTimeoutRef.current)
+      if (overlayPortalClearTimeoutRef.current) clearTimeout(overlayPortalClearTimeoutRef.current)
+    }
+  }, [])
+
+  const setOverlayChatContainerRef = useCallback((el: HTMLDivElement | null) => {
+    overlayChatContainerRef.current = el
+    if (overlayPortalClearTimeoutRef.current) {
+      clearTimeout(overlayPortalClearTimeoutRef.current)
+      overlayPortalClearTimeoutRef.current = null
+    }
+    if (el) {
+      setChatPortalTarget(el)
+    } else if (combinedChatOverlayMode) {
+      // Defer clearing portal target so we don't flash when ref is briefly null during embed/grid updates.
+      overlayPortalClearTimeoutRef.current = setTimeout(() => {
+        overlayPortalClearTimeoutRef.current = null
+        if (!overlayChatContainerRef.current) setChatPortalTarget(null)
+      }, 0)
+    }
+  }, [combinedChatOverlayMode])
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
   const [combinedDggUserCount, setCombinedDggUserCount] = useState(0)
   const pinnedEmbedsRef = useRef<Map<string, LiveEmbed>>(pinnedEmbeds)
@@ -1082,6 +1177,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
       localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
       localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
+      localStorage.setItem('omni-screen:combined-chat-overlay-mode', combinedChatOverlayMode ? '1' : '0')
+      localStorage.setItem('omni-screen:combined-chat-overlay-opacity', String(combinedChatOverlayOpacity))
+      localStorage.setItem('omni-screen:overlay-messages-click-through', overlayMessagesClickThrough ? '1' : '0')
       localStorage.setItem('omni-screen:lite-link-scroller-max-messages', String(liteLinkScrollerSettings.maxMessages))
       localStorage.setItem('omni-screen:lite-link-scroller-auto-scroll', liteLinkScrollerSettings.autoScroll ? '1' : '0')
       localStorage.setItem('omni-screen:lite-link-scroller-autoplay', liteLinkScrollerSettings.autoplay ? '1' : '0')
@@ -1108,6 +1206,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     dggFocusKeybind,
     chatPaneWidth,
     chatPaneSide,
+    combinedChatOverlayMode,
+    combinedChatOverlayOpacity,
+    overlayMessagesClickThrough,
     liteLinkScrollerSettings,
   ])
 
@@ -2164,6 +2265,42 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     <div className="h-full min-h-0 bg-base-100 text-base-content flex flex-col overflow-hidden">
       {/* Main layout */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Single CombinedChat instance portaled into active container (avoids flash when toggling overlay) */}
+        {chatPaneOpen &&
+          chatPortalTarget &&
+          createPortal(
+            <CombinedChat
+              enableDgg={combinedIncludeDgg}
+              showDggInput={showDggInput}
+              getEmbedDisplayName={getEmbedDisplayName}
+              getEmbedColor={getEmbedColor}
+              getEmbedLabelHidden={getEmbedLabelHidden}
+              dggLabelColor={dggLabelColorOverride || undefined}
+              dggLabelText={dggLabelText}
+              onOpenLink={handleChatOpenLink}
+              maxMessages={combinedMaxMessages}
+              maxMessagesScroll={combinedMaxMessagesScroll}
+              showTimestamps={combinedShowTimestamps}
+              showSourceLabels={combinedShowLabels}
+              showPlatformIcons={combinedShowPlatformIcons}
+              sortMode={combinedSortMode}
+              highlightTerms={combinedHighlightTerms}
+              pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
+              showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
+              contextMenuConfig={combinedChatContextMenuConfig}
+              onCountChange={setCombinedMsgCount}
+              onDggUserCountChange={setCombinedDggUserCount}
+              dggInputRef={dggInputRef}
+              dggChatActionsRef={dggChatActionsRef}
+              focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
+              overlayMode={combinedChatOverlayMode}
+              overlayOpacity={combinedChatOverlayOpacity}
+              messagesClickThrough={combinedChatOverlayMode ? overlayMessagesClickThrough : false}
+              inputContainerRef={combinedChatOverlayMode ? chatOverlayInputContainerRef : undefined}
+              contextMenuRef={combinedChatContextMenuRef}
+            />,
+            chatPortalTarget
+          )}
         {/* Lite link scroller on left when chat is on the right (opposite side of chat) */}
         {liteLinkScrollerOpen && chatPaneSide === 'right' && (
           <div className="flex-shrink-0 min-h-0 flex flex-col overflow-hidden border-r border-base-300" style={{ width: 380 }}>
@@ -2185,19 +2322,41 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           </div>
         )}
 
-        {/* Left pane */}
-        {chatPaneOpen && chatPaneSide === 'left' && (
+        {/* Left pane (hidden when chat overlay or side right; container kept in DOM for portal stability) */}
+        {chatPaneOpen && (
           <>
-            <div className="bg-base-200 border-r border-base-300 min-h-0 flex flex-col overflow-hidden" style={{ width: chatPaneWidth }}>
+            <div
+              className="bg-base-200 border-r border-base-300 min-h-0 flex flex-col overflow-hidden"
+              style={{
+                width: chatPaneWidth,
+                display: combinedChatOverlayMode || chatPaneSide !== 'left' ? 'none' : undefined,
+              }}
+            >
               <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                {/* Chat settings pane */}
-                <div className="p-2 border-b border-base-300">
+                <div
+                  className="p-2 border-b border-base-300"
+                  onContextMenu={(e) => {
+                    if (combinedChatContextMenuConfig) {
+                      e.preventDefault()
+                      combinedChatContextMenuRef.current?.openContextMenu(e)
+                    }
+                  }}
+                >
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
                       {combinedHeaderText}
                     </div>
                     <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
                       {combinedMsgCount} msgs · {combinedDggUserCount} users
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost"
+                        title="Overlay on embeds"
+                        onClick={() => setCombinedChatOverlayMode(true)}
+                        aria-label="Overlay chat on embeds"
+                      >
+                        ⊞
+                      </button>
                       <button
                         type="button"
                         className="btn btn-xs btn-ghost btn-circle"
@@ -2210,41 +2369,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     </div>
                   </div>
                 </div>
-
-                <div className="flex-1 min-h-0 overflow-hidden">
-                  <CombinedChat
-                    enableDgg={combinedIncludeDgg}
-                    showDggInput={showDggInput}
-                    getEmbedDisplayName={getEmbedDisplayName}
-                    getEmbedColor={getEmbedColor}
-                    getEmbedLabelHidden={getEmbedLabelHidden}
-                    dggLabelColor={dggLabelColorOverride || undefined}
-                    dggLabelText={dggLabelText}
-                    onOpenLink={handleChatOpenLink}
-                    maxMessages={combinedMaxMessages}
-                    maxMessagesScroll={combinedMaxMessagesScroll}
-                    showTimestamps={combinedShowTimestamps}
-                    showSourceLabels={combinedShowLabels}
-                    showPlatformIcons={combinedShowPlatformIcons}
-                    sortMode={combinedSortMode}
-                    highlightTerms={combinedHighlightTerms}
-                    pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
-                    showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
-                    contextMenuConfig={combinedChatContextMenuConfig}
-                    onCountChange={setCombinedMsgCount}
-                    onDggUserCountChange={setCombinedDggUserCount}
-                    dggInputRef={dggInputRef}
-                    dggChatActionsRef={dggChatActionsRef}
-                    focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
-                  />
-                </div>
+                <div ref={setLeftChatContainerRef} className="flex-1 min-h-0 overflow-hidden" />
               </div>
             </div>
-            <div
-              className="w-1 cursor-col-resize bg-base-300 hover:bg-base-content/20 transition-colors"
-              onPointerDown={startResize}
-              title="Drag to resize"
-            />
+            {!combinedChatOverlayMode && chatPaneSide === 'left' && (
+              <div
+                className="w-1 cursor-col-resize bg-transparent hover:bg-base-content/20 transition-colors"
+                onPointerDown={startResize}
+                title="Drag to resize"
+              />
+            )}
           </>
         )}
 
@@ -2281,9 +2415,204 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 )
               })()
             )}
+
+            {/* Combined chat overlay (hidden when !overlay; container kept in DOM for portal stability). key keeps React from replacing this node when grid/embeds update. When click-through on: panel has pointer-events-none so all mouse goes to embeds; header and resize handle use pointer-events-auto to stay interactive. Header auto-hides after pointer leaves when click-through is off. */}
+            {chatPaneOpen && (
+              <div
+                key="combined-chat-overlay"
+                className={`absolute top-0 bottom-0 z-20 flex flex-col ${combinedChatOverlayMode && overlayMessagesClickThrough ? 'pointer-events-none' : ''} ${combinedChatOverlayMode ? '' : `border-base-300 shadow-lg ${chatPaneSide === 'right' ? 'border-l' : 'border-r'}`}`}
+                style={{
+                  width: chatPaneWidth,
+                  ...(chatPaneSide === 'right' ? { right: 0 } : { left: 0 }),
+                  display: combinedChatOverlayMode ? undefined : 'none',
+                }}
+                onPointerEnter={() => {
+                  if (overlayHeaderHideTimeoutRef.current) {
+                    clearTimeout(overlayHeaderHideTimeoutRef.current)
+                    overlayHeaderHideTimeoutRef.current = null
+                  }
+                  setOverlayHeaderVisible(true)
+                }}
+                onPointerLeave={() => {
+                  if (combinedChatOverlayMode && !overlayMessagesClickThrough) {
+                    overlayHeaderHideTimeoutRef.current = setTimeout(() => {
+                      setOverlayHeaderVisible(false)
+                      overlayHeaderHideTimeoutRef.current = null
+                    }, 2500)
+                  }
+                }}
+              >
+                {/* Resize handle on inner edge when overlay mode: grab to resize chat width. pointer-events-auto so it stays clickable when click-through is on. */}
+                {combinedChatOverlayMode && (
+                  <div
+                    className={`absolute top-0 bottom-0 z-30 w-1 cursor-col-resize bg-transparent hover:bg-base-content/20 transition-colors pointer-events-auto ${chatPaneSide === 'right' ? 'left-0' : 'right-0'}`}
+                    onPointerDown={startResize}
+                    title="Drag to resize"
+                    aria-label="Resize chat width"
+                  />
+                )}
+                <div
+                  className={`p-2 border-b border-base-300 flex items-center gap-2 flex-wrap bg-base-200 pointer-events-auto shrink-0 transition-opacity duration-200 ${combinedChatOverlayMode && !overlayHeaderVisible ? 'opacity-0' : 'opacity-100'}`}
+                  onContextMenu={(e) => {
+                    if (combinedChatContextMenuConfig) {
+                      e.preventDefault()
+                      combinedChatContextMenuRef.current?.openContextMenu(e)
+                    }
+                  }}
+                >
+                  <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
+                    {combinedHeaderText}
+                  </div>
+                  <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1 flex-wrap">
+                    {combinedMsgCount} msgs · {combinedDggUserCount} users
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost"
+                      title={combinedChatOverlayMode ? 'Switch to side panel' : 'Overlay on embeds'}
+                      onClick={() => setCombinedChatOverlayMode((v) => !v)}
+                      aria-label="Toggle overlay mode"
+                    >
+                      {combinedChatOverlayMode ? '📌' : '⊞'}
+                    </button>
+                    <div className="relative" ref={overlayOpacityDropdownRef}>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-ghost text-base-content/60 min-w-0 p-0.5"
+                        title="Chat overlay opacity"
+                        aria-label="Overlay opacity"
+                        aria-expanded={overlayOpacityDropdownOpen}
+                        onClick={() => setOverlayOpacityDropdownOpen((v) => !v)}
+                      >
+                        ⬜
+                      </button>
+                      {overlayOpacityDropdownOpen && (
+                        <div className="absolute top-full left-0 mt-1 py-1.5 px-1.5 rounded-lg border border-base-300 bg-base-200 shadow-lg z-[100] flex flex-col items-center gap-1 min-w-0 h-36">
+                          <span className="text-[10px] text-base-content/50 shrink-0">{Math.round(combinedChatOverlayOpacity * 100)}%</span>
+                          <div className="flex-1 min-h-0 w-6 flex items-center justify-center self-stretch">
+                            <div className="h-full aspect-square flex items-center justify-center">
+                              <input
+                                type="range"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={combinedChatOverlayOpacity}
+                                onChange={(e) => setCombinedChatOverlayOpacity(Number(e.target.value))}
+                                className="range range-xs origin-center -rotate-90 w-full h-4 max-w-none"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost text-base-content/60"
+                      title={overlayMessagesClickThrough ? 'Click through to video (on) — click to disable' : 'Click through to video — click to allow interacting with video underneath'}
+                      aria-label={overlayMessagesClickThrough ? 'Disable click through' : 'Enable click through'}
+                      onClick={() => setOverlayMessagesClickThrough((v) => !v)}
+                    >
+                      {overlayMessagesClickThrough ? '🔓' : '🔒'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost btn-circle"
+                      title="Close chat"
+                      onClick={() => setChatPaneOpen(false)}
+                      aria-label="Close chat"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div ref={setOverlayChatContainerRef} className="flex-1 min-h-0 overflow-hidden flex flex-col" />
+              </div>
+            )}
           </div>
 
-          {/* Embeds dock (inside center column; position by dockAtTop) */}
+          {/* Embeds dock (when overlay + chat open: dock and chat input in one row; input side matches chat side). z-20 so it paints above the grid (z-10) and we don't see the background image through the input strip. */}
+          {combinedChatOverlayMode && chatPaneOpen ? (
+            <div className={`relative z-20 flex flex-none items-stretch min-h-0 bg-base-200 ${dockAtTop ? 'order-0' : 'order-1'}`} style={{ minHeight: 'var(--embed-dock-height)' }}>
+              <div className={`flex-1 min-w-0 min-h-0 flex ${chatPaneSide === 'left' ? 'flex-row-reverse' : ''}`}>
+                <div
+                  ref={dockBarRef}
+                  className={[
+                    'embed-dock-bar relative z-20 flex items-center flex-1 min-w-0',
+                    cinemaMode ? `mt-0 bg-base-200 rounded-none gap-0 p-0 items-stretch ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}` : dockAtTop ? 'mb-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2' : 'mt-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
+                  ].join(' ')}
+                  onContextMenu={onDockBarContextMenu}
+                >
+                  <div className={`flex-1 min-w-0 min-h-0 ${cinemaMode ? 'self-stretch flex flex-col min-h-0' : ''}`}>
+                    <div ref={dockRef} className={`overflow-x-auto overflow-y-hidden whitespace-nowrap embed-dock-scroll ${cinemaMode ? 'py-0 h-full min-h-0 flex-1' : ''}`} onWheel={onDockWheel} style={{ overscrollBehaviorX: 'contain' as any }}>
+                      <div className={`flex items-center ${cinemaMode ? 'gap-0 h-full items-stretch' : 'gap-1'}`}>
+                        {dockItems.length === 0 ? (
+                          <div className={`text-xs text-base-content/60 ${cinemaMode ? 'px-0 py-0' : 'px-2 py-1'}`}>No embeds. Add a link or add a bookmarked streamer (when live).</div>
+                        ) : (
+                          dockItems.map((item) => {
+                            const itemId = getDockItemId(item)
+                            const keys = item.type === 'group' ? item.keys : [item.key]
+                            const firstKey = keys[0]
+                            const firstEmbed = combinedAvailableEmbeds.get(firstKey)
+                            const anyBanned = keys.some((k) => bannedEmbeds.get(k))
+                            const videoOn = keys.some((k) => selectedEmbedKeys.has(k))
+                            const chatOn = keys.some((k) => selectedEmbedChatKeys.has(k))
+                            const label = item.type === 'group' ? item.streamers.map((s) => s.nickname || 'Unnamed').join(', ') : (firstEmbed?.id ?? firstKey)
+                            const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId)
+                            const streamerColor = streamersForAccent[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamersForAccent[0].color) ? streamersForAccent[0].color : undefined
+                            const accent = streamerColor ?? (streamersForAccent.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName }))
+                            const active = videoOn || chatOn
+                            const activeText = textColorOn(accent)
+                            const isWatching = watchedEmbedKey != null && keys.includes(watchedEmbedKey)
+                            return (
+                              <div key={itemId} className={`flex items-center ${cinemaMode ? 'self-stretch' : ''}`}>
+                                <button
+                                  type="button"
+                                  ref={(el) => { const map = dockButtonRefs.current; if (el) map.set(itemId, el); else map.delete(itemId) }}
+                                  className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'} ${cinemaMode ? 'rounded-none border-0 self-stretch h-full min-h-0' : ''}`}
+                                  title={item.type === 'group' ? `${label} (${keys.length} embed${keys.length !== 1 ? 's' : ''})` : `${(firstEmbed?.platform || '').toLowerCase()}: ${firstEmbed?.mediaItem?.metadata?.title || firstKey}`}
+                                  onClick={() => toggleDockItemMaster(item)}
+                                  onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setDockHoverItemId(null); setDockHoverPinned(false); setDockItemContextMenu({ x: e.clientX, y: e.clientY, item }) }}
+                                  onMouseEnter={() => openDockHover(itemId)}
+                                  onMouseLeave={scheduleCloseDockHover}
+                                  style={active ? { backgroundColor: accent, borderColor: accent, color: activeText } : { borderColor: accent, color: accent }}
+                                >
+                                  {label}{isWatching ? ' 👀' : ''}
+                                </button>
+                              </div>
+                            )
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  {/* Same fixed controls as non-overlay dock - reusing same refs (pieChartButtonRef etc.) */}
+                  <div className={`embed-dock-controls flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1 self-stretch' : 'gap-2'}`}>
+                    <button type="button" ref={pieChartButtonRef} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="What's being watched (by platform)" aria-label="Show watch proportions" onMouseEnter={openPiePopup} onMouseLeave={scheduleClosePiePopup} onClick={() => setPieChartPinned((p) => !p)}>🥧</button>
+                    <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
+                      <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">➕</label>
+                      <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
+                        <input type="text" placeholder="Paste link or YouTube channel" className="input input-sm input-bordered w-full" id="omni-add-embed-input" disabled={ytChannelLoading} autoComplete="off" onKeyDown={async (e) => { if (e.key !== 'Enter') return; const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }} />
+                        <button type="button" className="btn btn-sm btn-primary" title="Add embed" disabled={ytChannelLoading} onClick={async () => { const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }}>{ytChannelLoading ? '…' : 'Add'}</button>
+                        {(pasteLinkError || ytChannelError) ? <div className="text-xs text-error">{pasteLinkError || ytChannelError}</div> : null}
+                      </div>
+                    </div>
+                    {!chatPaneOpen && <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane">💬</button>}
+                    {!liteLinkScrollerOpen && <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller">📜</button>}
+                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><span className="inline-block bg-base-content w-[2.1rem] h-[2.1rem]" style={{ maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }} aria-hidden /></button>
+                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute">{mute ? '🔇' : '🔉'}</button>
+                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none self-stretch h-full min-h-0' : ''}`} title="Cinema mode" onClick={() => setCinemaMode((v) => !v)} aria-label="Toggle cinema mode">📽️</button>
+                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Settings" onClick={() => setSettingsModalOpen(true)} aria-label="Open settings">⚙️</button>
+                    <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} onClick={onBackToMenu}>Back</button>
+                  </div>
+                </div>
+                <div
+                  ref={chatOverlayInputContainerRef}
+                  className={`chat-overlay-input-strip chat-overlay-input-strip-host flex-shrink-0 border-base-300 flex flex-col overflow-hidden min-h-0 ${chatPaneSide === 'left' ? 'border-r' : 'border-l'}`}
+                  style={{ width: chatPaneWidth, height: 'var(--embed-dock-height)', backgroundColor: 'var(--color-base-200)' }}
+                  data-omni-debug="overlay-input-strip"
+                />
+              </div>
+            </div>
+          ) : (
           <div
             ref={dockBarRef}
             className={[
@@ -2564,6 +2893,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
             </div>
           </div>
+          )}
 
           {/* Dock bar right-click context menu (above bar when bar at bottom, below when bar at top) */}
           {dockContextMenuAt && (() => {
@@ -3049,66 +3379,61 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         })()}
 
         {/* Right pane */}
-        {chatPaneOpen && chatPaneSide === 'right' && (
-          <>
-            <div
-              className="w-1 cursor-col-resize bg-base-300 hover:bg-base-content/20 transition-colors"
-              onPointerDown={startResize}
-              title="Drag to resize"
-            />
-            <div className="bg-base-200 border-l border-base-300 min-h-0 flex flex-col overflow-hidden" style={{ width: chatPaneWidth }}>
-              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                {/* Chat settings pane */}
-                <div className="p-2 border-b border-base-300">
-                  <div className="flex items-center gap-2">
-                    <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
-                      {combinedHeaderText}
-                    </div>
-                    <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
-                      {combinedMsgCount} msgs · {combinedDggUserCount} users
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-ghost btn-circle"
-                        title="Close chat"
-                        onClick={() => setChatPaneOpen(false)}
-                        aria-label="Close chat"
-                      >
-                        ×
-                      </button>
-                    </div>
+{chatPaneOpen && chatPaneSide === 'right' && !combinedChatOverlayMode && (
+          <div
+            className="w-1 cursor-col-resize bg-transparent hover:bg-base-content/20 transition-colors"
+            onPointerDown={startResize}
+            title="Drag to resize"
+          />
+        )}
+        {chatPaneOpen && (
+          <div
+            className="bg-base-200 border-l border-base-300 min-h-0 flex flex-col overflow-hidden"
+            style={{
+              width: chatPaneWidth,
+              display: combinedChatOverlayMode || chatPaneSide !== 'right' ? 'none' : undefined,
+            }}
+          >
+            <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+              <div
+                className="p-2 border-b border-base-300"
+                onContextMenu={(e) => {
+                  if (combinedChatContextMenuConfig) {
+                    e.preventDefault()
+                    combinedChatContextMenuRef.current?.openContextMenu(e)
+                  }
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
+                    {combinedHeaderText}
+                  </div>
+                  <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
+                    {combinedMsgCount} msgs · {combinedDggUserCount} users
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost"
+                      title="Overlay on embeds"
+                      onClick={() => setCombinedChatOverlayMode(true)}
+                      aria-label="Overlay chat on embeds"
+                    >
+                      ⊞
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost btn-circle"
+                      title="Close chat"
+                      onClick={() => setChatPaneOpen(false)}
+                      aria-label="Close chat"
+                    >
+                      ×
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex-1 min-h-0 overflow-hidden">
-                  <CombinedChat
-                    enableDgg={combinedIncludeDgg}
-                    showDggInput={showDggInput}
-                    getEmbedDisplayName={getEmbedDisplayName}
-                    getEmbedColor={getEmbedColor}
-                    getEmbedLabelHidden={getEmbedLabelHidden}
-                    dggLabelColor={dggLabelColorOverride || undefined}
-                    dggLabelText={dggLabelText}
-                    onOpenLink={handleChatOpenLink}
-                    maxMessages={combinedMaxMessages}
-                    maxMessagesScroll={combinedMaxMessagesScroll}
-                    showTimestamps={combinedShowTimestamps}
-                    showSourceLabels={combinedShowLabels}
-                    showPlatformIcons={combinedShowPlatformIcons}
-                    sortMode={combinedSortMode}
-                    highlightTerms={combinedHighlightTerms}
-                    pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
-                    showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
-                    contextMenuConfig={combinedChatContextMenuConfig}
-                    onCountChange={setCombinedMsgCount}
-                    onDggUserCountChange={setCombinedDggUserCount}
-                    dggInputRef={dggInputRef}
-                    dggChatActionsRef={dggChatActionsRef}
-                    focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
-                  />
-                </div>
               </div>
+              <div ref={setRightChatContainerRef} className="flex-1 min-h-0 overflow-hidden" />
             </div>
-          </>
+          </div>
         )}
       </div>
 

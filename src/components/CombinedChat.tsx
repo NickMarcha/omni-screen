@@ -957,10 +957,14 @@ function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string
     return raw ? renderTextWithLinks(raw, null, new Map(), onOpenLink) : ''
   }
 
-  const parts: (string | JSX.Element)[] = []
+  const parts: React.ReactNode[] = []
   runs.forEach((run, i) => {
     if ('text' in run && run.text) {
-      parts.push(renderTextWithLinks(run.text, null, new Map(), onOpenLink))
+      parts.push(
+        <Fragment key={`yt-txt-${i}`}>
+          {renderTextWithLinks(run.text, null, new Map(), onOpenLink)}
+        </Fragment>,
+      )
       return
     }
     if ('emojiId' in run && run.imageUrl) {
@@ -1045,6 +1049,11 @@ export default function CombinedChat({
   dggInputRef: dggInputRefProp,
   dggChatActionsRef: dggChatActionsRefProp,
   focusShortcutLabel,
+  overlayMode = false,
+  overlayOpacity = 0.85,
+  messagesClickThrough = false,
+  inputContainerRef,
+  contextMenuRef,
 }: {
   enableDgg: boolean
   /** When false, DGG chat input is hidden. When true, shown only when authenticated (ME received). */
@@ -1086,6 +1095,16 @@ export default function CombinedChat({
   dggChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
   /** Shortcut label for placeholder, e.g. "Ctrl + Space". */
   focusShortcutLabel?: string
+  /** When true, chat is overlaid on embed area; messages area uses semi-transparent background. */
+  overlayMode?: boolean
+  /** Opacity of the messages area background in overlay mode (0–1). Default 0.85. */
+  overlayOpacity?: number
+  /** When true in overlay mode, the messages area has pointer-events: none so clicks pass through to the video underneath. */
+  messagesClickThrough?: boolean
+  /** When set (e.g. in overlay mode), the input bar is portaled into this container (e.g. next to dock). */
+  inputContainerRef?: React.RefObject<HTMLDivElement | null>
+  /** When set, parent can call .openContextMenu(e) to show the same context menu as the message area (e.g. on header). */
+  contextMenuRef?: React.MutableRefObject<{ openContextMenu: (e: React.MouseEvent) => void } | null>
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [flairsList, setFlairsList] = useState<DggFlair[]>([])
@@ -1146,7 +1165,7 @@ export default function CombinedChat({
   const [contextMenuSelection, setContextMenuSelection] = useState<string | null>(null)
   /** Which parent menu item is hovered (shows that submenu). */
   const [contextMenuHover, setContextMenuHover] = useState<string | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const contextMenuDivRef = useRef<HTMLDivElement | null>(null)
   /** Error from last whisper send attempt (e.g. not logged in, chat not connected). */
   const [whisperSendError, setWhisperSendError] = useState<string | null>(null)
   /** When in list view: recipient for "send to new person" (combobox value; can be any username). */
@@ -1179,6 +1198,9 @@ export default function CombinedChat({
   /** Have we done the initial unread fetch when combined chat first loads. */
   const unreadFetchedRef = useRef(false)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  /** Show scrollbar briefly when user scrolls; used for auto-hide scrollbar. */
+  const [scrollbarVisible, setScrollbarVisible] = useState(false)
+  const scrollbarHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const totalUnread = useMemo(
     () => Object.values(unreadCounts).reduce((a, b) => a + b, 0),
@@ -1441,7 +1463,7 @@ export default function CombinedChat({
       if (e.key === 'Escape') closeContextMenu()
     }
     const onPointerDown = (e: MouseEvent) => {
-      const el = contextMenuRef.current
+      const el = contextMenuDivRef.current
       if (el && el.contains(e.target as Node)) return
       closeContextMenu()
     }
@@ -1452,6 +1474,28 @@ export default function CombinedChat({
       document.removeEventListener('pointerdown', onPointerDown)
     }
   }, [contextMenuAt, closeContextMenu])
+
+  // Clear scrollbar hide timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current)
+    }
+  }, [])
+
+  // Expose openContextMenu so parent (e.g. header) can open the same context menu on right-click
+  useEffect(() => {
+    if (!contextMenuRef) return
+    contextMenuRef.current = {
+      openContextMenu(e: React.MouseEvent) {
+        e.preventDefault()
+        setContextMenuSelection(null)
+        setContextMenuAt({ x: e.clientX, y: e.clientY })
+      },
+    }
+    return () => {
+      contextMenuRef.current = null
+    }
+  }, [contextMenuRef])
 
   const closeUserTooltip = useCallback(() => setUserTooltip(null), [])
 
@@ -2348,7 +2392,7 @@ export default function CombinedChat({
         } else {
           parts.push(...lineParts)
         }
-        if (lineIndex < lines.length - 1) parts.push('\n')
+        if (lineIndex < lines.length - 1) parts.push(<Fragment key={`nl-${key++}`}>{'\n'}</Fragment>)
       }
       return <>{parts}</>
     },
@@ -2475,8 +2519,129 @@ export default function CombinedChat({
       })
   }, [])
 
+  const inputBlock = (
+    <>
+      {enableDgg && showDggInput && !dggAuthenticated && (
+        <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
+          Login → Main menu → Connections
+        </div>
+      )}
+      {enableDgg && showDggInput && dggAuthenticated && (
+        <div className="flex flex-col gap-1 min-w-0 flex-none">
+          {privViewOpen && !activeWhisperUsername && (
+            <>
+              {whisperSendError && (
+                <div className="text-xs text-warning px-1" role="alert">
+                  {whisperSendError}
+                </div>
+              )}
+              <div className="relative min-w-0">
+                <input
+                  ref={composeRecipientInputRef}
+                  type="text"
+                  value={composeRecipient}
+                  onChange={(e) => { setComposeRecipient(e.target.value); setComposeRecipientDropdownOpen(true) }}
+                  onFocus={() => setComposeRecipientDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setComposeRecipientDropdownOpen(false), 150)}
+                  placeholder="Whisper To"
+                  className="input input-bordered input-sm w-full"
+                  autoComplete="off"
+                  aria-autocomplete="list"
+                  aria-expanded={composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0}
+                  aria-controls="compose-recipient-list"
+                  id="compose-recipient-input"
+                />
+                {composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0 && (
+                  <ul
+                    id="compose-recipient-list"
+                    role="listbox"
+                    className="absolute z-20 left-0 right-0 bottom-full mb-1 max-h-48 overflow-y-auto rounded-md border border-base-300 bg-base-100 shadow-lg py-1"
+                  >
+                    {composeRecipientSuggestions.map((nick) => (
+                      <li
+                        key={nick}
+                        role="option"
+                        className="px-3 py-2 cursor-pointer hover:bg-base-300 text-sm truncate"
+                        onMouseDown={(e) => { e.preventDefault(); setComposeRecipient(nick); setComposeRecipientDropdownOpen(false); composeRecipientInputRef.current?.blur() }}
+                      >
+                        {nick}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+          {dggPublicSendError && (
+            <div className="text-xs text-warning px-2 py-0.5" role="alert">
+              {dggPublicSendError}
+            </div>
+          )}
+          <div className="flex items-center gap-1 min-w-0 flex-1 min-h-[var(--embed-dock-height)] w-full" style={{ backgroundColor: 'var(--color-base-200)' }}>
+            <div className="flex-1 min-w-0">
+              <DggInputBar
+                ref={mergedDggInputRef}
+                value={dggInputValue}
+                onChange={setDggInputValue}
+                onSend={sendDggMessage}
+                onKeyDown={onDggInputKeyDown}
+                disabled={
+                  privViewOpen && !activeWhisperUsername
+                    ? !dggConnected || !composeRecipient.trim()
+                    : !dggConnected || (dggPublicChatDisabled && !activeWhisperUsername)
+                }
+                emotesMap={emotesMap}
+                dggNicks={dggNicks}
+                placeholder={
+                  activeWhisperUsername
+                    ? (dggConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
+                    : privViewOpen
+                      ? (dggConnected ? 'whisper message..' : 'Connecting...')
+                      : dggPublicChatDisabled
+                        ? 'Sub only mode — subscribers can type'
+                        : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
+                }
+                shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
+              />
+            </div>
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm shrink-0 min-w-0 w-8 h-8 p-0 flex items-center justify-center text-base relative ${(whisperUsernames.length > 0 || privViewOpen) ? 'opacity-100' : 'opacity-50'}`}
+              title={privViewOpen ? 'Back to chat' : totalUnread > 0 ? `Private messages (${totalUnread} unread)` : 'Private messages'}
+              aria-label={privViewOpen ? 'Back to chat' : 'Private messages'}
+              disabled={false}
+              onClick={() => {
+                setPrivViewOpen((prev) => {
+                  if (prev) {
+                    setActiveWhisperUsername(null)
+                    setInboxMessages(null)
+                    setWhisperSendError(null)
+                  }
+                  return !prev
+                })
+              }}
+            >
+              {totalUnread > 0 ? '📬' : '📫'}
+              {totalUnread > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[1rem] h-4 px-1 flex items-center justify-center text-[10px] font-medium rounded-full bg-primary text-primary-content" aria-hidden>
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      {overlayMode && inputContainerRef?.current && createPortal(
+        <div className="chat-overlay-input-strip h-full min-h-0 flex flex-col w-full" style={{ backgroundColor: 'var(--color-base-200)' }}>
+          {inputBlock}
+        </div>,
+        inputContainerRef.current
+      )}
       <div className="relative flex-1 min-h-0 flex flex-col">
         {enableDgg && pinnedMessage && !pinnedHidden && (
           <div className="absolute top-0 left-0 right-0 z-10 p-2 pointer-events-none">
@@ -2567,7 +2732,16 @@ export default function CombinedChat({
         )}
         <div
           ref={scrollerRef}
-          className={`flex-1 min-h-0 overflow-y-auto p-2 space-y-1 ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''}`}
+          className={`chat-messages-scroll flex-1 min-h-0 overflow-y-auto p-2 space-y-1 ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}
+          style={overlayMode ? { background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)` } : undefined}
+          onWheel={() => {
+            setScrollbarVisible(true)
+            if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current)
+            scrollbarHideTimeoutRef.current = setTimeout(() => {
+              scrollbarHideTimeoutRef.current = null
+              setScrollbarVisible(false)
+            }, 800)
+          }}
           onContextMenu={
             contextMenuConfig && !privViewOpen
               ? (e) => {
@@ -2818,16 +2992,22 @@ export default function CombinedChat({
                           })}
                         </span>
                       ) : null}
-                      <span
-                        className={`font-semibold hover:underline ${dggColorFlair ? `user ${dggColorFlair.name}` : ''}`}
-                        style={dggColorFlair ? undefined : { color: accent }}
-                      >
-                        {m.nick}
+                      <span className="inline-flex items-center gap-0">
+                        <span
+                          className={`font-semibold hover:underline ${dggColorFlair ? `user ${dggColorFlair.name}` : ''}`}
+                          style={dggColorFlair ? undefined : { color: accent }}
+                        >
+                          {m.nick}
+                        </span>
+                        {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
                       </span>
                     </>
                   ) : (
-                    <span className="font-semibold" style={{ color: accent }}>
-                      {m.nick}
+                    <span className="inline-flex items-center gap-0">
+                      <span className="font-semibold" style={{ color: accent }}>
+                        {m.nick}
+                      </span>
+                      {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
                     </span>
                   )}
                 </span>
@@ -2837,7 +3017,9 @@ export default function CombinedChat({
                       {renderDggMessageContent(m.content ?? '')}
                     </span>
                   ) : m.source === 'kick'
-                    ? renderKickContent(m.raw, onOpenLink)
+                    ? renderKickContent(m.raw, onOpenLink).map((node, i) => (
+                        <Fragment key={`kick-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${i}`}>{node}</Fragment>
+                      ))
                     : m.source === 'youtube'
                       ? renderYouTubeContent(m.raw, onOpenLink)
                       : renderTextWithLinks(m.content ?? '', null, new Map(), onOpenLink)}
@@ -2924,116 +3106,7 @@ export default function CombinedChat({
         )}
         </div>
       </div>
-      {enableDgg && showDggInput && !dggAuthenticated && (
-        <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
-          Login → Main menu → Connections
-        </div>
-      )}
-      {enableDgg && showDggInput && dggAuthenticated && (
-        <div className="flex flex-col gap-1 min-w-0 flex-none">
-          {privViewOpen && !activeWhisperUsername && (
-            <>
-              {whisperSendError && (
-                <div className="text-xs text-warning px-1" role="alert">
-                  {whisperSendError}
-                </div>
-              )}
-              <div className="relative min-w-0">
-                <input
-                  ref={composeRecipientInputRef}
-                  type="text"
-                  value={composeRecipient}
-                  onChange={(e) => { setComposeRecipient(e.target.value); setComposeRecipientDropdownOpen(true) }}
-                  onFocus={() => setComposeRecipientDropdownOpen(true)}
-                  onBlur={() => setTimeout(() => setComposeRecipientDropdownOpen(false), 150)}
-                  placeholder="Whisper To"
-                  className="input input-bordered input-sm w-full"
-                  autoComplete="off"
-                  aria-autocomplete="list"
-                  aria-expanded={composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0}
-                  aria-controls="compose-recipient-list"
-                  id="compose-recipient-input"
-                />
-                {composeRecipientDropdownOpen && composeRecipientSuggestions.length > 0 && (
-                  <ul
-                    id="compose-recipient-list"
-                    role="listbox"
-                    className="absolute z-20 left-0 right-0 bottom-full mb-1 max-h-48 overflow-y-auto rounded-md border border-base-300 bg-base-100 shadow-lg py-1"
-                  >
-                    {composeRecipientSuggestions.map((nick) => (
-                      <li
-                        key={nick}
-                        role="option"
-                        className="px-3 py-2 cursor-pointer hover:bg-base-300 text-sm truncate"
-                        onMouseDown={(e) => { e.preventDefault(); setComposeRecipient(nick); setComposeRecipientDropdownOpen(false); composeRecipientInputRef.current?.blur() }}
-                      >
-                        {nick}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
-          )}
-          {dggPublicSendError && (
-            <div className="text-xs text-warning px-2 py-0.5" role="alert">
-              {dggPublicSendError}
-            </div>
-          )}
-          <div className="flex items-center gap-1 min-w-0 flex-1">
-          <div className="flex-1 min-w-0">
-            <DggInputBar
-            ref={mergedDggInputRef}
-            value={dggInputValue}
-            onChange={setDggInputValue}
-            onSend={sendDggMessage}
-            onKeyDown={onDggInputKeyDown}
-            disabled={
-              privViewOpen && !activeWhisperUsername
-                ? !dggConnected || !composeRecipient.trim()
-                : !dggConnected || (dggPublicChatDisabled && !activeWhisperUsername)
-            }
-            emotesMap={emotesMap}
-            dggNicks={dggNicks}
-            placeholder={
-              activeWhisperUsername
-                ? (dggConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
-                : privViewOpen
-                  ? (dggConnected ? 'whisper message..' : 'Connecting...')
-                  : dggPublicChatDisabled
-                    ? 'Sub only mode — subscribers can type'
-                    : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
-            }
-            shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
-          />
-          </div>
-          <button
-            type="button"
-            className={`btn btn-ghost btn-sm shrink-0 min-w-0 w-8 h-8 p-0 flex items-center justify-center text-base relative ${(whisperUsernames.length > 0 || privViewOpen) ? 'opacity-100' : 'opacity-50'}`}
-            title={privViewOpen ? 'Back to chat' : totalUnread > 0 ? `Private messages (${totalUnread} unread)` : 'Private messages'}
-            aria-label={privViewOpen ? 'Back to chat' : 'Private messages'}
-            disabled={false}
-            onClick={() => {
-              setPrivViewOpen((prev) => {
-                if (prev) {
-                  setActiveWhisperUsername(null)
-                  setInboxMessages(null)
-                  setWhisperSendError(null)
-                }
-                return !prev
-              })
-            }}
-          >
-            {totalUnread > 0 ? '📬' : '📫'}
-            {totalUnread > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[1rem] h-4 px-1 flex items-center justify-center text-[10px] font-medium rounded-full bg-primary text-primary-content" aria-hidden>
-                {totalUnread > 99 ? '99+' : totalUnread}
-              </span>
-            )}
-          </button>
-          </div>
-        </div>
-      )}
+      {!(overlayMode && inputContainerRef?.current) && inputBlock}
       {userTooltip && (
         <div
           ref={userTooltipRef}
@@ -3152,7 +3225,7 @@ export default function CombinedChat({
           if (showSubmenuLeft) left = Math.max(pad, left - submenuW)
           return createPortal(
             <div
-              ref={contextMenuRef}
+              ref={contextMenuDivRef}
               className="fixed z-[200] flex rounded-lg border border-base-300 bg-base-200 shadow-xl py-1 text-sm"
               style={{
                 left,

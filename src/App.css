@@ -82,6 +82,89 @@ body {
   box-shadow: inset 0 0 0 1px var(--input-color);
 }
 
+/* Combined chat overlay: messages area has no border/outline; text has black outline for readability; slightly bolder text; message text fully white (greentext and .user flair keep their colors) */
+.combined-chat-overlay-messages {
+  border: none;
+  outline: none;
+  box-shadow: none;
+  font-weight: 500;
+  color: #fff;
+}
+.combined-chat-overlay-messages *:not(.msg-chat-greentext):not(.user):not(.user *):not(a) {
+  color: #fff;
+}
+/* Overlay mode: colon after username on the same line, white */
+.combined-chat-overlay-messages .msg-chat-overlay-colon {
+  color: #fff;
+}
+/* Links in overlay: lighter blue so they’re visible and distinct from white text */
+.combined-chat-overlay-messages a,
+.combined-chat-overlay-messages a.link,
+.combined-chat-overlay-messages a.link:visited {
+  color: #93c5ff !important;
+}
+.combined-chat-overlay-messages a:hover,
+.combined-chat-overlay-messages a.link:hover {
+  color: #b8d9ff !important;
+}
+.combined-chat-overlay-messages,
+.combined-chat-overlay-messages * {
+  text-shadow:
+    0 0 1px #000,
+    0 0 1px #000,
+    -1px -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 1px 0 #000,
+    1px 1px 0 #000,
+    0 -1px 0 #000,
+    0 1px 0 #000,
+    -1px 0 0 #000,
+    1px 0 0 #000;
+}
+/* Flair usernames: remove text-shadow (it paints on top of background-clip gradient); use drop-shadow on .user only so outline sits behind the gradient fill */
+.combined-chat-overlay-messages .user,
+.combined-chat-overlay-messages .user * {
+  text-shadow: none;
+}
+.combined-chat-overlay-messages .user {
+  filter:
+    drop-shadow(0 0 1px #000)
+    drop-shadow(0 0 2px rgba(0, 0, 0, 0.95))
+    drop-shadow(0 0 3px rgba(0, 0, 0, 0.8));
+}
+
+/* Chat messages: scrollbar invisible unless recently scrolled */
+.chat-messages-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+.chat-messages-scroll.chat-messages-scroll-visible::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+.chat-messages-scroll.chat-messages-scroll-visible::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+.chat-messages-scroll {
+  scrollbar-color: transparent transparent;
+}
+.chat-messages-scroll.chat-messages-scroll-visible {
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+/* Overlay mode: input strip (input + inbox button) same background as embed dock bar */
+.chat-overlay-input-strip,
+.chat-overlay-input-strip-host {
+  background-color: var(--color-base-200);
+  min-height: var(--embed-dock-height);
+}
+.chat-overlay-input-strip-host {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* Dock: embed label buttons – bold, slightly larger text */
 .embed-dock-bar .embed-dock-scroll .btn {
   font-weight: 600 !important;
