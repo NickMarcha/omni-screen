@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
@@ -94,6 +94,144 @@ function makeViewTransitionNameForKey(key: string) {
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')}`
 }
+
+/** Memoized so overlay does not re-render when only embed/dock data (e.g. combinedAvailableEmbeds) updates — avoids flash timed with [OmniScreen:pinned] logs. */
+const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
+  chatPaneOpen: boolean
+  combinedChatOverlayMode: boolean
+  overlayMessagesClickThrough: boolean
+  chatPaneSide: ChatPaneSide
+  chatPaneWidth: number
+  overlayHeaderVisible: boolean
+  overlayOpacityDropdownOpen: boolean
+  combinedChatOverlayOpacity: number
+  combinedHeaderText: string
+  combinedMsgCount: number
+  combinedDggUserCount: number
+  setOverlayHeaderVisible: (v: boolean | ((prev: boolean) => boolean)) => void
+  setCombinedChatOverlayMode: (v: boolean | ((prev: boolean) => boolean)) => void
+  setOverlayOpacityDropdownOpen: (v: boolean | ((prev: boolean) => boolean)) => void
+  setCombinedChatOverlayOpacity: (v: number) => void
+  setOverlayMessagesClickThrough: (v: boolean | ((prev: boolean) => boolean)) => void
+  setChatPaneOpen: (v: boolean | ((prev: boolean) => boolean)) => void
+  startResize: (e: React.PointerEvent) => void
+  combinedChatContextMenuConfig: CombinedChatContextMenuConfig | null
+  overlayPanelRef: React.RefObject<HTMLDivElement | null>
+  overlayHeaderHideTimeoutRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>
+  overlayOpacityDropdownRef: React.RefObject<HTMLDivElement | null>
+  combinedChatContextMenuRef: React.RefObject<{ openContextMenu: (e: React.MouseEvent) => void } | null>
+  setOverlayChatContainerRef: (el: HTMLDivElement | null) => void
+}) {
+  const p = props
+  return (
+    <div
+      ref={p.overlayPanelRef as React.RefObject<HTMLDivElement>}
+      key="combined-chat-overlay"
+      className={`chat-overlay-panel absolute top-0 bottom-0 z-20 flex flex-col ${p.combinedChatOverlayMode && p.overlayMessagesClickThrough ? 'pointer-events-none' : ''} ${p.combinedChatOverlayMode ? '' : `border-base-300 shadow-lg ${p.chatPaneSide === 'right' ? 'border-l' : 'border-r'}`}`}
+      style={{
+        width: p.chatPaneWidth,
+        ...(p.chatPaneSide === 'right' ? { right: 0 } : { left: 0 }),
+        display: p.combinedChatOverlayMode ? undefined : 'none',
+      }}
+      onPointerEnter={() => {
+        if (p.overlayHeaderHideTimeoutRef.current) {
+          clearTimeout(p.overlayHeaderHideTimeoutRef.current)
+          p.overlayHeaderHideTimeoutRef.current = null
+        }
+        p.setOverlayHeaderVisible(true)
+      }}
+      onPointerLeave={() => {
+        if (p.combinedChatOverlayMode && !p.overlayMessagesClickThrough) {
+          p.overlayHeaderHideTimeoutRef.current = setTimeout(() => {
+            p.setOverlayHeaderVisible(false)
+            p.overlayHeaderHideTimeoutRef.current = null
+          }, 2500)
+        }
+      }}
+    >
+      {p.combinedChatOverlayMode && (
+        <div
+          className={`absolute top-0 bottom-0 z-30 w-1 cursor-col-resize bg-transparent hover:bg-base-content/20 transition-colors pointer-events-auto ${p.chatPaneSide === 'right' ? 'left-0' : 'right-0'}`}
+          onPointerDown={p.startResize}
+          title="Drag to resize"
+          aria-label="Resize chat width"
+        />
+      )}
+      <div
+        className={`p-2 border-b border-base-300 flex items-center gap-2 flex-wrap bg-base-200 pointer-events-auto shrink-0 transition-opacity duration-200 ${p.combinedChatOverlayMode && !p.overlayHeaderVisible ? 'opacity-0' : 'opacity-100'}`}
+        onContextMenu={(e) => {
+          if (p.combinedChatContextMenuConfig) {
+            e.preventDefault()
+            p.combinedChatContextMenuRef.current?.openContextMenu(e)
+          }
+        }}
+      >
+        <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">{p.combinedHeaderText}</div>
+        <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1 flex-wrap">
+          {p.combinedMsgCount} msgs · {p.combinedDggUserCount} users
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost"
+            title={p.combinedChatOverlayMode ? 'Switch to side panel' : 'Overlay on embeds'}
+            onClick={() => p.setCombinedChatOverlayMode((v) => !v)}
+            aria-label="Toggle overlay mode"
+          >
+            {p.combinedChatOverlayMode ? '📌' : '⊞'}
+          </button>
+          <div className="relative" ref={p.overlayOpacityDropdownRef as React.RefObject<HTMLDivElement>}>
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost text-base-content/60 min-w-0 p-0.5"
+              title="Chat overlay opacity"
+              aria-label="Overlay opacity"
+              aria-expanded={p.overlayOpacityDropdownOpen}
+              onClick={() => p.setOverlayOpacityDropdownOpen((v) => !v)}
+            >
+              ⬜
+            </button>
+            {p.overlayOpacityDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 py-1.5 px-1.5 rounded-lg border border-base-300 bg-base-200 shadow-lg z-[100] flex flex-col items-center gap-1 min-w-0 h-36">
+                <span className="text-[10px] text-base-content/50 shrink-0">{Math.round(p.combinedChatOverlayOpacity * 100)}%</span>
+                <div className="flex-1 min-h-0 w-6 flex items-center justify-center self-stretch">
+                  <div className="h-full aspect-square flex items-center justify-center">
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={p.combinedChatOverlayOpacity}
+                      onChange={(e) => p.setCombinedChatOverlayOpacity(Number(e.target.value))}
+                      className="range range-xs origin-center -rotate-90 w-full h-4 max-w-none"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost text-base-content/60"
+            title={p.overlayMessagesClickThrough ? 'Click through to video (on) — click to disable' : 'Click through to video — click to allow interacting with video underneath'}
+            aria-label={p.overlayMessagesClickThrough ? 'Disable click through' : 'Enable click through'}
+            onClick={() => p.setOverlayMessagesClickThrough((v) => !v)}
+          >
+            {p.overlayMessagesClickThrough ? '🔓' : '🔒'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost btn-circle"
+            title="Close chat"
+            onClick={() => p.setChatPaneOpen(false)}
+            aria-label="Close chat"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <div ref={p.setOverlayChatContainerRef} className="flex-1 min-h-0 overflow-hidden flex flex-col" />
+    </div>
+  )
+})
 
 type PieDatum = { name: string; value: number; color?: string }
 
@@ -687,6 +825,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [overlayHeaderVisible, setOverlayHeaderVisible] = useState(true)
   const overlayHeaderHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const overlayPanelRef = useRef<HTMLDivElement | null>(null)
   const leftChatContainerRef = useRef<HTMLDivElement | null>(null)
   const rightChatContainerRef = useRef<HTMLDivElement | null>(null)
   const overlayChatContainerRef = useRef<HTMLDivElement | null>(null)
@@ -978,6 +1117,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   )
 
   // Merge pinned (temporary list), pinned-originated (bookmark poll), and DGG embeds.
+  // When only metadata (e.g. viewer count) changes, return same Map ref to avoid re-renders that coincide with overlay flash.
+  const stableCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const combinedAvailableEmbeds = useMemo(() => {
     const m = new Map<string, LiveEmbed>()
     pinnedEmbeds.forEach((v, k) => {
@@ -996,6 +1137,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       else if (!existing)
         m.set(c, v)
     })
+    const prev = stableCombinedEmbedsRef.current
+    const keysUnchanged =
+      prev.size === m.size && [...prev.keys()].every((k) => m.has(k)) && [...m.keys()].every((k) => prev.has(k))
+    if (keysUnchanged) {
+      for (const [k, v] of m) prev.set(k, v)
+      for (const k of [...prev.keys()]) if (!m.has(k)) prev.delete(k)
+      logPinned('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: prev.size, stable: true })
+      return prev
+    }
+    stableCombinedEmbedsRef.current = m
     logPinned('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: m.size })
     return m
   }, [availableEmbeds, pinnedEmbeds, pinnedOriginatedEmbeds])
@@ -1445,21 +1596,21 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           const migrated = legacyToCanonical.get(key)
           return Boolean(migrated && (next.has(migrated) || pinnedListNext.has(migrated) || pinned.has(migrated)))
         }
-        startViewTransitionIfSupported(() => {
-          if (keysToPin.size > 0) {
-            setPinnedEmbeds((prev) => {
-              const m = new Map(prev)
-              keysToPin.forEach((c) => {
-                const embed = combined.get(c)
-                if (embed) m.set(c, embed)
-              })
-              return m
+        // Do not use startViewTransition here: it creates a full-document ::view-transition overlay
+        // that flashes over the page (especially over video embeds) and coincided with the reported flash.
+        if (keysToPin.size > 0) {
+          setPinnedEmbeds((prev) => {
+            const m = new Map(prev)
+            keysToPin.forEach((c) => {
+              const embed = combined.get(c)
+              if (embed) m.set(c, embed)
             })
-          }
-          setAvailableEmbeds(next)
-          setSelectedEmbedKeys((prev) => new Set([...prev].filter(keepKey)))
-          setSelectedEmbedChatKeys((prev) => new Set([...prev].filter(keepKey)))
-        })
+            return m
+          })
+        }
+        setAvailableEmbeds(next)
+        setSelectedEmbedKeys((prev) => new Set([...prev].filter(keepKey)))
+        setSelectedEmbedChatKeys((prev) => new Set([...prev].filter(keepKey)))
         return
       }
 
@@ -1908,7 +2059,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return (
         <div
           key={item.key}
-          className={`${cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0'} ${isShaking ? 'embed-tile-shake' : ''}`}
+          className={`embed-tile ${cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0'} ${isShaking ? 'embed-tile-shake' : ''}`}
           style={{ borderTop: cinemaMode ? undefined : `4px solid ${accent}`, viewTransitionName: makeViewTransitionNameForKey(item.key) } as any}
         >
           {!cinemaMode && (
@@ -2403,129 +2554,49 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               (() => {
                 const rows = Math.max(1, Math.ceil(selectedEmbeds.length / Math.max(1, gridCols)))
                 return (
-                  <div
-                    className={`grid h-full min-h-0 ${cinemaMode ? 'gap-0' : 'gap-3'}`}
-                    style={{
-                      gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
-                      gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-                    }}
-                  >
-                    {selectedEmbeds.map(renderEmbedTile)}
+                  <div className="embed-grid-layer h-full min-h-0">
+                    <div
+                      className={`grid h-full min-h-0 ${cinemaMode ? 'gap-0' : 'gap-3'}`}
+                      style={{
+                        gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
+                        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {selectedEmbeds.map(renderEmbedTile)}
+                    </div>
                   </div>
                 )
               })()
             )}
 
-            {/* Combined chat overlay (hidden when !overlay; container kept in DOM for portal stability). key keeps React from replacing this node when grid/embeds update. When click-through on: panel has pointer-events-none so all mouse goes to embeds; header and resize handle use pointer-events-auto to stay interactive. Header auto-hides after pointer leaves when click-through is off. */}
+            {/* Combined chat overlay: memoized so it does not re-render when only embed/dock data updates (avoids flash timed with [OmniScreen:pinned]). */}
             {chatPaneOpen && (
-              <div
-                key="combined-chat-overlay"
-                className={`absolute top-0 bottom-0 z-20 flex flex-col ${combinedChatOverlayMode && overlayMessagesClickThrough ? 'pointer-events-none' : ''} ${combinedChatOverlayMode ? '' : `border-base-300 shadow-lg ${chatPaneSide === 'right' ? 'border-l' : 'border-r'}`}`}
-                style={{
-                  width: chatPaneWidth,
-                  ...(chatPaneSide === 'right' ? { right: 0 } : { left: 0 }),
-                  display: combinedChatOverlayMode ? undefined : 'none',
-                }}
-                onPointerEnter={() => {
-                  if (overlayHeaderHideTimeoutRef.current) {
-                    clearTimeout(overlayHeaderHideTimeoutRef.current)
-                    overlayHeaderHideTimeoutRef.current = null
-                  }
-                  setOverlayHeaderVisible(true)
-                }}
-                onPointerLeave={() => {
-                  if (combinedChatOverlayMode && !overlayMessagesClickThrough) {
-                    overlayHeaderHideTimeoutRef.current = setTimeout(() => {
-                      setOverlayHeaderVisible(false)
-                      overlayHeaderHideTimeoutRef.current = null
-                    }, 2500)
-                  }
-                }}
-              >
-                {/* Resize handle on inner edge when overlay mode: grab to resize chat width. pointer-events-auto so it stays clickable when click-through is on. */}
-                {combinedChatOverlayMode && (
-                  <div
-                    className={`absolute top-0 bottom-0 z-30 w-1 cursor-col-resize bg-transparent hover:bg-base-content/20 transition-colors pointer-events-auto ${chatPaneSide === 'right' ? 'left-0' : 'right-0'}`}
-                    onPointerDown={startResize}
-                    title="Drag to resize"
-                    aria-label="Resize chat width"
-                  />
-                )}
-                <div
-                  className={`p-2 border-b border-base-300 flex items-center gap-2 flex-wrap bg-base-200 pointer-events-auto shrink-0 transition-opacity duration-200 ${combinedChatOverlayMode && !overlayHeaderVisible ? 'opacity-0' : 'opacity-100'}`}
-                  onContextMenu={(e) => {
-                    if (combinedChatContextMenuConfig) {
-                      e.preventDefault()
-                      combinedChatContextMenuRef.current?.openContextMenu(e)
-                    }
-                  }}
-                >
-                  <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">
-                    {combinedHeaderText}
-                  </div>
-                  <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1 flex-wrap">
-                    {combinedMsgCount} msgs · {combinedDggUserCount} users
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-ghost"
-                      title={combinedChatOverlayMode ? 'Switch to side panel' : 'Overlay on embeds'}
-                      onClick={() => setCombinedChatOverlayMode((v) => !v)}
-                      aria-label="Toggle overlay mode"
-                    >
-                      {combinedChatOverlayMode ? '📌' : '⊞'}
-                    </button>
-                    <div className="relative" ref={overlayOpacityDropdownRef}>
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-ghost text-base-content/60 min-w-0 p-0.5"
-                        title="Chat overlay opacity"
-                        aria-label="Overlay opacity"
-                        aria-expanded={overlayOpacityDropdownOpen}
-                        onClick={() => setOverlayOpacityDropdownOpen((v) => !v)}
-                      >
-                        ⬜
-                      </button>
-                      {overlayOpacityDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 py-1.5 px-1.5 rounded-lg border border-base-300 bg-base-200 shadow-lg z-[100] flex flex-col items-center gap-1 min-w-0 h-36">
-                          <span className="text-[10px] text-base-content/50 shrink-0">{Math.round(combinedChatOverlayOpacity * 100)}%</span>
-                          <div className="flex-1 min-h-0 w-6 flex items-center justify-center self-stretch">
-                            <div className="h-full aspect-square flex items-center justify-center">
-                              <input
-                                type="range"
-                                min={0}
-                                max={1}
-                                step={0.05}
-                                value={combinedChatOverlayOpacity}
-                                onChange={(e) => setCombinedChatOverlayOpacity(Number(e.target.value))}
-                                className="range range-xs origin-center -rotate-90 w-full h-4 max-w-none"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-ghost text-base-content/60"
-                      title={overlayMessagesClickThrough ? 'Click through to video (on) — click to disable' : 'Click through to video — click to allow interacting with video underneath'}
-                      aria-label={overlayMessagesClickThrough ? 'Disable click through' : 'Enable click through'}
-                      onClick={() => setOverlayMessagesClickThrough((v) => !v)}
-                    >
-                      {overlayMessagesClickThrough ? '🔓' : '🔒'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-ghost btn-circle"
-                      title="Close chat"
-                      onClick={() => setChatPaneOpen(false)}
-                      aria-label="Close chat"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-                <div ref={setOverlayChatContainerRef} className="flex-1 min-h-0 overflow-hidden flex flex-col" />
-              </div>
+              <ChatOverlayPanel
+                chatPaneOpen={chatPaneOpen}
+                combinedChatOverlayMode={combinedChatOverlayMode}
+                overlayMessagesClickThrough={overlayMessagesClickThrough}
+                chatPaneSide={chatPaneSide}
+                chatPaneWidth={chatPaneWidth}
+                overlayHeaderVisible={overlayHeaderVisible}
+                overlayOpacityDropdownOpen={overlayOpacityDropdownOpen}
+                combinedChatOverlayOpacity={combinedChatOverlayOpacity}
+                combinedHeaderText={combinedHeaderText}
+                combinedMsgCount={combinedMsgCount}
+                combinedDggUserCount={combinedDggUserCount}
+                setOverlayHeaderVisible={setOverlayHeaderVisible}
+                setCombinedChatOverlayMode={setCombinedChatOverlayMode}
+                setOverlayOpacityDropdownOpen={setOverlayOpacityDropdownOpen}
+                setCombinedChatOverlayOpacity={setCombinedChatOverlayOpacity}
+                setOverlayMessagesClickThrough={setOverlayMessagesClickThrough}
+                setChatPaneOpen={setChatPaneOpen}
+                startResize={startResize}
+                combinedChatContextMenuConfig={combinedChatContextMenuConfig}
+                overlayPanelRef={overlayPanelRef}
+                overlayHeaderHideTimeoutRef={overlayHeaderHideTimeoutRef}
+                overlayOpacityDropdownRef={overlayOpacityDropdownRef}
+                combinedChatContextMenuRef={combinedChatContextMenuRef}
+                setOverlayChatContainerRef={setOverlayChatContainerRef}
+              />
             )}
           </div>
 

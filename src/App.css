@@ -231,6 +231,21 @@ body {
   transform: translateY(calc(50% - 0.8em));
 }
 
+/* Stacking: embed grid and tiles in a layer explicitly below the chat overlay so iframe/video can't draw on top. */
+.embed-grid-layer {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+.embed-tile {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+.chat-overlay-panel {
+  isolation: isolate;
+}
+
 /* Embed tile shake when # link is clicked for an already-selected embed */
 .embed-tile-shake {
   animation: embed-tile-shake 0.5s ease-in-out;

@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:no-gpu": "set DISABLE_GPU=1&& vite",
     "build": "npm run icons && tsc && vite build && electron-builder",
     "build:ci": "tsc && vite build",
     "icons": "node scripts/generate-icons.mjs",

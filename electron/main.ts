@@ -74,6 +74,11 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
+// Optional: disable GPU (e.g. to test if overlay flash is GPU-related). Set DISABLE_GPU=1 when running.
+if (process.env.DISABLE_GPU === '1') {
+  app.commandLine.appendSwitch('disable-gpu')
+}
+
 // Exit early for --version so we don't touch logs or other init (works even when app is old/broken)
 if (process.argv.includes('--version')) {
   process.stdout.write(`${app.getVersion()}\n`)
