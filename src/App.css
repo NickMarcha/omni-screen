@@ -74,6 +74,29 @@ body {
 /* Combined chat: base .emote styles to match destiny.gg/embed/chat (chat.vendor.css).
    We load cdn.destiny.gg/emotes/emotes.css for per-emote images; this base rule ensures
    inline-block, overflow, and alignment match the embed. */
+
+/* Emote vertical alignment: center the emote (50% of its height) with the text line center.
+   Line height is 1.6em (see .msg-chat-content), so line center is 0.8em above baseline.
+   translateY(50% - 0.8em) moves the emote down so its center aligns with that line center,
+   so the emote overflows equally above and below the text. Emote stays on same line (no flex). */
+.emote {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  text-indent: -999em;
+  vertical-align: middle;
+}
+
+.msg-chat .emote {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  text-indent: -999em;
+  vertical-align: middle;
+  /* Align emote center with line center: 0.8em = half of line-height 1.6em */
+  transform: translateY(calc(50% - 0.8em));
+}
+
 /* Embed tile shake when # link is clicked for an already-selected embed */
 .embed-tile-shake {
   animation: embed-tile-shake 0.5s ease-in-out;
@@ -84,14 +107,6 @@ body {
   40% { transform: translateX(6px); }
   60% { transform: translateX(-4px); }
   80% { transform: translateX(4px); }
-}
-
-.msg-chat .emote {
-  display: inline-block;
-  position: relative;
-  overflow: hidden;
-  text-indent: -999em;
-  vertical-align: middle;
 }
 
 /* Message body: relaxed line spacing so wrapped lines are readable.
