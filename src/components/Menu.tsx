@@ -451,7 +451,7 @@ function Menu({ onNavigate }: MenuProps) {
 
       {/* Acknowledgements */}
       <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
-        Thanks to polecat.me, Rustlesearch, d.gg utilities (vyneer), and Kickstiny for (unwittingly) tolerating my abuse of their APIs and scripts.
+        Thanks to polecat.me, Rustlesearch, and Kickstiny for (unwittingly) tolerating my abuse of their APIs and scripts.
       </p>
 
       {/* Update Modal */}

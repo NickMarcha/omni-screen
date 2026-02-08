@@ -3373,6 +3373,12 @@ ipcMain.handle('live-websocket-status', async (_event) => {
   return { connected: liveWebSocket?.isConnected() || false }
 })
 
+ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data: any }) => {
+  if (liveWebSocket?.isConnected() && data && typeof data === 'object' && typeof (data as any).type === 'string') {
+    liveWebSocket.send(data as object)
+  }
+})
+
 // Kick (Pusher) chat IPC handlers
 ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[] }) => {
   try {

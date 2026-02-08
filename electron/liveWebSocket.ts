@@ -259,6 +259,16 @@ export class LiveWebSocket extends EventEmitter {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN
   }
 
+  /** Send a JSON-serializable object to the server (e.g. { type: 'watching', data: { platform, id } }). */
+  send(data: object): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    try {
+      this.ws.send(JSON.stringify(data))
+    } catch (err) {
+      fileLogger.writeLog('warn', 'main', '[LiveWebSocket] send_error', [String(err)])
+    }
+  }
+
   destroy(): void {
     this.disconnect()
     this.removeAllListeners()

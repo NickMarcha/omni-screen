@@ -449,10 +449,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [availableEmbeds, setAvailableEmbeds] = useState<Map<string, LiveEmbed>>(new Map())
   const [bannedEmbeds, setBannedEmbeds] = useState<Map<string, BannedEmbed>>(new Map())
 
-  // ---- Manual embeds (from pasted links) ----
-  const [manualEmbeds, setManualEmbeds] = useState<Map<string, LiveEmbed>>(() => {
+  // ---- Pinned embeds (temporary; from pasted links or "Pin" from dock) ----
+  const [pinnedEmbeds, setPinnedEmbeds] = useState<Map<string, LiveEmbed>>(() => {
     try {
-      const raw = localStorage.getItem('omni-screen:manual-embeds')
+      const raw = localStorage.getItem('omni-screen:pinned-embeds') ?? localStorage.getItem('omni-screen:manual-embeds')
       if (!raw) return new Map()
       const arr = JSON.parse(raw) as Array<{ key: string; platform: string; id: string; title?: string }>
       if (!Array.isArray(arr)) return new Map()
@@ -640,6 +640,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return (saved != null && saved !== '') ? saved : 'dgg'
   })
   const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const dggChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
 
   // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
   const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
@@ -674,8 +675,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
   const [combinedDggUserCount, setCombinedDggUserCount] = useState(0)
-  const manualEmbedsRef = useRef<Map<string, LiveEmbed>>(manualEmbeds)
-  manualEmbedsRef.current = manualEmbeds
+  const pinnedEmbedsRef = useRef<Map<string, LiveEmbed>>(pinnedEmbeds)
+  pinnedEmbedsRef.current = pinnedEmbeds
   const pinnedOriginatedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const [ytChannelLoading, setYtChannelLoading] = useState(false)
   const [ytChannelError, setYtChannelError] = useState<string | null>(null)
@@ -710,7 +711,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
   /** YouTube embed key -> pinned streamer ids that resolved to this video (multiple streamers can share same stream). */
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
-  /** Embeds from pinned streamer poll only (not manual, not persisted). So "Remove from list" does not apply to pinned-only. */
+  /** Embeds from pinned streamer poll only (not in pinned list, not persisted). "Unpin" does not apply to these. */
   const [pinnedOriginatedEmbeds, setPinnedOriginatedEmbeds] = useState<Map<string, LiveEmbed>>(() => new Map())
   pinnedOriginatedEmbedsRef.current = pinnedOriginatedEmbeds
   /** Increment to trigger one immediate run of pinned streamer polls (e.g. Refresh button). */
@@ -847,9 +848,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [gridHostSize, setGridHostSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
 
   // Persist selection
-  /** Permanently remove embed(s) from manual list (and selection). Use for manual-added / pinned-added embeds you want gone. */
-  const removeManualEmbed = useCallback((key: string) => {
-    setManualEmbeds((prev) => {
+  /** Remove embed(s) from pinned list (and selection). Use for pinned embeds you want to unpin. */
+  const removePinnedEmbed = useCallback((key: string) => {
+    setPinnedEmbeds((prev) => {
       const next = new Map(prev)
       next.delete(key)
       return next
@@ -866,25 +867,25 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     })
   }, [])
 
-  /** True if this canonical key has an entry in manualEmbeds (any manual key that canonicalizes to this). */
-  const isManualEmbedKey = useCallback(
-    (canonicalKey: string) => Array.from(manualEmbeds.keys()).some((k) => canonicalEmbedKey(k) === canonicalKey),
-    [manualEmbeds],
+  /** True if this canonical key has an entry in pinnedEmbeds (any pinned key that canonicalizes to this). */
+  const isPinnedEmbedKey = useCallback(
+    (canonicalKey: string) => Array.from(pinnedEmbeds.keys()).some((k) => canonicalEmbedKey(k) === canonicalKey),
+    [pinnedEmbeds],
   )
-  /** Remove all manual embed entries that canonicalize to this key. */
-  const removeManualEmbedsWithCanonicalKey = useCallback(
+  /** Remove all pinned embed entries that canonicalize to this key. */
+  const removePinnedEmbedsWithCanonicalKey = useCallback(
     (canonicalKey: string) => {
-      Array.from(manualEmbeds.keys())
+      Array.from(pinnedEmbeds.keys())
         .filter((k) => canonicalEmbedKey(k) === canonicalKey)
-        .forEach((k) => removeManualEmbed(k))
+        .forEach((k) => removePinnedEmbed(k))
     },
-    [manualEmbeds, removeManualEmbed],
+    [pinnedEmbeds, removePinnedEmbed],
   )
 
-  // Merge manual (pasted link), pinned-originated (poll only, not persisted), and DGG embeds. Pinned-originated are not "manual" so no "Remove from list".
+  // Merge pinned (temporary list), pinned-originated (bookmark poll), and DGG embeds.
   const combinedAvailableEmbeds = useMemo(() => {
     const m = new Map<string, LiveEmbed>()
-    manualEmbeds.forEach((v, k) => {
+    pinnedEmbeds.forEach((v, k) => {
       const c = canonicalEmbedKey(k)
       m.set(c, v)
     })
@@ -900,15 +901,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       else if (!existing)
         m.set(c, v)
     })
-    logPinned('combinedAvailableEmbeds', { manualCount: manualEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: m.size })
+    logPinned('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: m.size })
     return m
-  }, [availableEmbeds, manualEmbeds, pinnedOriginatedEmbeds])
+  }, [availableEmbeds, pinnedEmbeds, pinnedOriginatedEmbeds])
   const combinedAvailableEmbedsRef = useRef<Map<string, LiveEmbed>>(combinedAvailableEmbeds)
   combinedAvailableEmbedsRef.current = combinedAvailableEmbeds
   const prevCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const prevPinnedOriginatedRef = useRef<Map<string, LiveEmbed>>(new Map())
 
-  /** When poll or DGG removes an embed that the user is watching, convert it to manual (📌) so it stays in the list. */
+  /** When poll or DGG removes an embed that the user is watching, add to pinned list (📌) so it stays in the list. */
   useEffect(() => {
     const prev = prevCombinedEmbedsRef.current
     const current = combinedAvailableEmbeds
@@ -925,7 +926,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (embed) toPin.set(c, embed)
     })
     if (toPin.size > 0) {
-      setManualEmbeds((m) => {
+      setPinnedEmbeds((m) => {
         const next = new Map(m)
         toPin.forEach((embed, c) => next.set(c, embed))
         return next
@@ -970,22 +971,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
   }, [pinnedOriginatedEmbeds, preferredPlatformOrder, pinnedStreamers, youtubeVideoToStreamerId, combinedAvailableEmbeds, selectedEmbedKeys])
 
-  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Manual (pasted / pinned). */
+  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Pinned (temporary list). */
   const embedSourcesByKey = useMemo(() => {
-    const out = new Map<string, { pinned: boolean; dgg: boolean; manual: boolean }>()
+    const out = new Map<string, { pinned: boolean; dgg: boolean; pinnedToList: boolean }>()
     for (const key of combinedAvailableEmbeds.keys()) {
       const pinned = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId).length > 0
       const dgg = availableEmbeds.has(key)
-      const manual = isManualEmbedKey(key)
-      out.set(key, { pinned, dgg, manual })
+      const pinnedToList = isPinnedEmbedKey(key)
+      out.set(key, { pinned, dgg, pinnedToList })
     }
     return out
-  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId, availableEmbeds, isManualEmbedKey])
+  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId, availableEmbeds, isPinnedEmbedKey])
 
-  /** Icons for embed source: 🔖 bookmarked, #️⃣ DGG embed, 📌 manually added. */
-  function embedSourceIcons(s: { pinned: boolean; dgg: boolean; manual: boolean }): { icon: string; title: string }[] {
+  /** Icons for embed source: 🔖 bookmarked, #️⃣ DGG embed, 📌 pinned. */
+  function embedSourceIcons(s: { pinned: boolean; dgg: boolean; pinnedToList: boolean }): { icon: string; title: string }[] {
     const out: { icon: string; title: string }[] = []
-    if (s.manual) out.push({ icon: '📌', title: 'Manually added' })
+    if (s.pinnedToList) out.push({ icon: '📌', title: 'Pinned' })
     if (s.pinned) out.push({ icon: '🔖', title: 'Bookmarked' })
     if (s.dgg) out.push({ icon: '#️⃣', title: 'DGG embed' })
     return out
@@ -1034,17 +1035,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   useEffect(() => {
     try {
-      const arr = Array.from(manualEmbeds.entries()).map(([key, e]) => ({
+      const arr = Array.from(pinnedEmbeds.entries()).map(([key, e]) => ({
         key,
         platform: e.platform,
         id: e.id,
         title: e.mediaItem?.metadata?.displayName || e.mediaItem?.metadata?.title,
       }))
-      localStorage.setItem('omni-screen:manual-embeds', JSON.stringify(arr))
+      localStorage.setItem('omni-screen:pinned-embeds', JSON.stringify(arr))
     } catch {
       // ignore
     }
-  }, [manualEmbeds])
+  }, [pinnedEmbeds])
 
   useEffect(() => {
     try {
@@ -1319,33 +1320,33 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           if (legacyKey !== canonicalKey) legacyToCanonical.set(legacyKey, canonicalKey)
         })
 
-        const manual = manualEmbedsRef.current
+        const pinnedList = pinnedEmbedsRef.current
         const pinned = pinnedOriginatedEmbedsRef.current
         const combined = combinedAvailableEmbedsRef.current
         const watched = new Set([...selectedEmbedKeysRef.current, ...selectedEmbedChatKeysRef.current])
         const keysToPin = new Set<string>()
         watched.forEach((k) => {
           const c = canonicalEmbedKey(k)
-          if (next.has(k) || next.has(c) || manual.has(k) || manual.has(c) || pinned.has(k) || pinned.has(c)) return
+          if (next.has(k) || next.has(c) || pinnedList.has(k) || pinnedList.has(c) || pinned.has(k) || pinned.has(c)) return
           const migrated = legacyToCanonical.get(k)
-          if (migrated && (next.has(migrated) || manual.has(migrated) || pinned.has(migrated))) return
+          if (migrated && (next.has(migrated) || pinnedList.has(migrated) || pinned.has(migrated))) return
           const embed = combined.get(k) || combined.get(c) || (migrated ? combined.get(migrated) : undefined)
           if (embed) keysToPin.add(c)
         })
-        const manualNext = new Map(manual)
+        const pinnedListNext = new Map(pinnedList)
         keysToPin.forEach((c) => {
           const embed = combined.get(c)
-          if (embed) manualNext.set(c, embed)
+          if (embed) pinnedListNext.set(c, embed)
         })
         const keepKey = (key: string) => {
           const c = canonicalEmbedKey(key)
-          if (next.has(key) || next.has(c) || manualNext.has(key) || manualNext.has(c) || pinned.has(key) || pinned.has(c)) return true
+          if (next.has(key) || next.has(c) || pinnedListNext.has(key) || pinnedListNext.has(c) || pinned.has(key) || pinned.has(c)) return true
           const migrated = legacyToCanonical.get(key)
-          return Boolean(migrated && (next.has(migrated) || manualNext.has(migrated) || pinned.has(migrated)))
+          return Boolean(migrated && (next.has(migrated) || pinnedListNext.has(migrated) || pinned.has(migrated)))
         }
         startViewTransitionIfSupported(() => {
           if (keysToPin.size > 0) {
-            setManualEmbeds((prev) => {
+            setPinnedEmbeds((prev) => {
               const m = new Map(prev)
               keysToPin.forEach((c) => {
                 const embed = combined.get(c)
@@ -1634,8 +1635,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return false
     }
     const key = makeEmbedKey(parsed.platform, parsed.id)
-    // Manual add is temporary; no live check — add any valid embed URL.
-    setManualEmbeds((prev) => {
+    // Pinned add is temporary; no live check — add any valid embed URL.
+    setPinnedEmbeds((prev) => {
       const next = new Map(prev)
       if (next.has(key)) return prev
       next.set(key, {
@@ -1916,6 +1917,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [dockContextMenuAt, setDockContextMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [dockContextMenuHover, setDockContextMenuHover] = useState<'preferred' | 'dockPosition' | null>(null)
   const dockContextMenuRef = useRef<HTMLDivElement | null>(null)
+  /** Which embed key is currently "watching" on live.destiny.gg (shows 👀 in dock). Only one at a time. */
+  const [watchedEmbedKey, setWatchedEmbedKey] = useState<string | null>(null)
+  /** Right-click on a dock item: context menu position and item. */
+  const [dockItemContextMenu, setDockItemContextMenu] = useState<{ x: number; y: number; item: DockItem } | null>(null)
+  const dockItemContextMenuRef = useRef<HTMLDivElement | null>(null)
   /** Dock item id: "group:"+streamer.id or "single:"+key */
   const [dockHoverItemId, setDockHoverItemId] = useState<string | null>(null)
   const [dockHoverPinned, setDockHoverPinned] = useState(false)
@@ -1967,6 +1973,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     setDockContextMenuHover(null)
   }, [])
 
+  const closeDockItemContextMenu = useCallback(() => {
+    setDockItemContextMenu(null)
+  }, [])
+
   const bringPreferredPlatformToTop = useCallback((platform: 'youtube' | 'kick' | 'twitch') => {
     setPreferredPlatformOrder((prev) => {
       const rest = prev.filter((p) => p !== platform)
@@ -1997,6 +2007,24 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       window.removeEventListener('keydown', onKey)
     }
   }, [dockContextMenuAt, closeDockContextMenu])
+
+  useEffect(() => {
+    if (!dockItemContextMenu) return
+    const onPointer = (e: PointerEvent) => {
+      const el = dockItemContextMenuRef.current
+      if (el && (el === e.target || el.contains(e.target as Node))) return
+      closeDockItemContextMenu()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeDockItemContextMenu()
+    }
+    window.addEventListener('pointerdown', onPointer, { capture: true })
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointer, { capture: true })
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [dockItemContextMenu, closeDockItemContextMenu])
 
   useEffect(() => {
     if (!dockHoverItemId) return
@@ -2206,6 +2234,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
+                    dggChatActionsRef={dggChatActionsRef}
                     focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
                   />
                 </div>
@@ -2296,6 +2325,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       const accent = streamerColor ?? (streamersForAccent.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName }))
                       const active = videoOn || chatOn
                       const activeText = textColorOn(accent)
+                      const isWatching = watchedEmbedKey != null && keys.includes(watchedEmbedKey)
 
                       return (
                         <div key={itemId} className="flex items-center">
@@ -2309,6 +2339,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             className={`btn btn-sm ${active ? '' : 'btn-ghost'} ${anyBanned ? 'btn-disabled' : 'btn-outline'} ${cinemaMode ? 'rounded-none border-0 border-r border-base-300 first:border-l-0' : ''}`}
                             title={item.type === 'group' ? `${label} (${keys.length} embed${keys.length !== 1 ? 's' : ''})` : `${(firstEmbed?.platform || '').toLowerCase()}: ${firstEmbed?.mediaItem?.metadata?.title || firstKey}`}
                             onClick={() => toggleDockItemMaster(item)}
+                            onContextMenu={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setDockHoverItemId(null)
+                              setDockHoverPinned(false)
+                              setDockItemContextMenu({ x: e.clientX, y: e.clientY, item })
+                            }}
                             onMouseEnter={() => openDockHover(itemId)}
                             onMouseLeave={scheduleCloseDockHover}
                             style={
@@ -2317,7 +2354,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                                 : { borderColor: accent, color: accent }
                             }
                           >
-                            {label}
+                            {label}{isWatching ? ' 👀' : ''}
                           </button>
                         </div>
                       )
@@ -2620,6 +2657,112 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </div>
             )
           })()}
+          {/* Dock item right-click context menu (per-embed: watching, copy link, pin, add to bookmarks) */}
+          {dockItemContextMenu && (() => {
+            const { item } = dockItemContextMenu
+            const keys = item.type === 'group' ? item.keys : [item.key]
+            const firstKey = keys[0]
+            const firstEmbed = combinedAvailableEmbeds.get(firstKey)
+            const parsed = parseEmbedKey(firstKey)
+            const platform = parsed?.platform ?? firstEmbed?.platform ?? ''
+            const id = parsed?.id ?? firstEmbed?.id ?? ''
+            const isBookmarked = findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId).length > 0
+            const isPinned = isPinnedEmbedKey(firstKey)
+            const isWatching = watchedEmbedKey != null && keys.includes(watchedEmbedKey)
+            const menuW = 220
+            const pad = 8
+            const left = Math.max(pad, Math.min(dockItemContextMenu.x, window.innerWidth - menuW - pad))
+            const top = dockAtTop
+              ? dockItemContextMenu.y + 8
+              : dockItemContextMenu.y - 4
+            const transform = dockAtTop ? undefined : 'translateY(-100%)'
+            return (
+              <div
+                ref={dockItemContextMenuRef}
+                className="fixed z-[10000] rounded-lg border border-base-300 bg-base-200 shadow-xl py-1 text-sm min-w-[200px]"
+                style={{ left, top: top as number, transform }}
+                role="menu"
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {firstEmbed && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center gap-2"
+                    onClick={() => {
+                      if (isWatching) {
+                        window.ipcRenderer?.invoke('live-websocket-send', { type: 'watching', data: null }).catch(() => {})
+                        setWatchedEmbedKey(null)
+                      } else {
+                        window.ipcRenderer?.invoke('live-websocket-send', { type: 'watching', data: { platform: firstEmbed.platform, id: firstEmbed.id } }).catch(() => {})
+                        setWatchedEmbedKey(firstKey)
+                      }
+                      closeDockItemContextMenu()
+                    }}
+                  >
+                    <span aria-hidden>👀</span>
+                    <span>{isWatching ? 'Unmark watching' : 'Mark as watching'}</span>
+                  </button>
+                )}
+                {platform && id && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center gap-2"
+                    onClick={() => {
+                      const link = `#${platform}/${id}`
+                      dggChatActionsRef.current?.appendToInput(link)
+                      dggInputRef.current?.focus()
+                      closeDockItemContextMenu()
+                    }}
+                  >
+                    <span>Copy #{platform}/{id} to chat input</span>
+                  </button>
+                )}
+                {!isPinned && firstEmbed && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center gap-2"
+                    onClick={() => {
+                      setPinnedEmbeds((prev) => {
+                        const next = new Map(prev)
+                        if (Array.from(next.keys()).some((k) => canonicalEmbedKey(k) === canonicalEmbedKey(firstKey))) return prev
+                        next.set(firstKey, { ...firstEmbed })
+                        return next
+                      })
+                      closeDockItemContextMenu()
+                    }}
+                  >
+                    <span>Pin (temporary)</span>
+                  </button>
+                )}
+                {!isBookmarked && firstEmbed && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center gap-2"
+                    onClick={() => {
+                      const displayName = firstEmbed?.mediaItem?.metadata?.displayName ?? firstEmbed?.id ?? id
+                      const p = (firstEmbed?.platform ?? platform ?? '').toLowerCase()
+                      const newStreamer: PinnedStreamer = {
+                        id: `streamer-${Date.now()}`,
+                        nickname: displayName || id || firstKey,
+                        ...(p === 'kick' && { kickSlug: id }),
+                        ...(p === 'twitch' && { twitchLogin: id }),
+                        ...(p === 'youtube' && { youtubeChannelId: buildEmbedUrl('youtube', id) }),
+                      }
+                      setPinnedStreamers((prev) => [...prev, newStreamer])
+                      setPinnedPollRefreshTrigger((t) => t + 1)
+                      closeDockItemContextMenu()
+                    }}
+                  >
+                    <span>Add to bookmarks</span>
+                  </button>
+                )}
+              </div>
+            )
+          })()}
 
           {/* Dock hover popup (rendered outside scroll container so it won't be clipped) */}
           {dockHoverItemId && hoveredDockItem && dockHoverRect ? (() => {
@@ -2673,19 +2816,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         </span>
                         <span className="text-base-content/50 shrink-0">{keys.length} platform{keys.length !== 1 ? 's' : ''}</span>
                       </div>
-                      <span className="flex items-center gap-0.5 shrink-0" title={keys.map((k) => embedSourceIcons(embedSourcesByKey.get(k) ?? { pinned: false, dgg: false, manual: false }).map((x) => x.title).join(', ')).join('; ')}>
+                      <span className="flex items-center gap-0.5 shrink-0" title={keys.map((k) => embedSourceIcons(embedSourcesByKey.get(k) ?? { pinned: false, dgg: false, pinnedToList: false }).map((x) => x.title).join(', ')).join('; ')}>
                         {(() => {
-                          const src = keys.reduce<{ pinned: boolean; dgg: boolean; manual: boolean }>(
+                          const src = keys.reduce<{ pinned: boolean; dgg: boolean; pinnedToList: boolean }>(
                             (acc, k) => {
                               const s = embedSourcesByKey.get(k)
                               if (s) {
                                 acc.pinned = acc.pinned || s.pinned
                                 acc.dgg = acc.dgg || s.dgg
-                                acc.manual = acc.manual || s.manual
+                                acc.pinnedToList = acc.pinnedToList || s.pinnedToList
                               }
                               return acc
                             },
-                            { pinned: false, dgg: false, manual: false },
+                            { pinned: false, dgg: false, pinnedToList: false },
                           )
                           return embedSourceIcons(src).map(({ icon, title }) => (
                             <span key={icon} title={title} aria-hidden>{icon}</span>
@@ -2732,16 +2875,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           </div>
                         )
                       })}
-                      {keys.some((k) => isManualEmbedKey(k)) ? (
+                      {keys.some((k) => isPinnedEmbedKey(k)) ? (
                         <button
                           type="button"
                           className="btn btn-xs btn-ghost text-error"
                           onClick={() => {
-                            keys.filter((k) => isManualEmbedKey(k)).forEach((k) => removeManualEmbedsWithCanonicalKey(k))
+                            keys.filter((k) => isPinnedEmbedKey(k)).forEach((k) => removePinnedEmbedsWithCanonicalKey(k))
                             setDockHoverItemId(null)
                           }}
                         >
-                          Remove from list
+                          Unpin
                         </button>
                       ) : null}
                       <div className="text-xs text-base-content/50">Click dock button to toggle all.</div>
@@ -2772,8 +2915,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               {banned ? ` • banned` : null}
                             </div>
                           </div>
-                          <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, manual: false }).map((x) => x.title).join(', ')}>
-                            {embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, manual: false }).map(({ icon, title: t }) => (
+                          <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, pinnedToList: false }).map((x) => x.title).join(', ')}>
+                            {embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, pinnedToList: false }).map(({ icon, title: t }) => (
                               <span key={icon} title={t} aria-hidden>{icon}</span>
                             ))}
                           </span>
@@ -2799,19 +2942,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               onChange={() => toggleEmbedChat(key)}
                             />
                           </label>
-                          {isManualEmbedKey(key) ? (
+                          {isPinnedEmbedKey(key) ? (
                             <button
                               type="button"
                               className="btn btn-xs btn-ghost text-error"
                               onClick={() => {
-                                removeManualEmbedsWithCanonicalKey(key)
+                                removePinnedEmbedsWithCanonicalKey(key)
                                 setDockHoverItemId(null)
                               }}
                             >
-                              Remove from list
+                              Unpin
                             </button>
                           ) : null}
-                          <div className="text-xs text-base-content/60">Hover to adjust. Click name to toggle (master).</div>
+                          <div className="text-xs text-base-content/60">Click name to toggle (master).</div>
                         </div>
                       </>
                     )
@@ -2959,6 +3102,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     onCountChange={setCombinedMsgCount}
                     onDggUserCountChange={setCombinedDggUserCount}
                     dggInputRef={dggInputRef}
+                    dggChatActionsRef={dggChatActionsRef}
                     focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
                   />
                 </div>

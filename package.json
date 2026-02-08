@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.11.0",
   "description": "The Omni Screen",
-  "author": "Your Name <your.email@example.com>",
+  "author": "Nick Marcha <nicolasmmjoes@gmail.com>",
   "type": "module",
   "scripts": {
     "dev": "vite",

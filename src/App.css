@@ -94,6 +94,22 @@ body {
   vertical-align: middle;
 }
 
+/* Message body: relaxed line spacing so wrapped lines are readable.
+   !important to override Tailwind .text-sm line-height inherited from parent.
+   Unitless 1.6 so it scales with font-size and is clearly visible. */
+.msg-chat .msg-chat-content {
+  display: block;
+  line-height: 1.6 !important;
+}
+.msg-chat .msg-chat-content .msg-chat-inner {
+  display: block;
+  line-height: 1.6 !important;
+}
+.msg-chat-greentext {
+  font-size: inherit;
+  line-height: 1.6 !important;
+}
+
 /* DGG flairs: CDN flairs.css sets .flair.<name> { background-image, height, width }. Base rule so icons display. */
 .flair {
   display: inline-block;

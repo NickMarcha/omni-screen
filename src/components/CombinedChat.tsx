@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 import PollView, { type PollData } from './PollView'
@@ -238,18 +238,18 @@ function processGreentext(
         return
       }
 
-      // Mimic DGG greentext styling as closely as we reasonably can.
+      // Mimic DGG greentext styling (color, font); font size inherits; line-height inline so it wins.
       parts.push(
         <span
           key={`greentext-${keyCounter++}`}
+          className="msg-chat-greentext"
           style={{
             color: 'rgb(108, 165, 40)',
             fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
-            fontSize: '16px',
-            lineHeight: '26.4px',
             boxSizing: 'border-box',
             textRendering: 'optimizeLegibility',
             overflowWrap: 'break-word',
+            lineHeight: 1.6,
           }}
         >
           {part}
@@ -1022,6 +1022,7 @@ export default function CombinedChat({
   onDggUserCountChange,
   onOpenLink: onOpenLinkProp,
   dggInputRef: dggInputRefProp,
+  dggChatActionsRef: dggChatActionsRefProp,
   focusShortcutLabel,
 }: {
   enableDgg: boolean
@@ -1060,6 +1061,8 @@ export default function CombinedChat({
   onOpenLink?: (url: string) => void
   /** Optional ref from parent to focus the DGG input (e.g. for keybind). */
   dggInputRef?: React.RefObject<HTMLTextAreaElement | null>
+  /** Optional ref from parent to get { appendToInput(text) } for pasting into DGG input (e.g. from dock menu). */
+  dggChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
   /** Shortcut label for placeholder, e.g. "Ctrl + Space". */
   focusShortcutLabel?: string
 }) {
@@ -1171,6 +1174,17 @@ export default function CombinedChat({
       if (dggInputRefProp) (dggInputRefProp as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
     },
     [dggInputRefProp]
+  )
+  const dggChatActionsRefInternal = useRef<{ appendToInput: (text: string) => void } | null>(null)
+  const dggChatActionsRefMerged = dggChatActionsRefProp ?? dggChatActionsRefInternal
+  useImperativeHandle(
+    dggChatActionsRefMerged,
+    () => ({
+      appendToInput: (text: string) => {
+        setDggInputValue((prev) => (prev ?? '') + text)
+      },
+    }),
+    []
   )
   const wasAtBottomRef = useRef(true)
   /** True when user has scrolled up (don't auto-scroll). Set false when user scrolls to bottom or clicks "scroll to bottom". Kept separate from isAtBottom so layout changes (e.g. poll bar) don't disable stick. */
@@ -2206,31 +2220,41 @@ export default function CombinedChat({
               </Fragment>
             )
           } else {
-            lineParts.push(
-              <span
-                key={`dgg-nick-${key++}`}
-                className="dgg-mention hover:underline cursor-context-menu"
-                onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
-                onDoubleClick={() => handleNickDoubleClick(seg.value)}
-                onMouseUp={(e) => e.stopPropagation()}
-              >
-                {seg.value}
-              </span>
-            )
+            /* When a word is both a nick and an emote, prefer emote (emote match is case-sensitive; nick match is not). */
+            const treatAsEmote = emotesMap.has(seg.value)
+            if (treatAsEmote) {
+              lineParts.push(
+                <Fragment key={`dgg-txt-${key++}`}>
+                  {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
+                </Fragment>
+              )
+            } else {
+              lineParts.push(
+                <span
+                  key={`dgg-nick-${key++}`}
+                  className="dgg-mention hover:underline cursor-context-menu"
+                  onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
+                  onDoubleClick={() => handleNickDoubleClick(seg.value)}
+                  onMouseUp={(e) => e.stopPropagation()}
+                >
+                  {seg.value}
+                </span>
+              )
+            }
           }
         }
         if (isGreentext) {
           parts.push(
             <span
               key={`greentext-${key++}`}
+              className="msg-chat-greentext"
               style={{
                 color: 'rgb(108, 165, 40)',
                 fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
-                fontSize: '16px',
-                lineHeight: '26.4px',
                 boxSizing: 'border-box',
                 textRendering: 'optimizeLegibility',
                 overflowWrap: 'break-word',
+                lineHeight: 1.6,
               }}
             >
               {lineParts}
@@ -2381,20 +2405,19 @@ export default function CombinedChat({
                 title="Show Pinned Message"
               />
               <div
-                className="msg-chat msg-pinned text-sm rounded-md flex flex-nowrap items-start gap-2 bg-base-100 m-2 p-2"
+                className="msg-chat msg-pinned text-sm rounded-md flex flex-nowrap items-start gap-2 bg-base-100 m-2 p-2 cursor-pointer hover:bg-red-500/15 transition-colors"
                 data-username={pinnedMessage.nick}
                 id="msg-pinned"
+                role="button"
+                tabIndex={0}
+                title="Click to close pinned message"
+                onClick={() => {
+                  const sel = window.getSelection?.()
+                  if (!sel?.toString()?.trim()) setPinnedHidden(true)
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && setPinnedHidden(true)}
+                aria-label="Pinned message; click to close"
               >
-                <button
-                  id="close-pin-btn"
-                  type="button"
-                  className="chat-tool-btn btn btn-ghost btn-xs btn-circle shrink-0 text-base-content/80 hover:text-base-content hover:bg-base-200"
-                  title="Close Pinned Message"
-                  onClick={() => setPinnedHidden(true)}
-                  aria-label="Close pinned message"
-                >
-                  <span className="text-lg leading-none select-none">×</span>
-                </button>
                 {showTimestamps && (
                   <time
                     className="time text-base-content/60 text-xs shrink-0"
@@ -2409,7 +2432,7 @@ export default function CombinedChat({
                     {pinnedMessage.nick}
                   </span>
                   <span className="ctrl">: </span>
-                  <span className="text whitespace-pre-wrap break-words">
+                  <span className="msg-chat-content text whitespace-pre-wrap break-words">
                     {renderTextWithLinks(pinnedMessage.data ?? '', emotePattern, emotesMap, onOpenLink)}
                   </span>
                 </span>
@@ -2638,7 +2661,7 @@ export default function CombinedChat({
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
-                className={`msg-chat text-sm leading-snug px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-0 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
                 {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
                 {showSourceLabels && (m.source === 'dgg' ? (dggLabelText != null && dggLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
@@ -2700,12 +2723,9 @@ export default function CombinedChat({
                     </span>
                   )}
                 </span>
-                <span className="whitespace-pre-wrap break-words min-w-0">
+                <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0">
                   {m.source === 'dgg' ? (
-                    <span
-                      className="msg-chat"
-                      style={{ position: 'relative', display: 'inline', overflow: 'visible' }}
-                    >
+                    <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
                       {renderDggMessageContent(m.content ?? '')}
                     </span>
                   ) : m.source === 'kick'
@@ -2732,7 +2752,7 @@ export default function CombinedChat({
           return (
             <div
               key={`combo-${source}-${emoteKey}-${tsMs}-${count}`}
-              className={`msg-chat msg-emote text-sm leading-snug px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass}`}
+              className={`msg-chat msg-emote text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass}`}
               data-combo={count}
               data-combo-group={comboStepClass}
             >
