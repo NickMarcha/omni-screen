@@ -1,7 +1,7 @@
 {
   "name": "omni-screen",
   "private": true,
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "The Omni Screen",
   "author": "Nick Marcha <nicolasmmjoes@gmail.com>",
   "type": "module",
