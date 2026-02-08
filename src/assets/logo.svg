@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="300" viewBox="0 0 280 300">
+  <g fill="none" stroke="#000" stroke-width="14" stroke-linejoin="round">
+
+    <!-- Screen (tight framing) -->
+    <rect x="28" y="24" width="224" height="164" rx="20" />
+
+    <!-- Stand -->
+    <!-- vertical stem as rectangle -->
+    <rect x="132" y="188" width="16" height="28" rx="4" fill="#000" stroke="none" />
+    <!-- base -->
+    <line x1="108" y1="230" x2="172" y2="230" stroke-linecap="round" />
+
+    <!-- Closed eye mark -->
+    <g>
+      <!-- Eyelid -->
+      <path
+        d="M 60 96 Q 140 140 220 96"
+        stroke-linecap="round"
+      />
+
+      <!-- Tangent-aligned icicle eyelashes -->
+      <g fill="#000" stroke="none">
+        <polygon points="82,110 96,118 80,150" />
+        <polygon points="110,116 124,120 112,152" />
+        <polygon points="134,120 146,120 140,156" />
+        <polygon points="156,120 170,116 168,152" />
+        <polygon points="184,118 198,110 200,150" />
+      </g>
+    </g>
+
+  </g>
+</svg>
