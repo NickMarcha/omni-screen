@@ -498,7 +498,7 @@ export class ChatWebSocket extends EventEmitter {
     const typeToken = message.split(' ', 1)[0] || 'UNKNOWN'
     const nextCount = (this.typeCounts.get(typeToken) || 0) + 1
     this.typeCounts.set(typeToken, nextCount)
-    const knownChatTypes = new Set(['MSG', 'HISTORY', 'JOIN', 'QUIT', 'NAMES', 'PIN', 'PAIDEVENTS', 'ME', 'UPDATEUSER', 'POLLSTART', 'POLLSTOP', 'VOTECOUNTED', 'POLLVOTEERROR', 'ERR', 'PRIVMSG', 'DEATH', 'UNBAN', 'SUBSCRIPTION', 'BROADCAST', 'BAN', 'SUBONLY', 'RELOAD', 'PRIVMSGSENT', 'ADDPHRASE', 'REMOVEPHRASE', 'GIFTSUB', 'MASSGIFT', 'DONATION'])
+    const knownChatTypes = new Set(['MSG', 'HISTORY', 'JOIN', 'QUIT', 'NAMES', 'PIN', 'PAIDEVENTS', 'ME', 'UPDATEUSER', 'POLLSTART', 'POLLSTOP', 'VOTECOUNTED', 'POLLVOTEERROR', 'ERR', 'PRIVMSG', 'DEATH', 'UNBAN', 'SUBSCRIPTION', 'BROADCAST', 'BAN', 'SUBONLY', 'RELOAD', 'PRIVMSGSENT', 'ADDPHRASE', 'REMOVEPHRASE', 'GIFTSUB', 'MASSGIFT', 'DONATION', 'MUTE', 'UNMUTE'])
     if (!this.seenTypes.has(typeToken)) {
       this.seenTypes.add(typeToken)
       if (!knownChatTypes.has(typeToken)) {

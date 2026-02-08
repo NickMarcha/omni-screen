@@ -431,7 +431,14 @@ function createApplicationMenu() {
         { role: 'zoomIn', label: 'Zoom In' },
         { role: 'zoomOut', label: 'Zoom Out' },
         { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Fullscreen' }
+        { role: 'togglefullscreen', label: 'Toggle Fullscreen' },
+        { type: 'separator' },
+        {
+          label: 'Hide title bar (Alt)',
+          click: () => {
+            win?.webContents.send('title-bar-toggle')
+          }
+        }
       ]
     },
     {

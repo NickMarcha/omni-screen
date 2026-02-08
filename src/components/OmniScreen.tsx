@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal, flushSync } from 'react-dom'
+import { createPortal } from 'react-dom'
 import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
 import TwitchEmbed from './embeds/TwitchEmbed'
@@ -417,19 +417,6 @@ function formatDggFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean;
   const key = kb.key === ' ' ? 'Space' : kb.key
   parts.push(key)
   return parts.join(' + ')
-}
-
-function startViewTransitionIfSupported(run: () => void) {
-  const anyDoc = document as any
-  if (typeof anyDoc?.startViewTransition === 'function') {
-    anyDoc.startViewTransition(() => {
-      flushSync(() => {
-        run()
-      })
-    })
-    return
-  }
-  run()
 }
 
 function parseEmbedKey(key: string): { platform: string; id: string } | null {

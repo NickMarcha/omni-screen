@@ -11,6 +11,23 @@ type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('menu')
+  const [titleBarVisible, setTitleBarVisible] = useState(true)
+
+  // Alt or View → Hide title bar: toggle title bar visibility.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Alt' && !e.repeat) {
+        e.preventDefault()
+        setTitleBarVisible((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    const unsub = window.ipcRenderer?.on?.('title-bar-toggle', () => setTitleBarVisible((v) => !v)) as unknown as (() => void) | undefined
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      unsub?.()
+    }
+  }, [])
 
   // Apply persisted theme on app load (Menu can edit it).
   useEffect(() => {
@@ -71,7 +88,7 @@ function App() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-base-100 text-base-content">
-      <TitleBar />
+      {titleBarVisible && <TitleBar />}
       {/* pt-1 gives a small gap so DevTools or first row of content isn't covered by the title bar */}
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden pt-1 relative z-0">{pageContent}</main>
     </div>

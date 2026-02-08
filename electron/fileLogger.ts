@@ -65,7 +65,7 @@ class FileLogger {
 
   /**
    * Initialize log files for this session.
-   * Creates two files: general (info/warn) and errors-only.
+   * Creates only the general log file. Errors-only file is created on first error (like ws-discrepancies).
    */
   initialize() {
     try {
@@ -74,18 +74,12 @@ class FileLogger {
       this.sessionTimestamp = timestamp
       const iso = new Date().toISOString()
 
-      // General log: info + warning
+      // General log: info + warning (always created)
       const filename = `app-${timestamp}.log`
       this.logFilePath = path.join(logsDir, filename)
       this.logStream = fs.createWriteStream(this.logFilePath, { flags: 'a' })
       this.logStream.write(`[${iso}] [INFO] [MAIN] === Application Session Started ===\n`)
-
-      // Errors-only log
-      const errorFilename = `app-${timestamp}-errors.log`
-      this.errorLogFilePath = path.join(logsDir, errorFilename)
-      this.errorStream = fs.createWriteStream(this.errorLogFilePath, { flags: 'a' })
-      this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session Started (errors only) ===\n`)
-      this.logStream.write(`[${iso}] [INFO] [MAIN] [FileLogger] Log files: general=${filename}, errors=${errorFilename}\n`)
+      this.logStream.write(`[${iso}] [INFO] [MAIN] [FileLogger] Log file: ${filename} (errors file created only if an error is logged)\n`)
 
       return this.logFilePath
     } catch (error) {
@@ -100,8 +94,32 @@ class FileLogger {
   }
 
   private ensureSessionInitialized() {
-    if (!this.logStream || !this.errorStream || !this.sessionTimestamp) {
+    if (!this.logStream || !this.sessionTimestamp) {
       this.initialize()
+    }
+  }
+
+  /** Create the errors-only log file on first use (like ws-discrepancies). */
+  private getOrCreateErrorStream(): fs.WriteStream | null {
+    this.ensureSessionInitialized()
+    if (this.errorStream) return this.errorStream
+    if (!this.sessionTimestamp) return null
+
+    try {
+      const logsDir = this.getLogsDirectory()
+      const errorFilename = `app-${this.sessionTimestamp}-errors.log`
+      this.errorLogFilePath = path.join(logsDir, errorFilename)
+      this.errorStream = fs.createWriteStream(this.errorLogFilePath, { flags: 'a' })
+      const iso = new Date().toISOString()
+      this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session (errors only) ===\n`)
+      return this.errorStream
+    } catch (e) {
+      try {
+        if (process.stderr?.write) process.stderr.write(`[FileLogger] Failed to create errors log: ${e}\n`)
+      } catch {
+        // ignore
+      }
+      return null
     }
   }
 
@@ -215,8 +233,9 @@ class FileLogger {
       logLine += '\n'
 
       this.logStream.write(logLine)
-      if (level === 'error' && this.errorStream) {
-        this.errorStream.write(logLine)
+      if (level === 'error') {
+        const errStream = this.getOrCreateErrorStream()
+        if (errStream) errStream.write(logLine)
       }
     } catch {
       try {
@@ -242,9 +261,9 @@ class FileLogger {
       this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session Ended ===\n`)
       this.errorStream.end()
       this.errorStream = null
+      this.errorLogFilePath = null
     }
     this.logFilePath = null
-    this.errorLogFilePath = null
     for (const stream of this.extraStreams.values()) {
       try {
         stream.end()
