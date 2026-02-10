@@ -1,19 +1,18 @@
 const OMNI_PALETTE = [
-  '#7dcf67', // destiny kick
+  '#7dcf67', // reserved
   '#8450c5', // random
   '#ccb55d', // random
   '#cc5e9c', // random
   '#55633d', // random
-  '#be5640', // destiny youtube
-  '#94b3c3', // dgg
+  '#be5640', // reserved
+  '#94b3c3', // primary chat source
   '#533958', // random
 ] as const
 
 export type OmniColor = (typeof OMNI_PALETTE)[number]
 
-const COLOR_DGG: OmniColor = '#94b3c3'
-const COLOR_DESTINY_KICK: OmniColor = '#7dcf67'
-const COLOR_DESTINY_YOUTUBE: OmniColor = '#be5640'
+/** Color for primary chat source when key matches opts.primaryChatSourceId. */
+const COLOR_PRIMARY_CHAT: OmniColor = '#94b3c3'
 
 /** Default color when a bookmarked streamer has no dock/platform color set. Not from the random palette. */
 export const COLOR_BOOKMARKED_DEFAULT = '#6b7280'
@@ -39,20 +38,15 @@ export function omniColorForKey(
   key: string,
   opts?: {
     displayName?: string
+    /** When set, this key (and key:) gets the primary chat source color. */
+    primaryChatSourceId?: string | null
   },
 ): OmniColor {
   const k = String(key || '').toLowerCase()
   if (!k) return NON_RESERVED[0]
 
-  if (k === 'dgg' || k.startsWith('dgg:')) return COLOR_DGG
-
-  // Special-case Destiny's Kick channel
-  if (k === 'kick:destiny') return COLOR_DESTINY_KICK
-
-  // Special-case Destiny on YouTube when the stream/channel name indicates Destiny.
-  // (YouTube "id" is usually a videoId; displayName is the best signal we have.)
-  const dn = String(opts?.displayName || '').trim().toLowerCase()
-  if (k.startsWith('youtube:') && (k === 'youtube:destiny' || dn === 'destiny')) return COLOR_DESTINY_YOUTUBE
+  const primaryId = opts?.primaryChatSourceId?.toLowerCase()
+  if (primaryId && (k === primaryId || k.startsWith(primaryId + ':'))) return COLOR_PRIMARY_CHAT
 
   const idx = djb2(k) % NON_RESERVED.length
   return NON_RESERVED[idx] || NON_RESERVED[0]

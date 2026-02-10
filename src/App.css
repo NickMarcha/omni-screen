@@ -19,7 +19,7 @@ body {
   flex-direction: column;
 }
 
-/* Base scrollbar app-wide: Destiny-style thin, rounded, transparent track, semi-transparent thumb */
+/* Base scrollbar app-wide: thin, rounded, transparent track, semi-transparent thumb */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
@@ -205,8 +205,8 @@ body {
   scrollbar-width: none;
 }
 
-/* Combined chat: base .emote styles to match destiny.gg/embed/chat (chat.vendor.css).
-   We load cdn.destiny.gg/emotes/emotes.css for per-emote images; this base rule ensures
+/* Combined chat: base .emote styles to match primary chat embed.
+   Per-emote images come from the chat source extension; this base rule ensures
    inline-block, overflow, and alignment match the embed. */
 
 /* Emote vertical alignment: center the emote (50% of its height) with the text line center.
@@ -274,7 +274,7 @@ body {
   line-height: 1.6 !important;
 }
 
-/* DGG flairs: CDN flairs.css sets .flair.<name> { background-image, height, width }. Base rule so icons display. */
+/* Primary chat flairs: extension flairs.css sets .flair.<name> { background-image, height, width }. Base rule so icons display. */
 .flair {
   display: inline-block;
   vertical-align: middle;
@@ -293,7 +293,7 @@ body {
   border-left-color: rgba(0, 0, 0, 0.2);
 }
 
-/* Combo row: emote must not shrink so destiny.gg emotes.css dimensions apply correctly */
+/* Combo row: emote must not shrink so extension emotes dimensions apply correctly */
 .msg-chat.msg-emote .emote {
   flex-shrink: 0;
 }
@@ -305,13 +305,13 @@ body {
 .msg-chat .chat-combo.x30 .count { font-size: 400%; }
 .msg-chat .chat-combo.x50 .count { font-size: 500%; }
 
-/* Pause DGG emote CSS animations when off-screen (chat setting: Pause emote animations when off-screen) */
+/* Pause primary chat emote CSS animations when off-screen (chat setting: Pause emote animations when off-screen) */
 .emote-paused {
   animation-play-state: paused !important;
 }
 
-/* DGG autocomplete dropdown: render emote images same as chat */
-.dgg-autocomplete-list .emote {
+/* Primary chat autocomplete dropdown: render emote images same as chat */
+.primary-chat-autocomplete-list .emote {
   display: inline-block;
   position: relative;
   overflow: hidden;

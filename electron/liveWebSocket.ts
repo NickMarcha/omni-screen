@@ -19,11 +19,11 @@ export class LiveWebSocket extends EventEmitter {
   private isIntentionallyClosed = false
   private connectionTimeout: NodeJS.Timeout | null = null
   private typeCounts: Map<string, number> = new Map()
-  private seenTypes: Set<string> = new Set()
 
   private readonly origin: string
 
-  constructor(url: string = 'wss://live.destiny.gg/', origin: string = 'https://www.destiny.gg') {
+  /** URL and origin are provided by the chat source extension when the live socket is created. */
+  constructor(url: string, origin: string) {
     super()
     this.url = url
     this.origin = origin
@@ -76,102 +76,7 @@ export class LiveWebSocket extends EventEmitter {
           if (typeof type === 'string') {
             const nextCount = (this.typeCounts.get(type) || 0) + 1
             this.typeCounts.set(type, nextCount)
-            const knownLiveTypes = new Set([
-              'dggApi:embeds',
-              'dggApi:bannedEmbeds',
-              'dggApi:hosting',
-              'dggApi:youtubeVods',
-              'dggApi:videos',
-              'dggApi:streamInfo',
-              'dggApi:events',
-            ])
-            if (!this.seenTypes.has(type)) {
-              this.seenTypes.add(type)
-              if (!knownLiveTypes.has(type)) {
-                fileLogger.writeWsDiscrepancy('live', 'new_type_observed', {
-                  type,
-                  sampleKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
-                  sample: parsed,
-                })
-              }
-            }
-
-            // Extra shape validation for types we actively use
-            if (type === 'dggApi:embeds') {
-              const dataField = (parsed as any).data
-              if (!Array.isArray(dataField)) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:embeds', {
-                  expected: 'data: array',
-                  actualType: typeof dataField,
-                  sample: parsed,
-                })
-              } else {
-                const missing = dataField.filter((e: any) => !e || typeof e.platform !== 'string' || typeof e.id !== 'string').length
-                if (missing > 0) {
-                  fileLogger.writeWsDiscrepancy('live', 'item_mismatch:dggApi:embeds', {
-                    total: dataField.length,
-                    missingPlatformOrId: missing,
-                    sampleFirst: dataField[0],
-                  })
-                }
-              }
-            } else if (type === 'dggApi:bannedEmbeds') {
-              const dataField = (parsed as any).data
-              if (!(dataField === null || Array.isArray(dataField))) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:bannedEmbeds', {
-                  expected: 'data: null | array',
-                  actualType: typeof dataField,
-                  sample: parsed,
-                })
-              }
-            } else if (type === 'dggApi:hosting') {
-              const dataField = (parsed as any).data
-              if (dataField !== null && dataField !== undefined) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:hosting', {
-                  expected: 'data: null',
-                  actualType: typeof dataField,
-                  sample: parsed,
-                })
-              }
-            } else if (type === 'dggApi:youtubeVods') {
-              const dataField = (parsed as any).data
-              if (!Array.isArray(dataField)) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:youtubeVods', {
-                  expected: 'data: array',
-                  actualType: typeof dataField,
-                  sample: parsed,
-                })
-              }
-            } else if (type === 'dggApi:videos') {
-              const dataField = (parsed as any).data
-              if (!(dataField && typeof dataField === 'object' && Array.isArray(dataField.videos) && typeof dataField.source === 'string')) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:videos', {
-                  expected: 'data: { videos: array, source: string }',
-                  actual: dataField && typeof dataField === 'object' ? { hasVideos: Array.isArray(dataField.videos), sourceType: typeof dataField.source } : typeof dataField,
-                  sample: parsed,
-                })
-              }
-            } else if (type === 'dggApi:streamInfo') {
-              const dataField = (parsed as any).data
-              if (!(dataField && typeof dataField === 'object' && dataField.streams && typeof dataField.streams === 'object')) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:streamInfo', {
-                  expected: 'data: { streams: object }',
-                  actualType: dataField && typeof dataField === 'object' ? typeof dataField.streams : typeof dataField,
-                  sample: parsed,
-                })
-              }
-            } else if (type === 'dggApi:events') {
-              const dataField = (parsed as any).data
-              if (!Array.isArray(dataField)) {
-                fileLogger.writeWsDiscrepancy('live', 'shape_mismatch:dggApi:events', {
-                  expected: 'data: array',
-                  actualType: typeof dataField,
-                  sample: parsed,
-                })
-              }
-            }
           } else {
-            // JSON but unexpected shape
             fileLogger.writeWsDiscrepancy('live', 'unexpected_message_shape', {
               preview: raw.slice(0, 1000),
               sampleKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [],
@@ -179,7 +84,6 @@ export class LiveWebSocket extends EventEmitter {
           }
           this.emit('message', parsed)
         } catch {
-          // Forward raw text if it isn't JSON (still useful)
           fileLogger.writeWsDiscrepancy('live', 'non_json_message', {
             preview: raw.slice(0, 2000),
           })

@@ -1,6 +1,6 @@
 # Omni Screen [![Latest Build](https://github.com/NickMarcha/omni-screen/actions/workflows/build-publish.yml/badge.svg)](https://github.com/NickMarcha/omni-screen/actions/workflows/build-publish.yml)
 
-A client application for the Destiny.gg (dgg) community, designed to enhance your viewing and chat experience across multiple platforms.
+A desktop client that combines chat and live streams from multiple platforms (primary chat source, YouTube, Kick, Twitch) in one split-screen view.
 
 ## 🎬 OmniScreen
 
@@ -9,7 +9,7 @@ A client application for the Destiny.gg (dgg) community, designed to enhance you
 
 [Higher Quality Video](./docs/OmniScreenDemo.mov)
 
-*Main feature: split-screen with combined chat (DGG, YouTube, Kick, Twitch), and live embeds (YouTube/Kick/Twitch).*
+*Main feature: split-screen with combined chat (primary chat, YouTube, Kick, Twitch) and live embeds (YouTube/Kick/Twitch).*
 
 ## 📥 Download & Install
 
@@ -45,27 +45,63 @@ If you see a Windows SmartScreen warning when installing, this is a standard iss
 
 ## 🎯 Overview
 
-Omni Screen is a downloadable desktop application built for the Destiny.gg community. The application is designed as a native client to bypass CORS restrictions from various backends, enabling seamless integration of multiple services and features.
+Omni Screen is a downloadable desktop application that aggregates chat and live streams from multiple platforms. It runs as a native client to bypass CORS restrictions from various backends, enabling a single split-screen view with combined chat and embeds.
 
 ## ✨ Current Features
 
 ### OmniScreen (main feature)
 
-Split-screen view with combined chat (including DGG), live stream embeds, and a unified chat feed.
+Split-screen view with combined chat, live stream embeds, and a unified chat feed.
 
 #### Key Features:
-- **Split-screen layout**: Combined chat pane (DGG + YouTube + Kick + Twitch) alongside embedded streams (YouTube, Kick, Twitch)
-- **Live embeds**: Add streams by pasting links or from the DGG live list; dock with grouped streamers
-- **Combined chat**: Single feed aggregating chat from DGG, YouTube, Kick, and Twitch (DGG is always available via this feed)
-- **DGG private messages (whispers)**: Persistent list (localStorage); list grows from unread API, PRIVMSG events, and when you send a whisper only if the inbox fetch succeeds. List view: "Whisper To" + message at bottom (message disabled until recipient set). Add to list and open conversation only when `GET /api/messages/usr/:username/inbox` succeeds after sending; otherwise fields just clear. Send via WebSocket; sticky Back; unread count and badge on 📫/📬
+- **Split-screen layout**: Combined chat pane (primary chat + YouTube + Kick + Twitch) alongside embedded streams (YouTube, Kick, Twitch)
+- **Live embeds**: Add streams by pasting links or from the live embed list; dock with grouped streamers
+- **Combined chat**: Single feed aggregating chat from primary chat, YouTube, Kick, and Twitch (primary chat is available when a chat-source extension is loaded)
+- **Primary chat private messages (whispers)**: Persistent list (localStorage); list grows from unread API, PRIVMSG events, and when you send a whisper only if the inbox fetch succeeds. List view: "Whisper To" + message at bottom (message disabled until recipient set). Add to list and open conversation only when the inbox API succeeds after sending; otherwise fields just clear. Send via WebSocket; sticky Back; unread count and badge on 📫/📬
 - **Embed chat toggles**: Show/hide chat per platform in the combined view
 - **Highlight term**: Option to highlight messages containing a term (e.g. your username) in combined chat
-- **Pinned streamers**: Group embeds by streamer (e.g. Destiny on YouTube + Kick) with one dock button per streamer
+- **Pinned streamers**: Group embeds by streamer (e.g. one streamer on YouTube + Kick) with one dock button per streamer
 - **What’s being watched**: Pie chart (embeds WebSocket data) in the dock
+
+- **Bookmark sharing**: In Settings → Bookmarked streamers, use **Share** on a streamer to copy an `omnichat://add-streamer?...` link (with or without colors). Anyone opening the link in Omni Screen adds that streamer to their bookmarks.
+
+#### Add-streamer protocol (bookmark via URL)
+
+You can add a bookmarked streamer by opening a link with the `omnichat://` protocol. When the app is set as the handler for `omnichat://`, the link adds the streamer to the bookmarks list.
+
+**URL form:** `omnichat://add-streamer?<params>`
+
+**Parameters:**
+
+| Param | Description |
+|-------|-------------|
+| `nickname` or `nick` | Display name (default: "Unnamed") |
+| `youtube` or `youtubeChannelId` | YouTube channel ID (e.g. `UCxxxx`) |
+| `kick` or `kickSlug` | Kick channel slug |
+| `twitch` or `twitchLogin` | Twitch login name |
+| `color` | Hex color for dock button (e.g. `#ff6b6b`; in URL use `%23` for `#`) |
+| `youtubeColor`, `kickColor`, `twitchColor` | Per-platform hex for combined chat |
+| `openWhenLive` | `true` or `1` = auto-open when live (default); `false` or `0` = off |
+| `hideLabel` | `true` or `1` = hide source label in combined chat |
+
+At least one of `youtube`, `kick`, or `twitch` is required. The alias `omnichat://bookmark?...` works the same as `add-streamer`.
+
+**Examples:**
+
+- Minimal (one platform):  
+  `omnichat://add-streamer?nickname=MyStreamer&youtube=UCxxxxxxxx`  
+  `omnichat://add-streamer?nickname=KickUser&kick=kickuser`  
+  `omnichat://add-streamer?nickname=TwitchUser&twitch=twitchuser`
+- With dock color:  
+  `omnichat://add-streamer?nickname=Streamer&youtube=UCxxxx&color=%23ff6b6b`
+- Multiple platforms and per-platform colors:  
+  `omnichat://add-streamer?nickname=Multi&youtube=UCxxxx&kick=kickuser&twitch=twitchuser&youtubeColor=%2300ff00&kickColor=%230000ff&twitchColor=%23ff00ff`
+- Options:  
+  `omnichat://add-streamer?nickname=Streamer&kick=user&openWhenLive=false&hideLabel=true`
 
 ### Link Scroller
 
-Browse links shared in Destiny.gg chat mentions.
+Browse links shared in chat mentions (e.g. from your primary chat source and other enabled channels).
 
 #### Key Features:
 - **Mentions API Integration**: Retrieve and display links from messages that mention specific users
@@ -100,12 +136,12 @@ Browse links shared in Destiny.gg chat mentions.
 
 ### Connections / Accounts
 
-Log in once per platform so DGG chat, embeds, and Link Scroller can use your session.
+Log in once per platform so chat, embeds, and Link Scroller can use your session.
 
 - **Where**: Menu → **Connections / Accounts**.
 - **Simplified mode**: Use **Log in** to open an in-app browser; the app shows “Logged in” only when real auth cookies are present. Use **Delete cookies** per platform to sign out.
 - **Paranoid mode**: Paste cookies manually (e.g. from DevTools); you never type your password in the app.
-- **Platforms**: DGG (chat + API), YouTube (embeds + live chat), Kick, Twitch, Twitter/X (embeds), Reddit (embeds). Clear all sessions or the entire cookie store from the same screen.
+- **Platforms**: Primary chat (when enabled via extension), YouTube (embeds + live chat), Kick, Twitch, Twitter/X (embeds), Reddit (embeds). Clear all sessions or the entire cookie store from the same screen.
 
 For detailed feature documentation, see [IMPLEMENTED-FEATURES.md](./IMPLEMENTED-FEATURES.md).
 

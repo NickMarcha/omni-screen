@@ -111,7 +111,7 @@ export default function DebugPage({ onBackToMenu }: DebugPageProps) {
       nick: cardData.nick,
       date: cardDate,
       platform: cardData.platform as 'dgg' | 'kick',
-      channel: cardData.platform === 'kick' ? 'channel' : 'Destinygg',
+      channel: cardData.platform === 'kick' ? 'channel' : 'Redacted',
       isTrusted: false,
       isStreaming: false,
       ...embedFields,

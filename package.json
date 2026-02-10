@@ -14,7 +14,7 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "test:embeds": "tsx scripts/test-embeds.ts",
-    "check:dgg-upstream": "npx tsx scripts/check-dgg-chat-upstream.ts"
+    "check:chat-upstream": "npx tsx scripts/check-chat-upstream.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",

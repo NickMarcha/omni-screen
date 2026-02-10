@@ -2,27 +2,26 @@ import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useImpera
 import { createPortal } from 'react-dom'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 import PollView, { type PollData } from './PollView'
-import dggPlatformIcon from '../assets/icons/third-party/platforms/dgg.png'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
 
-const PLATFORM_ICONS: Record<string, string> = {
-  dgg: dggPlatformIcon,
+/** Built-in platform icons (kick, youtube, twitch). Primary chat source icon is provided by the extension via primaryChatSourceIconUrl prop. */
+const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
   kick: kickPlatformIcon,
   youtube: youtubePlatformIcon,
   twitch: twitchPlatformIcon,
 }
 
-function getPlatformIcon(colorKey: string): string | undefined {
-  if (colorKey === 'dgg') return PLATFORM_ICONS.dgg
-  if (colorKey.startsWith('kick:')) return PLATFORM_ICONS.kick
-  if (colorKey.startsWith('youtube:')) return PLATFORM_ICONS.youtube
-  if (colorKey.startsWith('twitch:')) return PLATFORM_ICONS.twitch
+function getPlatformIcon(colorKey: string, primaryChatSourceIconUrl: string | undefined, primaryChatSourceId: string | null): string | undefined {
+  if (primaryChatSourceId && colorKey === primaryChatSourceId) return primaryChatSourceIconUrl
+  if (colorKey.startsWith('kick:')) return BUILTIN_PLATFORM_ICONS.kick
+  if (colorKey.startsWith('youtube:')) return BUILTIN_PLATFORM_ICONS.youtube
+  if (colorKey.startsWith('twitch:')) return BUILTIN_PLATFORM_ICONS.twitch
   return undefined
 }
 
-interface DggChatMessage {
+interface PrimaryChatMessage {
   id: number
   nick: string
   roles?: string[]
@@ -36,7 +35,7 @@ interface DggChatMessage {
 }
 
 /** Inbox message from GET /api/messages/usr/:username/inbox */
-interface DggInboxMessage {
+interface PrimaryChatInboxMessage {
   id: number
   userid: number
   targetuserid: number
@@ -49,7 +48,7 @@ interface DggInboxMessage {
   to: string
 }
 
-const DGG_WHISPER_USERS_KEY = 'omni-screen:dgg-whisper-usernames'
+const PRIMARY_CHAT_WHISPER_USERS_KEY = 'omni-screen:primary-chat-whisper-usernames'
 
 /** Format whisper timestamp: same day → hh:mm, else → date + hh:mm */
 function formatWhisperTimestamp(ts: string): string {
@@ -61,20 +60,20 @@ function formatWhisperTimestamp(ts: string): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-type DggChatWsMessage = { type: 'MSG'; message: DggChatMessage }
-/** Broadcast payload from DGG (BROADCAST {...}). */
-interface DggBroadcastPayload {
+type PrimaryChatWsMessage = { type: 'MSG'; message: PrimaryChatMessage }
+/** Broadcast payload from primary chat (BROADCAST {...}). */
+interface PrimaryChatBroadcastPayload {
   timestamp: number
   nick: string
   data: string
   user: { id: number; nick: string; roles: string[]; features: string[]; createdDate: string | null }
   uuid: string
 }
-type DggChatWsHistory = {
+type PrimaryChatWsHistory = {
   type: 'HISTORY'
-  messages: DggChatMessage[]
+  messages: PrimaryChatMessage[]
   /** When set, MSG and BROADCAST in order for correct timeline. */
-  items?: Array<{ type: 'MSG'; message: DggChatMessage } | { type: 'BROADCAST'; broadcast: DggBroadcastPayload }>
+  items?: Array<{ type: 'MSG'; message: PrimaryChatMessage } | { type: 'BROADCAST'; broadcast: PrimaryChatBroadcastPayload }>
 }
 
 interface KickChatMessage {
@@ -135,8 +134,8 @@ interface EmoteData {
   }>
 }
 
-/** DGG flair (from flairs.json): used for nickname color and flair icons. */
-interface DggFlair {
+/** Primary chat flair (from extension flairs.json): used for nickname color and flair icons. */
+interface PrimaryChatFlair {
   name: string
   label: string
   priority: number
@@ -147,7 +146,7 @@ interface DggFlair {
 }
 
 /** Highest-priority flair with a color for the user's features (mirrors chat-gui usernameColorFlair). */
-function usernameColorFlair(flairs: DggFlair[], user: { features?: string[] }): DggFlair | undefined {
+function usernameColorFlair(flairs: PrimaryChatFlair[], user: { features?: string[] }): PrimaryChatFlair | undefined {
   if (!Array.isArray(user.features) || user.features.length === 0) return undefined
   return flairs
     .filter((flair) => user.features!.some((f) => f === flair.name))
@@ -251,7 +250,7 @@ function processGreentext(
         return
       }
 
-      // Mimic DGG greentext styling (color, font); font size inherits; line-height inline so it wins.
+      // Mimic primary chat greentext styling (color, font); font size inherits; line-height inline so it wins.
       parts.push(
         <span
           key={`greentext-${keyCounter++}`}
@@ -276,7 +275,7 @@ function processGreentext(
   return parts.length > 0 ? parts : [text]
 }
 
-/** Matches http(s) URLs and Destiny-style # links: #kick/..., #twitch/..., #youtube/... */
+/** Matches http(s) URLs and hash-style # links: #kick/..., #twitch/..., #youtube/... */
 const LINK_REGEX = /(https?:\/\/[^\s]+|#(?:kick|twitch|youtube)\/[^\s]+)/gi
 
 function renderTextWithLinks(
@@ -308,13 +307,13 @@ function renderTextWithLinks(
     }
 
     const url = match[0]
-    const isDestinyLink = url.startsWith('#')
+    const isHashLink = url.startsWith('#')
     parts.push(
       <a
         key={`link-${keyCounter++}`}
-        href={isDestinyLink ? '#' : url}
-        target={isDestinyLink ? undefined : '_blank'}
-        rel={isDestinyLink ? undefined : 'noopener noreferrer'}
+        href={isHashLink ? '#' : url}
+        target={isHashLink ? undefined : '_blank'}
+        rel={isHashLink ? undefined : 'noopener noreferrer'}
         className="link link-primary break-words overflow-wrap-anywhere"
         onClick={(e) => {
           e.preventDefault()
@@ -347,9 +346,10 @@ function renderTextWithLinks(
   return <>{parts}</>
 }
 
-/** Plain text used for highlight-term matching only (excludes emote names so "destiny" doesn't match "destinycool" emote). */
+/** Plain text used for highlight-term matching only (excludes emote names). */
 function getContentForHighlight(m: CombinedItem): string {
-  if (m.source === 'dgg' || m.source === 'dgg-broadcast') return m.content ?? ''
+  const isPrimaryChat = !['kick', 'youtube', 'twitch'].includes(m.source) && !m.source.endsWith('-event') && !m.source.endsWith('-system')
+  if (isPrimaryChat || m.source.endsWith('-broadcast')) return m.content ?? ''
   if (m.source === 'kick') {
     const raw = (m as any).raw?.content ?? m.content ?? ''
     return String(raw).replace(/\[emote:\d+:[^\]]+\]/g, '')
@@ -367,12 +367,12 @@ function getContentForHighlight(m: CombinedItem): string {
   return m.content ?? ''
 }
 
-/** Segment type for DGG message content: plain text or a mentioned nick. */
-type DggContentSegment = { type: 'text'; value: string } | { type: 'nick'; value: string }
+/** Segment type for primary chat message content: plain text or a mentioned nick. */
+type PrimaryChatContentSegment = { type: 'text'; value: string } | { type: 'nick'; value: string }
 
 /** Split a non-link string into text and nick segments. Nicks match only as whole words (not inside other words). */
-function tokenizeNicksInText(text: string, re: RegExp): DggContentSegment[] {
-  const segments: DggContentSegment[] = []
+function tokenizeNicksInText(text: string, re: RegExp): PrimaryChatContentSegment[] {
+  const segments: PrimaryChatContentSegment[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
   re.lastIndex = 0
@@ -389,15 +389,15 @@ function tokenizeNicksInText(text: string, re: RegExp): DggContentSegment[] {
   return segments.length ? segments : [{ type: 'text', value: text }]
 }
 
-/** Split DGG message content into text and nick segments. Nicks are only matched outside of links, and only as whole words (not inside other words). */
-function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment[] {
+/** Split primary chat message content into text and nick segments. Nicks are only matched outside of links, and only as whole words (not inside other words). */
+function tokenizePrimaryChatContent(content: string, nicks: string[]): PrimaryChatContentSegment[] {
   if (!content) return [{ type: 'text', value: '' }]
   if (nicks.length === 0) return [{ type: 'text', value: content }]
   const sorted = [...nicks].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
   const escaped = sorted.map((n) => escapeRegexLiteral(n))
   /* Whole-word only: not preceded/followed by word char (so "John" in "Johnny" or "someJohn" does not match) */
   const nickRe = new RegExp(`(?<!\\w)(${escaped.join('|')})(?!\\w)`, 'gi')
-  const segments: DggContentSegment[] = []
+  const segments: PrimaryChatContentSegment[] = []
   let lastIndex = 0
   let linkMatch: RegExpExecArray | null
   LINK_REGEX.lastIndex = 0
@@ -416,7 +416,7 @@ function tokenizeDggContent(content: string, nicks: string[]): DggContentSegment
 }
 
 const SCROLL_THRESHOLD_PX = 40
-const DGG_AUTOCOMPLETE_LIMIT = 20
+const PRIMARY_CHAT_AUTOCOMPLETE_LIMIT = 20
 /** Base height for YouTube/Kick/Twitch inline emotes. 25% larger than previous 18px for readability. */
 const THIRD_PARTY_EMOTE_HEIGHT_PX = 23
 
@@ -437,31 +437,31 @@ function getWordAtCursor(value: string, cursor: number): { start: number; end: n
 function getAutocompleteSuggestions(
   fragment: string,
   emotesMap: Map<string, string>,
-  dggNicks: string[]
+  primaryChatNicks: string[]
 ): string[] {
   if (!fragment) return []
   const isUserSearch = fragment.startsWith('@')
   const search = (isUserSearch ? fragment.slice(1) : fragment).trim().toLowerCase()
   if (!search && !isUserSearch) return []
   if (isUserSearch) {
-    const nicks = dggNicks.filter((n) => n.toLowerCase().startsWith(search))
-    return nicks.slice(0, DGG_AUTOCOMPLETE_LIMIT)
+    const nicks = primaryChatNicks.filter((n) => n.toLowerCase().startsWith(search))
+    return nicks.slice(0, PRIMARY_CHAT_AUTOCOMPLETE_LIMIT)
   }
   const emotes: string[] = []
   emotesMap.forEach((_, prefix) => {
     if (prefix.toLowerCase().startsWith(search)) emotes.push(prefix)
   })
-  return emotes.slice(0, DGG_AUTOCOMPLETE_LIMIT)
+  return emotes.slice(0, PRIMARY_CHAT_AUTOCOMPLETE_LIMIT)
 }
 
-interface DggInputBarProps {
+interface PrimaryChatInputBarProps {
   value: string
   onChange: (value: string) => void
   onSend: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
   disabled?: boolean
   emotesMap: Map<string, string>
-  dggNicks: string[]
+  primaryChatNicks: string[]
   placeholder?: string
   /** Shown on the right of the input when set (e.g. "Ctrl + Space"). */
   shortcutLabel?: string
@@ -474,8 +474,8 @@ const HISTORY_MAX = 50
 const DROPDOWN_MAX_H = 192
 const DROPDOWN_MARGIN = 8
 
-const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function DggInputBar(
-  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder, shortcutLabel, dropdownInPortal = false },
+const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarProps>(function PrimaryChatInputBar(
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, primaryChatNicks, placeholder, shortcutLabel, dropdownInPortal = false },
   ref
 ) {
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -501,8 +501,8 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
 
   const { start, end, fragment } = getWordAtCursor(value, cursorPosition)
   const suggestionsFromFragment = useMemo(
-    () => getAutocompleteSuggestions(fragment, emotesMap, dggNicks),
-    [fragment, emotesMap, dggNicks]
+    () => getAutocompleteSuggestions(fragment, emotesMap, primaryChatNicks),
+    [fragment, emotesMap, primaryChatNicks]
   )
   const suggestions = fragment.length >= 1 ? suggestionsFromFragment : lastInsertedWord ? lastSuggestions : []
   const showDropdown = suggestions.length > 0 && (fragment.length >= 1 || lastInsertedWord != null)
@@ -734,7 +734,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
         )}
         {showDropdown && !dropdownInPortal && (
           <ul
-            className="dgg-autocomplete-list absolute left-0 right-0 bottom-full mb-1 py-1 bg-base-300 border border-base-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
+            className="primary-chat-autocomplete-list absolute left-0 right-0 bottom-full mb-1 py-1 bg-base-300 border border-base-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
             style={{ listStyle: 'none' }}
           >
             {suggestions.map((s, idx) => {
@@ -770,7 +770,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
         )}
         {showDropdown && dropdownInPortal && portalPosition && createPortal(
           <ul
-            className="dgg-autocomplete-list py-1 bg-base-300 border border-base-300 rounded-md shadow-lg overflow-y-auto z-[100]"
+            className="primary-chat-autocomplete-list py-1 bg-base-300 border border-base-300 rounded-md shadow-lg overflow-y-auto z-[100]"
             style={{
               listStyle: 'none',
               position: 'fixed',
@@ -817,13 +817,14 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
   )
 })
 
+/** Primary chat source id (e.g. from config.chatSources). Message source for primary chat uses this; events use `${id}-event`, `${id}-system`, `${id}-broadcast`. */
 type CombinedItem =
   | {
-      source: 'dgg'
+      source: string
       tsMs: number
       nick: string
       content: string
-      raw: DggChatMessage
+      raw: PrimaryChatMessage
       isHistory?: boolean
     }
   | {
@@ -854,7 +855,7 @@ type CombinedItem =
       isHistory?: boolean
     }
   | {
-      source: 'dgg-event'
+      source: string
       eventType: 'giftsub' | 'massgift' | 'donation'
       tsMs: number
       nick: string
@@ -863,7 +864,7 @@ type CombinedItem =
       isHistory?: boolean
     }
   | {
-      source: 'dgg-system'
+      source: string
       kind: 'mute' | 'ban' | 'unmute'
       tsMs: number
       content: string
@@ -871,11 +872,11 @@ type CombinedItem =
       isHistory?: boolean
     }
   | {
-      source: 'dgg-broadcast'
+      source: string
       tsMs: number
       nick: string
       content: string
-      raw: DggBroadcastPayload
+      raw: PrimaryChatBroadcastPayload
       isHistory?: boolean
     }
 
@@ -883,7 +884,8 @@ type CombinedItemWithSeq = CombinedItem & { seq: number }
 
 /** True only if the message is solely a single emote (nothing else). Combo grouping applies only to these. */
 function isSingleEmoteMessage(m: CombinedItem, emotesMap: Map<string, string>): boolean {
-  if (m.source === 'dgg') {
+  const isPrimaryChatMessage = !['kick', 'youtube', 'twitch'].includes(m.source) && !('eventType' in m) && !('kind' in m) && !m.source.endsWith('-broadcast')
+  if (isPrimaryChatMessage) {
     const trimmed = (m.content ?? '').trim()
     if (!trimmed) return false
     if (/\s/.test(trimmed)) return false
@@ -899,7 +901,8 @@ function isSingleEmoteMessage(m: CombinedItem, emotesMap: Map<string, string>): 
 /** Emote key for combo grouping: same key = same emote. Returns null if not a single-emote message. */
 function getEmoteKey(m: CombinedItem, emotesMap: Map<string, string>): string | null {
   if (!isSingleEmoteMessage(m, emotesMap)) return null
-  if (m.source === 'dgg') {
+  const isPrimaryChatMessage = !['kick', 'youtube', 'twitch'].includes(m.source) && !('eventType' in m) && !('kind' in m) && !m.source.endsWith('-broadcast')
+  if (isPrimaryChatMessage) {
     const trimmed = (m.content ?? '').trim()
     return emotesMap.has(trimmed) ? trimmed : null
   }
@@ -1076,22 +1079,22 @@ export type CombinedChatContextMenuConfig = {
     setShowLabels: (v: boolean) => void
     showPlatformIcons: boolean
     setShowPlatformIcons: (v: boolean) => void
-    showDggFlairsAndColors: boolean
-    setShowDggFlairsAndColors: (v: boolean) => void
+    showPrimaryChatSourceFlairsAndColors: boolean
+    setShowPrimaryChatSourceFlairsAndColors: (v: boolean) => void
   }
   order: { sortMode: 'timestamp' | 'arrival'; setSortMode: (v: 'timestamp' | 'arrival') => void }
   emotes: { pauseOffScreen: boolean; setPauseOffScreen: (v: boolean) => void }
   linkAction: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
   /** Chat pane side: left or right. */
   paneSide: { value: 'left' | 'right'; setPaneSide: (v: 'left' | 'right') => void }
-  dgg?: { showInput: boolean; setShowInput: (v: boolean) => void }
+  primaryChat?: { showInput: boolean; setShowInput: (v: boolean) => void }
   highlightTerms?: string[]
   addHighlightTerm?: (term: string) => void
   removeHighlightTerm?: (term: string) => void
 }
 
-/** Parse optional DGG label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
-function parseDggLabelColor(value: string | undefined): string | undefined {
+/** Parse optional primary chat label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
+function parsePrimaryChatLabelColor(value: string | undefined): string | undefined {
   if (!value || !value.trim()) return undefined
   const v = value.trim()
   if (/^#[0-9A-Fa-f]{6}$/.test(v)) return v
@@ -1106,13 +1109,15 @@ function parseDggLabelColor(value: string | undefined): string | undefined {
 }
 
 export default function CombinedChat({
-  enableDgg,
-  showDggInput = true,
+  primaryChatSourceId,
+  enablePrimaryChat,
+  showPrimaryChatInput = true,
   getEmbedDisplayName,
   getEmbedColor,
   getEmbedLabelHidden,
-  dggLabelColor,
-  dggLabelText = 'dgg',
+  primaryChatSourceLabelColor,
+  primaryChatSourceLabelText,
+  primaryChatSourceIconUrl,
   maxMessages,
   maxMessagesScroll = 5000,
   showTimestamps,
@@ -1121,14 +1126,16 @@ export default function CombinedChat({
   sortMode,
   highlightTerms = [],
   pauseEmoteAnimationsOffScreen = false,
-  showDggFlairsAndColors = true,
+  showPrimaryChatSourceFlairsAndColors = true,
   contextMenuConfig,
   onCountChange,
-  onDggUserCountChange,
+  onPrimaryChatUserCountChange,
+  onCombinedUserCountsChange,
   onOpenLink: onOpenLinkProp,
-  dggInputRef: dggInputRefProp,
-  dggChatActionsRef: dggChatActionsRefProp,
+  primaryChatInputRef: primaryChatInputRefProp,
+  primaryChatActionsRef: primaryChatActionsRefProp,
   focusShortcutLabel,
+  enabledKickSlugs = [],
   overlayMode = false,
   overlayOpacity = 0.85,
   messagesClickThrough = false,
@@ -1136,46 +1143,54 @@ export default function CombinedChat({
   inputContainerRef,
   contextMenuRef,
 }: {
-  enableDgg: boolean
-  /** When false, DGG chat input is hidden. When true, shown only when authenticated (ME received). */
-  showDggInput?: boolean
+  /** Id of the primary chat source (from config.chatSources). Used for source badge and message source. */
+  primaryChatSourceId: string | null
+  enablePrimaryChat: boolean
+  /** When false, primary chat input is hidden. When true, shown only when authenticated (ME received). */
+  showPrimaryChatInput?: boolean
   /** Lookup display name for a channel key (e.g. youtube:videoId); canonicalizes key so casing matches. */
   getEmbedDisplayName: (key: string) => string
-  /** Optional: color for embed channel in combined chat (hex). When set, used for non-DGG message accent. */
+  /** Optional: color for embed channel in combined chat (hex). When set, used for non-primary message accent. */
   getEmbedColor?: (key: string, displayName?: string) => string
   /** Optional: when true for an embed key, hide the source label (badge) for that message. */
   getEmbedLabelHidden?: (key: string) => boolean
-  /** Optional: override color for DGG label/badge (hex or rgb(r,g,b)). Default when unset: theme DGG color. */
-  dggLabelColor?: string
-  /** Text shown in the source badge for DGG messages. Default "dgg". */
-  dggLabelText?: string
+  /** Optional: override color for primary chat label/badge (hex or rgb(r,g,b)). Default when unset: theme color. */
+  primaryChatSourceLabelColor?: string
+  /** Optional: URL for primary chat platform icon in source badge. Provided by the extension. */
+  primaryChatSourceIconUrl?: string
+  /** Text shown in the source badge for primary chat messages. */
+  primaryChatSourceLabelText?: string
   maxMessages: number
   /** Max messages to keep when scrolled up (hard cap). Default 5000. */
   maxMessagesScroll?: number
   showTimestamps: boolean
   showSourceLabels: boolean
-  /** When true, show platform favicon (dgg, kick, youtube, twitch) in the source badge. */
+  /** When true, show platform favicon in the source badge. */
   showPlatformIcons?: boolean
   sortMode: 'timestamp' | 'arrival'
   /** When set, messages whose text contains any of these terms (case-insensitive) get a light blue background. */
   highlightTerms?: string[]
-  /** When true, pause CSS animations on DGG emotes when they scroll out of view (reduces restart-on-scroll). */
+  /** When true, pause CSS animations on primary chat emotes when they scroll out of view (reduces restart-on-scroll). */
   pauseEmoteAnimationsOffScreen?: boolean
-  /** When false, DGG usernames use a single accent color and no flair icons. Default true. */
-  showDggFlairsAndColors?: boolean
+  /** When false, primary chat usernames use a single accent color and no flair icons. Default true. */
+  showPrimaryChatSourceFlairsAndColors?: boolean
   /** When set, right-click on the message area shows a menu to toggle these options. */
   contextMenuConfig?: CombinedChatContextMenuConfig
   onCountChange?: (count: number) => void
-  /** Called when DGG user count (from NAMES/JOIN/QUIT) changes, for header display. */
-  onDggUserCountChange?: (count: number) => void
+  /** Called when primary chat user count (from NAMES/JOIN/QUIT) changes, for header display. */
+  onPrimaryChatUserCountChange?: (count: number) => void
+  /** Called with full breakdown (primary + per Kick slug) for header total/cycle and hover tooltip. */
+  onCombinedUserCountsChange?: (counts: { primary: number; kick: Record<string, number> }) => void
   /** When set, called when user clicks a link; otherwise links open in browser. */
   onOpenLink?: (url: string) => void
-  /** Optional ref from parent to focus the DGG input (e.g. for keybind). */
-  dggInputRef?: React.RefObject<HTMLTextAreaElement | null>
-  /** Optional ref from parent to get { appendToInput(text) } for pasting into DGG input (e.g. from dock menu). */
-  dggChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
+  /** Optional ref from parent to focus the primary chat input (e.g. for keybind). */
+  primaryChatInputRef?: React.RefObject<HTMLTextAreaElement | null>
+  /** Optional ref from parent to get { appendToInput(text) } for pasting into primary chat input (e.g. from dock menu). */
+  primaryChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
   /** Shortcut label for placeholder, e.g. "Ctrl + Space". */
   focusShortcutLabel?: string
+  /** Kick slugs that have chat enabled (for channel cycling and sending). Ctrl+Tab cycles primary chat + these. */
+  enabledKickSlugs?: string[]
   /** When true, chat is overlaid on embed area; messages area uses semi-transparent background. */
   overlayMode?: boolean
   /** Opacity of the messages area background in overlay mode (0–1). Default 0.85. */
@@ -1190,31 +1205,51 @@ export default function CombinedChat({
   contextMenuRef?: React.MutableRefObject<{ openContextMenu: (e: React.MouseEvent) => void } | null>
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
-  const [flairsList, setFlairsList] = useState<DggFlair[]>([])
-  const flairsMapRef = useRef<Map<string, DggFlair>>(new Map())
+  const [flairsList, setFlairsList] = useState<PrimaryChatFlair[]>([])
+  const flairsMapRef = useRef<Map<string, PrimaryChatFlair>>(new Map())
   flairsMapRef.current = useMemo(() => {
-    const m = new Map<string, DggFlair>()
+    const m = new Map<string, PrimaryChatFlair>()
     flairsList.forEach((f) => m.set(f.name, f))
     return m
   }, [flairsList])
-  const dggAccentColor = useMemo(
-    () => parseDggLabelColor(dggLabelColor) ?? omniColorForKey('dgg'),
-    [dggLabelColor],
+  const primaryChatAccentColor = useMemo(
+    () => parsePrimaryChatLabelColor(primaryChatSourceLabelColor) ?? omniColorForKey(primaryChatSourceId ?? 'chat', { primaryChatSourceId }),
+    [primaryChatSourceLabelColor],
   )
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
-  const [dggInputValue, setDggInputValue] = useState('')
-  const [dggConnected, setDggConnected] = useState(false)
-  const [dggAuthenticated, setDggAuthenticated] = useState(false)
-  const [pinnedMessage, setPinnedMessage] = useState<DggChatMessage | null>(null)
+  const [primaryChatInputValue, setPrimaryChatInputValue] = useState('')
+  /** Ordered list of chat channels: primary chat (if enabled) then each enabled Kick slug. Ctrl+Tab cycles. */
+  const chatChannels = useMemo(() => {
+    const list: Array<{ type: string } | { type: 'kick'; slug: string }> = []
+    if (enablePrimaryChat && primaryChatSourceId) list.push({ type: primaryChatSourceId })
+    for (const slug of enabledKickSlugs) {
+      const s = String(slug || '').trim()
+      if (s) list.push({ type: 'kick', slug: s })
+    }
+    return list
+  }, [enablePrimaryChat, enabledKickSlugs])
+  const [activeChatChannelIndex, setActiveChatChannelIndex] = useState(0)
+  const activeChatChannelIndexClamped = chatChannels.length > 0 ? Math.min(activeChatChannelIndex, chatChannels.length - 1) : 0
+  const activeChannel = chatChannels[activeChatChannelIndexClamped] ?? null
+  useEffect(() => {
+    if (chatChannels.length > 0 && activeChatChannelIndex >= chatChannels.length) {
+      setActiveChatChannelIndex(0)
+    }
+  }, [chatChannels.length, activeChatChannelIndex])
+  const [primaryChatConnected, setPrimaryChatConnected] = useState(false)
+  const [primaryChatAuthenticated, setPrimaryChatAuthenticated] = useState(false)
+  const [pinnedMessage, setPinnedMessage] = useState<PrimaryChatMessage | null>(null)
   const [pinnedHidden, setPinnedHidden] = useState(false)
   const pinnedColorFlair = useMemo(
     () => (pinnedMessage ? usernameColorFlair(flairsList, { features: pinnedMessage.features ?? [] }) : undefined),
     [pinnedMessage, flairsList],
   )
   const [showMoreMessagesBelow, setShowMoreMessagesBelow] = useState(false)
-  /** DGG nicks from NAMES/JOIN/QUIT (used for autocomplete and count). */
-  const [dggUserNicks, setDggUserNicks] = useState<string[]>([])
+  /** Primary chat nicks from NAMES/JOIN/QUIT (used for autocomplete and count). */
+  const [primaryChatUserNicks, setPrimaryChatUserNicks] = useState<string[]>([])
+  /** Kick channel user count from API when available (slug -> count). null = API didn't return, use nicks-seen fallback. */
+  const [kickUserCountBySlug, setKickUserCountBySlug] = useState<Record<string, number | null>>({})
   const [currentPoll, setCurrentPoll] = useState<PollData | null>(null)
   const [pollOver, setPollOver] = useState(false)
   /** Server time offset (serverNow - clientNow) at POLLSTART; used so timer uses server time. */
@@ -1224,7 +1259,7 @@ export default function CombinedChat({
   /** Usernames who have whispered us (from PRIVMSG + unread API); persisted locally. */
   const [whisperUsernames, setWhisperUsernames] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem(DGG_WHISPER_USERS_KEY)
+      const raw = localStorage.getItem(PRIMARY_CHAT_WHISPER_USERS_KEY)
       if (!raw) return []
       const parsed = JSON.parse(raw) as unknown
       return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : []
@@ -1241,7 +1276,7 @@ export default function CombinedChat({
   /** When set, we're viewing conversation with this user; input sends whisper. */
   const [activeWhisperUsername, setActiveWhisperUsername] = useState<string | null>(null)
   /** Messages for activeWhisperUsername (from inbox API). */
-  const [inboxMessages, setInboxMessages] = useState<DggInboxMessage[] | null>(null)
+  const [inboxMessages, setInboxMessages] = useState<PrimaryChatInboxMessage[] | null>(null)
   /** Right-click context menu position (when contextMenuConfig is provided). */
   const [contextMenuAt, setContextMenuAt] = useState<{ x: number; y: number } | null>(null)
   /** Selected text at time of right-click (for "Add to highlight terms"). */
@@ -1258,17 +1293,17 @@ export default function CombinedChat({
   /** Banned phrases from ADDPHRASE/REMOVEPHRASE; block public chat send if message contains one. */
   const [bannedPhrases, setBannedPhrases] = useState<string[]>([])
   /** Error for public chat send (e.g. banned phrase, not connected). */
-  const [dggPublicSendError, setDggPublicSendError] = useState<string | null>(null)
+  const [primaryChatPublicSendError, setPrimaryChatPublicSendError] = useState<string | null>(null)
   /** Sub-only mode: when true, only subscribers can type in public chat. */
   const [subOnlyEnabled, setSubOnlyEnabled] = useState(false)
   /** Current user from ME event (for subscriber check and own-message highlight). */
-  const [dggMeUser, setDggMeUser] = useState<{ features?: string[]; subscription?: { tier?: number } } | null>(null)
+  const [primaryChatMeUser, setPrimaryChatMeUser] = useState<{ features?: string[]; subscription?: { tier?: number } } | null>(null)
   /** Current user's nick from ME event (for own-message highlight). */
-  const [dggMeNick, setDggMeNick] = useState<string | null>(null)
+  const [primaryChatMeNick, setPrimaryChatMeNick] = useState<string | null>(null)
   /** User tooltip (right-click on message): show created date, watching, flairs, Whisper, Rustlesearch; if message is highlighted, which terms matched. */
   const [userTooltip, setUserTooltip] = useState<{
     nick: string
-    source: 'dgg' | 'kick' | 'youtube' | 'twitch'
+    source: string
     createdDate?: string
     watching?: { platform: string | null; id: string | null } | null
     features?: string[]
@@ -1290,28 +1325,28 @@ export default function CombinedChat({
     [unreadCounts]
   )
   const isSubscriber = useMemo(() => {
-    const u = dggMeUser
+    const u = primaryChatMeUser
     if (!u) return false
     if (Array.isArray(u.features) && u.features.includes('subscriber')) return true
     const tier = u.subscription?.tier
     return tier != null && Number(tier) > 0
-  }, [dggMeUser])
-  const dggPublicChatDisabled = subOnlyEnabled && !isSubscriber
-  const dggInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
-  const mergedDggInputRef = useCallback(
+  }, [primaryChatMeUser])
+  const primaryChatPublicChatDisabled = subOnlyEnabled && !isSubscriber
+  const primaryChatInputRefInternal = useRef<HTMLTextAreaElement | null>(null)
+  const mergedPrimaryChatInputRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
-      dggInputRefInternal.current = el
-      if (dggInputRefProp) (dggInputRefProp as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
+      primaryChatInputRefInternal.current = el
+      if (primaryChatInputRefProp) (primaryChatInputRefProp as React.MutableRefObject<HTMLTextAreaElement | null>).current = el
     },
-    [dggInputRefProp]
+    [primaryChatInputRefProp]
   )
-  const dggChatActionsRefInternal = useRef<{ appendToInput: (text: string) => void } | null>(null)
-  const dggChatActionsRefMerged = dggChatActionsRefProp ?? dggChatActionsRefInternal
+  const primaryChatActionsRefInternal = useRef<{ appendToInput: (text: string) => void } | null>(null)
+  const primaryChatActionsRefMerged = primaryChatActionsRefProp ?? primaryChatActionsRefInternal
   useImperativeHandle(
-    dggChatActionsRefMerged,
+    primaryChatActionsRefMerged,
     () => ({
       appendToInput: (text: string) => {
-        setDggInputValue((prev) => (prev ?? '') + text)
+        setPrimaryChatInputValue((prev) => (prev ?? '') + text)
       },
     }),
     []
@@ -1375,30 +1410,24 @@ export default function CombinedChat({
     }
   }, [emotesMap])
 
-  // Default DGG CDN URLs (used when get-app-config is unavailable, e.g. tests).
-  const defaultDggUrls = {
-    emotesCssUrl: 'https://cdn.destiny.gg/emotes/emotes.css',
-    emotesJsonUrl: 'https://cdn.destiny.gg/emotes/emotes.json',
-    flairsCssUrl: 'https://cdn.destiny.gg/flairs/flairs.css',
-    flairsJsonUrl: 'https://cdn.destiny.gg/flairs/flairs.json',
-  }
-
-  // Load Destiny emotes + flairs (CSS + JSON, no-store). URLs from main process config (env).
+  // Load primary chat source emotes + flairs when a chat source extension is installed (config.chatSources from extension).
   useEffect(() => {
     let cancelled = false
-    const cacheKey = Date.now()
-
     const run = async () => {
       const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
-      const dgg = config?.dgg ?? defaultDggUrls
+      const chatSources = config?.chatSources ?? {}
+      const primaryId = Object.keys(chatSources)[0]
+      const primary = primaryId ? chatSources[primaryId] : undefined
+      if (!primary?.emotesJsonUrl) return
+      const cacheKey = Date.now()
       try {
-        const existingEmotesCss = document.getElementById('destiny-emotes-css')
+        const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSOnceById(
-          `${dgg.emotesCssUrl}?_=${cacheKey}`,
-          'destiny-emotes-css',
+          `${primary.emotesCssUrl}?_=${cacheKey}`,
+          'primary-chat-emotes-css',
         )
-        const emotesRes = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) throw new Error(`Failed to fetch emotes: ${emotesRes.status}`)
@@ -1414,17 +1443,17 @@ export default function CombinedChat({
       }
 
       try {
-        const existingFlairsCss = document.getElementById('destiny-flairs-css')
+        const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
         if (existingFlairsCss) existingFlairsCss.remove()
         await loadCSSOnceById(
-          `${dgg.flairsCssUrl}?_=${cacheKey}`,
-          'destiny-flairs-css',
+          `${primary.flairsCssUrl}?_=${cacheKey}`,
+          'primary-chat-flairs-css',
         )
-        const flairsRes = await fetch(`${dgg.flairsJsonUrl}?_=${cacheKey}`, {
+        const flairsRes = await fetch(`${primary.flairsJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!flairsRes.ok) return
-        const flairsData: DggFlair[] = await flairsRes.json()
+        const flairsData: PrimaryChatFlair[] = await flairsRes.json()
         if (cancelled) return
         setFlairsList(Array.isArray(flairsData) ? flairsData : [])
       } catch {
@@ -1440,19 +1469,22 @@ export default function CombinedChat({
 
   // RELOAD: server asked to reload emotes/flairs (e.g. new emotes or flairs).
   useEffect(() => {
-    if (!enableDgg) return
+    if (!enablePrimaryChat) return
     const handleReload = async () => {
       const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
-      const dgg = config?.dgg ?? defaultDggUrls
+      const chatSources = config?.chatSources ?? {}
+      const primaryId = Object.keys(chatSources)[0]
+      const primary = primaryId ? chatSources[primaryId] : undefined
+      if (!primary?.emotesJsonUrl) return
       const cacheKey = Date.now()
       try {
-        const existingEmotesCss = document.getElementById('destiny-emotes-css')
+        const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSOnceById(
-          `${dgg.emotesCssUrl}?_=${cacheKey}`,
-          'destiny-emotes-css',
+          `${primary.emotesCssUrl}?_=${cacheKey}`,
+          'primary-chat-emotes-css',
         )
-        const emotesRes = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) return
@@ -1466,17 +1498,17 @@ export default function CombinedChat({
         // ignore
       }
       try {
-        const existingFlairsCss = document.getElementById('destiny-flairs-css')
+        const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
         if (existingFlairsCss) existingFlairsCss.remove()
         await loadCSSOnceById(
-          `${dgg.flairsCssUrl}?_=${cacheKey}`,
-          'destiny-flairs-css',
+          `${primary.flairsCssUrl}?_=${cacheKey}`,
+          'primary-chat-flairs-css',
         )
-        const flairsRes = await fetch(`${dgg.flairsJsonUrl}?_=${cacheKey}`, {
+        const flairsRes = await fetch(`${primary.flairsJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!flairsRes.ok) return
-        const flairsData: DggFlair[] = await flairsRes.json()
+        const flairsData: PrimaryChatFlair[] = await flairsRes.json()
         setFlairsList(Array.isArray(flairsData) ? flairsData : [])
       } catch {
         // ignore
@@ -1486,7 +1518,7 @@ export default function CombinedChat({
     return () => {
       window.ipcRenderer.off('chat-websocket-reload', handleReload)
     }
-  }, [enableDgg])
+  }, [enablePrimaryChat])
 
   // Track "at bottom" and "user scrolled up" for auto-scroll behavior.
   useEffect(() => {
@@ -1584,27 +1616,27 @@ export default function CombinedChat({
 
   const openUserTooltip = useCallback(
     (e: React.MouseEvent, m: CombinedItem) => {
-      if (m.source === 'dgg-event' || m.source === 'dgg-system' || m.source === 'dgg-broadcast') return
+      if (m.source.endsWith('-event') || m.source.endsWith('-system') || m.source.endsWith('-broadcast')) return
       e.preventDefault()
       e.stopPropagation()
-      const raw = m.source === 'dgg' ? m.raw : m.source === 'kick' ? m.raw : m.source === 'youtube' ? m.raw : m.raw
-      const nick = m.nick?.trim()
+      const raw = m.raw
+      const nick = 'nick' in m ? m.nick?.trim() : undefined
       if (!nick) return
-      const colorFlair = m.source === 'dgg' ? usernameColorFlair(flairsList, { features: (raw as DggChatMessage).features ?? [] }) : undefined
+      const colorFlair = primaryChatSourceId && m.source === primaryChatSourceId ? usernameColorFlair(flairsList, { features: (raw as PrimaryChatMessage).features ?? [] }) : undefined
       const contentForHighlight = getContentForHighlight(m)
       const matchingTerms = highlightTerms.filter((term) => term.trim() && contentForHighlight.toLowerCase().includes(term.trim().toLowerCase()))
       setUserTooltip({
         nick,
         source: m.source,
-        createdDate: (raw as DggChatMessage).createdDate,
-        watching: (raw as DggChatMessage).watching ?? undefined,
-        features: (raw as DggChatMessage).features,
+        createdDate: (raw as PrimaryChatMessage).createdDate,
+        watching: (raw as PrimaryChatMessage).watching ?? undefined,
+        features: (raw as PrimaryChatMessage).features,
         colorFlairName: colorFlair?.name,
         matchingTerms: matchingTerms.length > 0 ? matchingTerms : undefined,
       })
       setUserTooltipPosition({ x: e.clientX, y: e.clientY })
     },
-    [flairsList, highlightTerms]
+    [flairsList, highlightTerms, primaryChatSourceId]
   )
 
   useEffect(() => {
@@ -1624,32 +1656,32 @@ export default function CombinedChat({
     }
   }, [userTooltip, closeUserTooltip])
 
-  // If DGG is disabled, drop existing DGG items (and broadcasts) from the feed.
+  // If primary chat is disabled, drop existing primary chat items (and broadcasts) from the feed.
   useEffect(() => {
-    if (enableDgg) return
+    if (enablePrimaryChat || !primaryChatSourceId) return
     setItems((prev) => {
-      const next = prev.filter((m) => m.source !== 'dgg' && m.source !== 'dgg-broadcast')
+      const next = prev.filter((m) => m.source !== primaryChatSourceId && m.source !== `${primaryChatSourceId}-broadcast`)
       return next.length === prev.length ? prev : next
     })
     setUpdateSeq((v) => v + 1)
-  }, [enableDgg])
+  }, [enablePrimaryChat, primaryChatSourceId])
 
-  // DGG WebSocket connection (via main process IPC)
+  // Primary chat WebSocket connection (via main process IPC)
   useEffect(() => {
     let alive = true
-    if (!enableDgg) {
+    if (!enablePrimaryChat) {
       return () => {
         alive = false
       }
     }
 
-    const handleMessage = (_event: any, data: DggChatWsMessage) => {
+    const handleMessage = (_event: any, data: PrimaryChatWsMessage) => {
       if (!alive) return
       if (!data || data.type !== 'MSG' || !data.message) return
       const msg = data.message
       appendItems([
         {
-          source: 'dgg',
+          source: primaryChatSourceId ?? 'chat',
           tsMs: typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(),
           nick: msg.nick,
           content: msg.data ?? '',
@@ -1659,7 +1691,7 @@ export default function CombinedChat({
       ])
     }
 
-    const handleHistory = (_event: any, history: DggChatWsHistory) => {
+    const handleHistory = (_event: any, history: PrimaryChatWsHistory) => {
       if (!alive) return
       if (!history || history.type !== 'HISTORY') return
       const items = history.items
@@ -1669,7 +1701,7 @@ export default function CombinedChat({
             if (item.type === 'MSG') {
               const m = item.message
               return {
-                source: 'dgg' as const,
+                source: primaryChatSourceId ?? 'chat',
                 tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
                 nick: m.nick,
                 content: m.data ?? '',
@@ -1680,7 +1712,7 @@ export default function CombinedChat({
             }
             const b = item.broadcast
             return {
-              source: 'dgg-broadcast' as const,
+              source: primaryChatSourceId ? `${primaryChatSourceId}-broadcast` : 'chat-broadcast',
               tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
               nick: b.nick ?? '',
               content: b.data ?? '',
@@ -1692,7 +1724,7 @@ export default function CombinedChat({
         : (Array.isArray(history.messages) ? history.messages : [])
             .slice(-hardCapRef.current)
             .map((m) => ({
-              source: 'dgg' as const,
+              source: primaryChatSourceId ?? 'chat',
               tsMs: typeof m.timestamp === 'number' ? m.timestamp : Date.now(),
               nick: m.nick,
               content: m.data ?? '',
@@ -1704,19 +1736,19 @@ export default function CombinedChat({
       const slice = useItems ? mapped.slice(-hardCapRef.current) : mapped
       markStickIfAtBottom()
       setItems((prev) => {
-        const nonDgg = prev.filter((m) => m.source !== 'dgg' && m.source !== 'dgg-broadcast')
-        return trimToLimitRef.current([...nonDgg, ...slice], wasAtBottomRef.current)
+        const nonPrimary = prev.filter((m) => m.source !== (primaryChatSourceId ?? 'chat') && m.source !== `${primaryChatSourceId ?? 'chat'}-broadcast`)
+        return trimToLimitRef.current([...nonPrimary, ...slice], wasAtBottomRef.current)
       })
       setUpdateSeq((v) => v + 1)
     }
 
-    const handleBroadcast = (_event: any, payload: { type?: string; broadcast?: DggBroadcastPayload } | null) => {
+    const handleBroadcast = (_event: any, payload: { type?: string; broadcast?: PrimaryChatBroadcastPayload } | null) => {
       if (!alive) return
       const b = payload?.broadcast
       if (!b) return
       appendItems([
         {
-          source: 'dgg-broadcast',
+          source: primaryChatSourceId ? `${primaryChatSourceId}-broadcast` : 'chat-broadcast',
           tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
           nick: b.nick ?? '',
           content: b.data ?? '',
@@ -1727,16 +1759,16 @@ export default function CombinedChat({
     }
 
     const handleConnected = () => {
-      if (alive) setDggConnected(true)
+      if (alive) setPrimaryChatConnected(true)
       // Capture scroll position so next HISTORY or MSG will auto-scroll if user was at bottom (fixes scroll stopping after reconnect)
       if (alive) markStickIfAtBottom()
     }
     const handleDisconnected = () => {
-      if (alive) setDggConnected(false)
-      if (alive) setDggAuthenticated(false)
-      if (alive) setDggUserNicks([])
-      if (alive) setDggMeUser(null)
-      if (alive) setDggMeNick(null)
+      if (alive) setPrimaryChatConnected(false)
+      if (alive) setPrimaryChatAuthenticated(false)
+      if (alive) setPrimaryChatUserNicks([])
+      if (alive) setPrimaryChatMeUser(null)
+      if (alive) setPrimaryChatMeNick(null)
     }
     const handleSubOnly = (_event: any, payload: { type?: string; subonly?: { data?: string } } | null) => {
       if (!alive) return
@@ -1747,20 +1779,20 @@ export default function CombinedChat({
       if (!alive) return
       const me = payload?.data ?? payload
       const nick = me && typeof me === 'object' && 'nick' in me ? (me as { nick?: string }).nick : undefined
-      setDggAuthenticated(Boolean(nick))
-      setDggMeNick(nick?.trim() ?? null)
+      setPrimaryChatAuthenticated(Boolean(nick))
+      setPrimaryChatMeNick(nick?.trim() ?? null)
       if (me && typeof me === 'object') {
         const user = me as { features?: string[]; subscription?: { tier?: number } }
-        setDggMeUser({ features: user.features, subscription: user.subscription ?? undefined })
+        setPrimaryChatMeUser({ features: user.features, subscription: user.subscription ?? undefined })
       } else {
-        setDggMeUser(null)
+        setPrimaryChatMeUser(null)
       }
     }
 
-    const handlePin = (_event: any, payload: { type?: string; pin?: DggChatMessage } | null) => {
+    const handlePin = (_event: any, payload: { type?: string; pin?: PrimaryChatMessage } | null) => {
       if (!alive) return
-      const msg = payload?.pin ?? (payload as DggChatMessage | null)
-      // When DGG clears the pin it can send an empty pin (no nick, no data); treat as no pin so we don't show ":" box
+      const msg = payload?.pin ?? (payload as PrimaryChatMessage | null)
+      // When primary chat clears the pin it can send an empty pin (no nick, no data); treat as no pin so we don't show ":" box
       const hasContent = msg && (String(msg.nick ?? '').trim() || String(msg.data ?? '').trim())
       setPinnedMessage(hasContent ? msg : null)
       if (hasContent) setPinnedHidden(false)
@@ -1774,7 +1806,7 @@ export default function CombinedChat({
         .map((u) => (u?.nick ?? '').trim())
         .filter(Boolean)
       const unique = Array.from(new Set(nicks)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-      setDggUserNicks(unique)
+      setPrimaryChatUserNicks(unique)
     }
 
     const handleUserEvent = (_event: any, payload: { type?: string; user?: { nick?: string } } | null) => {
@@ -1782,15 +1814,15 @@ export default function CombinedChat({
       const nick = payload?.user?.nick?.trim()
       if (!nick) return
       if (payload?.type === 'JOIN') {
-        setDggUserNicks((prev) => (prev.includes(nick) ? prev : [...prev, nick].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))))
+        setPrimaryChatUserNicks((prev) => (prev.includes(nick) ? prev : [...prev, nick].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))))
       } else if (payload?.type === 'QUIT') {
-        setDggUserNicks((prev) => prev.filter((n) => n !== nick))
+        setPrimaryChatUserNicks((prev) => prev.filter((n) => n !== nick))
       }
     }
 
     window.ipcRenderer.invoke('chat-websocket-connect').catch(() => {})
     window.ipcRenderer.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
-      if (alive && r?.connected) setDggConnected(true)
+      if (alive && r?.connected) setPrimaryChatConnected(true)
     }).catch(() => {})
     window.ipcRenderer.on('chat-websocket-connected', handleConnected)
     window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
@@ -1809,7 +1841,7 @@ export default function CombinedChat({
       setWhisperUsernames((prev) => {
         const next = prev.includes(nick) ? prev : [...prev, nick]
         try {
-          localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+          localStorage.setItem(PRIMARY_CHAT_WHISPER_USERS_KEY, JSON.stringify(next))
         } catch {
           // ignore
         }
@@ -1844,7 +1876,7 @@ export default function CombinedChat({
       const tier = g.tierLabel ?? (g.tier != null ? `Tier ${g.tier}` : '')
       const content = tier ? `${from} gifted ${to} a ${tier} subscription` : `${from} gifted ${to} a subscription`
       appendItems([
-        { source: 'dgg-event', eventType: 'giftsub', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'giftsub', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
       ])
     }
     const handleMassGift = (_event: any, payload: { type?: string; massGift?: { user?: { nick?: string }; quantity?: number; tierLabel?: string; tier?: number } } | null) => {
@@ -1856,7 +1888,7 @@ export default function CombinedChat({
       const tier = g.tierLabel ?? (g.tier != null ? `Tier ${g.tier}` : '')
       const content = tier ? `${from} gifted ${qty} ${tier} subscriptions` : `${from} gifted ${qty} subscription${qty !== 1 ? 's' : ''}`
       appendItems([
-        { source: 'dgg-event', eventType: 'massgift', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'massgift', tsMs: Date.now(), nick: from, content, raw: g, seq: seqRef.current++ },
       ])
     }
     const handleDonation = (_event: any, payload: { type?: string; donation?: { user?: { nick?: string }; amount?: number } } | null) => {
@@ -1867,7 +1899,7 @@ export default function CombinedChat({
       const amount = typeof d.amount === 'number' ? d.amount / 100 : 0
       const content = `${from} donated ${amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`
       appendItems([
-        { source: 'dgg-event', eventType: 'donation', tsMs: Date.now(), nick: from, content, raw: d, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'donation', tsMs: Date.now(), nick: from, content, raw: d, seq: seqRef.current++ },
       ])
     }
     window.ipcRenderer.on('chat-websocket-giftsub', handleGiftSub)
@@ -1882,7 +1914,7 @@ export default function CombinedChat({
       const by = m.nick?.trim()
       const content = by ? `${target} was muted by ${by}` : `${target} was muted`
       appendItems([
-        { source: 'dgg-system', kind: 'mute', tsMs: Date.now(), content, raw: m, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'mute', tsMs: Date.now(), content, raw: m, seq: seqRef.current++ },
       ])
     }
     const handleBan = (_event: any, payload: { type?: string; ban?: { data?: string; nick?: string } } | null) => {
@@ -1893,7 +1925,7 @@ export default function CombinedChat({
       const by = b.nick?.trim()
       const content = by ? `${target} was banned by ${by}` : `${target} was banned`
       appendItems([
-        { source: 'dgg-system', kind: 'ban', tsMs: Date.now(), content, raw: b, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'ban', tsMs: Date.now(), content, raw: b, seq: seqRef.current++ },
       ])
     }
     const handleUnban = (_event: any, payload: { type?: string; unban?: { nick?: string } } | null) => {
@@ -1902,7 +1934,7 @@ export default function CombinedChat({
       if (!u) return
       const target = u.nick?.trim() ?? 'someone'
       appendItems([
-        { source: 'dgg-system', kind: 'unmute', tsMs: Date.now(), content: `${target} was unbanned`, raw: u, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'unmute', tsMs: Date.now(), content: `${target} was unbanned`, raw: u, seq: seqRef.current++ },
       ])
     }
     window.ipcRenderer.on('chat-websocket-mute', handleMute)
@@ -1918,7 +1950,7 @@ export default function CombinedChat({
 
     return () => {
       alive = false
-      setDggConnected(false)
+      setPrimaryChatConnected(false)
       window.ipcRenderer.off('chat-websocket-addphrase', handleAddPhrase)
       window.ipcRenderer.off('chat-websocket-removephrase', handleRemovePhrase)
       window.ipcRenderer.off('chat-websocket-subonly', handleSubOnly)
@@ -1929,7 +1961,7 @@ export default function CombinedChat({
       window.ipcRenderer.off('chat-websocket-ban', handleBan)
       window.ipcRenderer.off('chat-websocket-unban', handleUnban)
       window.ipcRenderer.off('chat-websocket-err', handleChatErr)
-      setDggAuthenticated(false)
+      setPrimaryChatAuthenticated(false)
       window.ipcRenderer.off('chat-websocket-privmsg', handlePrivmsg)
       window.ipcRenderer.off('chat-websocket-connected', handleConnected)
       window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
@@ -1942,20 +1974,20 @@ export default function CombinedChat({
       window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
       window.ipcRenderer.invoke('chat-websocket-disconnect').catch(() => {})
     }
-  }, [enableDgg])
+  }, [enablePrimaryChat])
 
-  // When combined chat first loads with DGG authenticated, fetch unread private messages once.
+  // When combined chat first loads with primary chat authenticated, fetch unread private messages once.
   useEffect(() => {
-    if (!enableDgg || !dggAuthenticated || unreadFetchedRef.current) return
+    if (!enablePrimaryChat || !primaryChatAuthenticated || unreadFetchedRef.current) return
     unreadFetchedRef.current = true
-    window.ipcRenderer.invoke('dgg-messages-unread').then((r: { success?: boolean; data?: Array<{ username?: string }> }) => {
+    window.ipcRenderer.invoke('chat-source-messages-unread').then((r: { success?: boolean; data?: Array<{ username?: string }> }) => {
       if (!r?.success || !Array.isArray(r.data)) return
       const usernames = r.data.map((u) => u?.username?.trim()).filter((s): s is string => Boolean(s))
       if (usernames.length === 0) return
       setWhisperUsernames((prev) => {
         const next = [...new Set([...prev, ...usernames])]
         try {
-          localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+          localStorage.setItem(PRIMARY_CHAT_WHISPER_USERS_KEY, JSON.stringify(next))
         } catch {
           // ignore
         }
@@ -1972,7 +2004,7 @@ export default function CombinedChat({
         return next
       })
     }).catch(() => {})
-  }, [enableDgg, dggAuthenticated])
+  }, [enablePrimaryChat, primaryChatAuthenticated])
 
   // When we open a conversation, clear unread for that user and fetch inbox.
   useEffect(() => {
@@ -1991,7 +2023,7 @@ export default function CombinedChat({
       return next
     })
     setInboxMessages(null)
-    window.ipcRenderer.invoke('dgg-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+    window.ipcRenderer.invoke('chat-source-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: PrimaryChatInboxMessage[] }) => {
       if (r?.success && Array.isArray(r.data)) setInboxMessages(r.data)
     }).catch(() => {})
   }, [activeWhisperUsername])
@@ -2031,7 +2063,7 @@ export default function CombinedChat({
     setWhisperUsernames((prev) => {
       const next = prev.filter((u) => u !== username)
       try {
-        localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next))
+        localStorage.setItem(PRIMARY_CHAT_WHISPER_USERS_KEY, JSON.stringify(next))
       } catch {
         // ignore
       }
@@ -2061,9 +2093,9 @@ export default function CombinedChat({
     setPollVoteError(null)
   }, [])
 
-  // DGG poll events: POLLSTART, POLLSTOP, VOTECAST, vote-counted, poll-vote-error
+  // Primary chat poll events: POLLSTART, POLLSTOP, VOTECAST, vote-counted, poll-vote-error
   useEffect(() => {
-    if (!enableDgg) return
+    if (!enablePrimaryChat) return
     const handlePollStart = (_event: any, data: { type: 'POLLSTART'; poll: PollData }) => {
       if (data?.type === 'POLLSTART' && data.poll) {
         const poll = data.poll
@@ -2148,11 +2180,7 @@ export default function CombinedChat({
       window.ipcRenderer.off('chat-websocket-vote-counted', handleVoteCounted)
       window.ipcRenderer.off('chat-websocket-poll-vote-error', handlePollVoteError)
     }
-  }, [enableDgg])
-
-  useEffect(() => {
-    onDggUserCountChange?.(dggUserNicks.length)
-  }, [dggUserNicks.length, onDggUserCountChange])
+  }, [enablePrimaryChat])
 
   // Kick chat messages forwarded from main process (Pusher)
   useEffect(() => {
@@ -2236,44 +2264,124 @@ export default function CombinedChat({
     }
   }, [])
 
-  /** DGG nicks for autocomplete: from NAMES/JOIN/QUIT (dggUserNicks). Falls back to nicks seen in messages if WS list empty. */
-  const dggNicks = useMemo(() => {
-    if (dggUserNicks.length > 0) return dggUserNicks
+  /** Primary chat nicks for autocomplete: from NAMES/JOIN/QUIT (primaryChatUserNicks). Falls back to nicks seen in messages if WS list empty. */
+  const primaryChatNicks = useMemo(() => {
+    if (primaryChatUserNicks.length > 0) return primaryChatUserNicks
     const fromItems = new Set<string>()
     items.forEach((m) => {
-      if (m.source === 'dgg' && m.nick?.trim()) fromItems.add(m.nick.trim())
+      if (primaryChatSourceId && m.source === primaryChatSourceId && 'nick' in m && m.nick?.trim()) fromItems.add(m.nick.trim())
     })
     return Array.from(fromItems).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-  }, [dggUserNicks, items])
+  }, [primaryChatUserNicks, items])
 
-  /** Cache of DGG user data by nick (from last message seen from that nick), for tooltips on mentioned nicks. */
-  const dggUserDataCache = useMemo(() => {
+  /** Nicks for the active channel only (so autocomplete is channel-specific). Primary chat: primaryChatNicks; Kick: nicks from that slug. */
+  const activeChannelNicks = useMemo(() => {
+    if (!activeChannel) return []
+    if (primaryChatSourceId && activeChannel.type === primaryChatSourceId) return primaryChatNicks
+    if (activeChannel.type === 'kick' && 'slug' in activeChannel) {
+      const slug = activeChannel.slug
+      const set = new Set<string>()
+      items.forEach((m) => {
+        if (m.source === 'kick' && (m as { slug?: string }).slug === slug && 'nick' in m && (m as { nick?: string }).nick?.trim()) {
+          set.add((m as { nick: string }).nick.trim())
+        }
+      })
+      return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    }
+    return []
+  }, [activeChannel, primaryChatSourceId, primaryChatNicks, items])
+
+  /** Emotes for the active channel only. Primary chat: full emotesMap; Kick/others: none (no channel-wide emote list in combined chat). */
+  const activeChannelEmotes = useMemo(() => {
+    if (!activeChannel) return new Map<string, string>()
+    if (primaryChatSourceId && activeChannel.type === primaryChatSourceId) return emotesMap
+    return new Map<string, string>()
+  }, [activeChannel, primaryChatSourceId, emotesMap])
+
+  /** Per–Kick-slug unique nick count (fallback when API count not available). */
+  const kickNicksCountBySlug = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const slug of enabledKickSlugs) {
+      const set = new Set<string>()
+      items.forEach((m) => {
+        if (m.source === 'kick' && (m as { slug?: string }).slug === slug && 'nick' in m && (m as { nick?: string }).nick?.trim()) {
+          set.add((m as { nick: string }).nick.trim())
+        }
+      })
+      out[slug] = set.size
+    }
+    return out
+  }, [enabledKickSlugs, items])
+
+  // Fetch Kick chat user count when active channel is a Kick slug (populates kickUserCountBySlug for breakdown).
+  useEffect(() => {
+    if (!activeChannel || activeChannel.type !== 'kick' || !('slug' in activeChannel)) return
+    const slug = activeChannel.slug
+    window.ipcRenderer
+      .invoke('get-kick-chat-user-count', { slug })
+      .then((count: number | null) => {
+        setKickUserCountBySlug((prev) => (prev[slug] === count ? prev : { ...prev, [slug]: count }))
+      })
+      .catch(() => setKickUserCountBySlug((prev) => ({ ...prev, [slug]: null })))
+  }, [activeChannel])
+
+  // Report full breakdown to parent (header total/cycle + hover tooltip).
+  const combinedUserCounts = useMemo(() => {
+    const kick: Record<string, number> = {}
+    for (const slug of enabledKickSlugs) {
+      kick[slug] = kickUserCountBySlug[slug] ?? kickNicksCountBySlug[slug] ?? 0
+    }
+    return { primary: primaryChatUserNicks.length, kick }
+  }, [enabledKickSlugs, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
+
+  useEffect(() => {
+    onCombinedUserCountsChange?.(combinedUserCounts)
+  }, [combinedUserCounts, onCombinedUserCountsChange])
+
+  // Also report single count for backward compat (active channel count).
+  const displayUserCount = useMemo(() => {
+    if (!activeChannel) return 0
+    if (primaryChatSourceId && activeChannel.type === primaryChatSourceId) return primaryChatUserNicks.length
+    if (activeChannel.type === 'kick' && 'slug' in activeChannel) {
+      const slug = activeChannel.slug
+      return kickUserCountBySlug[slug] ?? kickNicksCountBySlug[slug] ?? 0
+    }
+    return 0
+  }, [activeChannel, primaryChatSourceId, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
+
+  useEffect(() => {
+    onPrimaryChatUserCountChange?.(displayUserCount)
+  }, [displayUserCount, onPrimaryChatUserCountChange])
+
+  /** Cache of primary chat user data by nick (from last message seen from that nick), for tooltips on mentioned nicks. */
+  const primaryChatUserDataCache = useMemo(() => {
     const map = new Map<
       string,
       { createdDate?: string; watching?: { platform: string | null; id: string | null } | null; features?: string[] }
     >()
     const limit = 500
-    const dggItems = items.filter((m): m is typeof m & { source: 'dgg' } => m.source === 'dgg')
-    for (let i = dggItems.length - 1; i >= 0 && map.size < limit; i--) {
-      const m = dggItems[i]
-      const nick = m.raw.nick?.trim()?.toLowerCase()
+    const primaryChatItems = items.filter((m) => m.source === primaryChatSourceId)
+    for (let i = primaryChatItems.length - 1; i >= 0 && map.size < limit; i--) {
+      const m = primaryChatItems[i]
+      const raw = m.raw as PrimaryChatMessage
+      const nick = raw.nick?.trim()?.toLowerCase()
       if (!nick || map.has(nick)) continue
       map.set(nick, {
-        createdDate: m.raw.createdDate,
-        watching: m.raw.watching ?? undefined,
-        features: m.raw.features,
+        createdDate: raw.createdDate,
+        watching: raw.watching ?? undefined,
+        features: raw.features,
       })
     }
     return map
   }, [items])
 
-  /** Suggestions for "Send to" combobox: whisper list + DGG nicks, filtered by composeRecipient, unique. */
+  /** Suggestions for "Send to" combobox: whisper list + primary chat nicks, filtered by composeRecipient, unique. */
   const composeRecipientSuggestions = useMemo(() => {
-    const combined = [...new Set([...whisperUsernames, ...dggNicks])]
+    const combined = [...new Set([...whisperUsernames, ...primaryChatNicks])]
     const q = composeRecipient.trim().toLowerCase()
     if (!q) return combined.slice(0, 25)
     return combined.filter((n) => n.toLowerCase().includes(q)).slice(0, 25)
-  }, [whisperUsernames, dggNicks, composeRecipient])
+  }, [whisperUsernames, primaryChatNicks, composeRecipient])
 
   const displayItems = useMemo(() => {
     if (sortMode === 'timestamp') {
@@ -2285,7 +2393,7 @@ export default function CombinedChat({
     // "Arrival" mode:
     // - keep live messages in arrival order (seq)
     // - but ALWAYS blend any history items (from any source) by timestamp so startup doesn't
-    //   show separate "DGG history block" then "Kick history block".
+    //   show separate "Primary chat history block" then "Kick history block".
     const history = items.filter((m) => Boolean((m as any).isHistory))
     const live = items.filter((m) => !Boolean((m as any).isHistory))
     history.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
@@ -2301,7 +2409,7 @@ export default function CombinedChat({
     const comboSkip = new Set<number>()
     const comboAt = new Map<number, { count: number; emoteKey: string; source: string; tsMs: number }>()
 
-    const sources = ['dgg', 'kick', 'youtube', 'twitch'] as const
+    const sources = [primaryChatSourceId, 'kick', 'youtube', 'twitch'].filter(Boolean) as string[]
     for (const source of sources) {
       const indices = displayItems
         .map((m, i) => (m.source === source ? i : -1))
@@ -2379,15 +2487,15 @@ export default function CombinedChat({
 
   const handleNickDoubleClick = useCallback(
     (nick: string) => {
-      setDggInputValue((prev) => (prev ? prev + ' ' + nick : nick))
-      dggInputRefInternal.current?.focus()
+      setPrimaryChatInputValue((prev) => (prev ? prev + ' ' + nick : nick))
+      primaryChatInputRefInternal.current?.focus()
     },
     []
   )
 
   const handleEmoteDoubleClick = useCallback((prefix: string) => {
-    setDggInputValue((prev) => (prev && !prev.endsWith(' ') ? prev + ' ' + prefix : (prev || '') + prefix))
-    dggInputRefInternal.current?.focus()
+    setPrimaryChatInputValue((prev) => (prev && !prev.endsWith(' ') ? prev + ' ' + prefix : (prev || '') + prefix))
+    primaryChatInputRefInternal.current?.focus()
   }, [])
 
   const openUserTooltipByNick = useCallback(
@@ -2396,13 +2504,13 @@ export default function CombinedChat({
       e.stopPropagation()
       const trimmed = nick?.trim()
       if (!trimmed) return
-      const cached = dggUserDataCache.get(trimmed.toLowerCase())
+      const cached = primaryChatUserDataCache.get(trimmed.toLowerCase())
       const colorFlair = cached?.features?.length
         ? usernameColorFlair(flairsList, { features: cached.features })
         : undefined
       setUserTooltip({
         nick: trimmed,
-        source: 'dgg',
+        source: primaryChatSourceId ?? 'chat',
         createdDate: cached?.createdDate,
         watching: cached?.watching ?? undefined,
         features: cached?.features,
@@ -2410,11 +2518,11 @@ export default function CombinedChat({
       })
       setUserTooltipPosition({ x: e.clientX, y: e.clientY })
     },
-    [dggUserDataCache, flairsList]
+    [primaryChatUserDataCache, flairsList]
   )
 
-  /** Render DGG message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. Greentext lines (starting with >) wrap the whole line so nicks don't interrupt the green style. */
-  const renderDggMessageContent = useCallback(
+  /** Render primary chat message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. Greentext lines (starting with >) wrap the whole line so nicks don't interrupt the green style. */
+  const renderPrimaryChatMessageContent = useCallback(
     (content: string) => {
       const lines = (content ?? '').split('\n')
       const parts: React.ReactNode[] = []
@@ -2422,12 +2530,12 @@ export default function CombinedChat({
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex]!
         const isGreentext = line.trim().startsWith('>')
-        const lineSegments = tokenizeDggContent(line, dggNicks)
+        const lineSegments = tokenizePrimaryChatContent(line, primaryChatNicks)
         const lineParts: React.ReactNode[] = []
         for (const seg of lineSegments) {
           if (seg.type === 'text') {
             lineParts.push(
-              <Fragment key={`dgg-txt-${key++}`}>
+              <Fragment key={`pchat-txt-${key++}`}>
                 {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
               </Fragment>
             )
@@ -2436,15 +2544,15 @@ export default function CombinedChat({
             const treatAsEmote = emotesMap.has(seg.value)
             if (treatAsEmote) {
               lineParts.push(
-                <Fragment key={`dgg-txt-${key++}`}>
+                <Fragment key={`pchat-txt-${key++}`}>
                   {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
                 </Fragment>
               )
             } else {
               lineParts.push(
                 <span
-                  key={`dgg-nick-${key++}`}
-                  className="dgg-mention hover:underline cursor-context-menu"
+                  key={`pchat-nick-${key++}`}
+                  className="primary-chat-mention hover:underline cursor-context-menu"
                   onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
                   onDoubleClick={() => handleNickDoubleClick(seg.value)}
                   onMouseUp={(e) => e.stopPropagation()}
@@ -2479,22 +2587,22 @@ export default function CombinedChat({
       }
       return <>{parts}</>
     },
-    [dggNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick]
+    [primaryChatNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick]
   )
 
-  const sendDggMessage = useCallback(() => {
-    const text = dggInputValue.trim()
+  const sendPrimaryChatMessage = useCallback(() => {
+    const text = primaryChatInputValue.trim()
     if (!text) return
     // Conversation with one user: send whisper to that user
     if (activeWhisperUsername) {
       setWhisperSendError(null)
       window.ipcRenderer
-        .invoke('dgg-send-whisper', { recipient: activeWhisperUsername, message: text })
+        .invoke('chat-source-send-whisper', { recipient: activeWhisperUsername, message: text })
         .then((result: { success?: boolean; error?: string }) => {
           if (result?.success) {
-            setDggInputValue('')
+            setPrimaryChatInputValue('')
             setWhisperSendError(null)
-            window.ipcRenderer.invoke('dgg-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+            window.ipcRenderer.invoke('chat-source-messages-inbox', { username: activeWhisperUsername }).then((r: { success?: boolean; data?: PrimaryChatInboxMessage[] }) => {
               if (r?.success && Array.isArray(r.data)) setInboxMessages(r.data)
             }).catch(() => {})
           } else {
@@ -2511,27 +2619,27 @@ export default function CombinedChat({
     if (privViewOpen) {
       if (!recipient) return
       setWhisperSendError(null)
-      window.ipcRenderer.invoke('dgg-send-whisper', { recipient, message: text }).catch(() => {})
+      window.ipcRenderer.invoke('chat-source-send-whisper', { recipient, message: text }).catch(() => {})
       window.ipcRenderer
-        .invoke('dgg-messages-inbox', { username: recipient })
-        .then((r: { success?: boolean; data?: DggInboxMessage[] }) => {
+        .invoke('chat-source-messages-inbox', { username: recipient })
+        .then((r: { success?: boolean; data?: PrimaryChatInboxMessage[] }) => {
           if (r?.success) {
-            setDggInputValue('')
+            setPrimaryChatInputValue('')
             setWhisperSendError(null)
             setComposeRecipient('')
             setWhisperUsernames((prev) => {
               const next = prev.includes(recipient) ? prev : [...prev, recipient]
-              try { localStorage.setItem(DGG_WHISPER_USERS_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+              try { localStorage.setItem(PRIMARY_CHAT_WHISPER_USERS_KEY, JSON.stringify(next)) } catch { /* ignore */ }
               return next
             })
             setActiveWhisperUsername(recipient)
           } else {
-            setDggInputValue('')
+            setPrimaryChatInputValue('')
             setComposeRecipient('')
           }
         })
         .catch(() => {
-          setDggInputValue('')
+          setPrimaryChatInputValue('')
           setComposeRecipient('')
         })
       return
@@ -2543,29 +2651,58 @@ export default function CombinedChat({
       const lower = text.toLowerCase()
       const matched = bannedPhrases.find((p) => p.length > 0 && lower.includes(p.toLowerCase()))
       if (matched) {
-        setDggPublicSendError(`Message contains a banned phrase.`)
+        setPrimaryChatPublicSendError(`Message contains a banned phrase.`)
         return
       }
     }
-    setDggPublicSendError(null)
+    setPrimaryChatPublicSendError(null)
     window.ipcRenderer.invoke('chat-websocket-send', { data: text }).then((result: { success?: boolean }) => {
       if (result?.success) {
-        setDggInputValue('')
-        setDggPublicSendError(null)
+        setPrimaryChatInputValue('')
+        setPrimaryChatPublicSendError(null)
       }
     }).catch(() => {})
-  }, [dggInputValue, activeWhisperUsername, privViewOpen, composeRecipient, bannedPhrases, subOnlyEnabled, isSubscriber])
+  }, [primaryChatInputValue, activeWhisperUsername, privViewOpen, composeRecipient, bannedPhrases, subOnlyEnabled, isSubscriber])
 
   useEffect(() => {
-    setDggPublicSendError(null)
-  }, [dggInputValue])
+    setPrimaryChatPublicSendError(null)
+  }, [primaryChatInputValue])
 
-  const onDggInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendDggMessage()
+  const sendToActiveChannel = useCallback(() => {
+    const text = primaryChatInputValue.trim()
+    if (!text) return
+    if (activeChannel && 'slug' in activeChannel) {
+      window.ipcRenderer
+        .invoke('kick-send-message', { slug: activeChannel.slug, content: text })
+        .then((result: { success?: boolean; error?: string }) => {
+          if (result?.success) {
+            setPrimaryChatInputValue('')
+            setPrimaryChatPublicSendError(null)
+          } else {
+            setPrimaryChatPublicSendError(result?.error ?? 'Kick send failed')
+          }
+        })
+        .catch(() => setPrimaryChatPublicSendError('Kick send failed'))
+      return
     }
-  }, [sendDggMessage])
+    sendPrimaryChatMessage()
+  }, [primaryChatInputValue, activeChannel, sendPrimaryChatMessage])
+
+  const onPrimaryChatInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault()
+        if (chatChannels.length <= 1) return
+        setActiveChatChannelIndex((i) => (e.shiftKey ? (i - 1 + chatChannels.length) % chatChannels.length : (i + 1) % chatChannels.length))
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        sendToActiveChannel()
+      }
+    },
+    [sendToActiveChannel, chatChannels.length]
+  )
 
   const scrollToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -2604,14 +2741,14 @@ export default function CombinedChat({
 
   const inputBlock = (
     <>
-      {enableDgg && showDggInput && !dggAuthenticated && (
+      {enablePrimaryChat && showPrimaryChatInput && !primaryChatAuthenticated && enabledKickSlugs.length === 0 && (
         <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
           Login → Main menu → Connections
         </div>
       )}
-      {enableDgg && showDggInput && dggAuthenticated && (
+      {((enablePrimaryChat && showPrimaryChatInput && primaryChatAuthenticated) || enabledKickSlugs.length > 0) && (
         <div className="flex flex-col gap-1 min-w-0 flex-none">
-          {privViewOpen && !activeWhisperUsername && (
+          {primaryChatSourceId && activeChannel?.type === primaryChatSourceId && privViewOpen && !activeWhisperUsername && (
             <>
               {whisperSendError && (
                 <div className="text-xs text-warning px-1" role="alert">
@@ -2655,36 +2792,40 @@ export default function CombinedChat({
               </div>
             </>
           )}
-          {dggPublicSendError && (
+          {primaryChatPublicSendError && (
             <div className="text-xs text-warning px-2 py-0.5" role="alert">
-              {dggPublicSendError}
+              {primaryChatPublicSendError}
             </div>
           )}
           <div className="flex items-center gap-1 min-w-0 flex-1 min-h-[var(--embed-dock-height)] w-full" style={{ backgroundColor: 'var(--color-base-200)' }}>
             <div className="flex-1 min-w-0">
-              <DggInputBar
-                ref={mergedDggInputRef}
-                value={dggInputValue}
-                onChange={setDggInputValue}
-                onSend={sendDggMessage}
-                onKeyDown={onDggInputKeyDown}
+              <PrimaryChatInputBar
+                ref={mergedPrimaryChatInputRef}
+                value={primaryChatInputValue}
+                onChange={setPrimaryChatInputValue}
+                onSend={sendToActiveChannel}
+                onKeyDown={onPrimaryChatInputKeyDown}
                 disabled={
-                  privViewOpen && !activeWhisperUsername
-                    ? !dggConnected || !composeRecipient.trim()
-                    : !dggConnected || (dggPublicChatDisabled && !activeWhisperUsername)
+                  activeChannel?.type === 'kick'
+                    ? false
+                    : privViewOpen && !activeWhisperUsername
+                      ? !primaryChatConnected || !composeRecipient.trim()
+                      : !primaryChatConnected || (primaryChatPublicChatDisabled && !activeWhisperUsername)
                 }
-                emotesMap={emotesMap}
-                dggNicks={dggNicks}
+                emotesMap={activeChannelEmotes}
+                primaryChatNicks={activeChannelNicks}
                 placeholder={
-                  activeWhisperUsername
-                    ? (dggConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
-                    : privViewOpen
-                      ? (dggConnected ? 'whisper message..' : 'Connecting...')
-                      : dggPublicChatDisabled
-                        ? 'Sub only mode — subscribers can type'
-                        : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
+                  activeChannel && 'slug' in activeChannel
+                    ? `Message Kick / ${activeChannel.slug}...`
+                    : activeWhisperUsername
+                      ? (primaryChatConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
+                      : privViewOpen
+                        ? (primaryChatConnected ? 'whisper message..' : 'Connecting...')
+                        : primaryChatPublicChatDisabled
+                          ? 'Sub only mode — subscribers can type'
+                          : (primaryChatConnected ? 'Message chat...' : 'Connecting...')
                 }
-                shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
+                shortcutLabel={chatChannels.length > 1 ? 'Ctrl+Tab' : primaryChatConnected ? focusShortcutLabel : undefined}
                 dropdownInPortal={overlayMode}
               />
             </div>
@@ -2727,7 +2868,7 @@ export default function CombinedChat({
         inputContainerRef.current
       )}
       <div className={`relative flex-1 min-h-0 flex flex-col ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}>
-        {enableDgg && pinnedMessage && !pinnedHidden && (
+        {enablePrimaryChat && pinnedMessage && !pinnedHidden && (
           <div
             className="absolute left-0 right-0 z-10 p-2 pointer-events-none"
             style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight } : { top: 0 }}
@@ -2768,7 +2909,7 @@ export default function CombinedChat({
                   <span className="shrink-0">
                     <span
                       className={`font-semibold ${pinnedColorFlair ? `user ${pinnedColorFlair.name}` : ''}`}
-                      style={pinnedColorFlair ? undefined : { color: dggAccentColor }}
+                      style={pinnedColorFlair ? undefined : { color: primaryChatAccentColor }}
                     >
                       {pinnedMessage.nick}
                     </span>
@@ -2782,7 +2923,7 @@ export default function CombinedChat({
             </div>
           </div>
         )}
-        {enableDgg && pinnedMessage && pinnedHidden && (
+        {enablePrimaryChat && pinnedMessage && pinnedHidden && (
           <div
             id="chat-pinned-show-btn"
             className="active absolute right-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
@@ -2797,7 +2938,7 @@ export default function CombinedChat({
             <span aria-hidden>📍</span>
           </div>
         )}
-        {enableDgg && currentPoll && (
+        {enablePrimaryChat && currentPoll && (
           <div
             className="flex-shrink-0 p-2 relative z-10"
             style={overlayMode && overlayHeaderHeight != null ? { marginTop: overlayHeaderHeight } : undefined}
@@ -2961,12 +3102,13 @@ export default function CombinedChat({
         {renderList.map((entry) => {
           if (entry.type === 'message') {
             const m = entry.item
-            if (m.source === 'dgg-event') {
+            if (m.source.endsWith('-event')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
-              const icon = m.eventType === 'donation' ? '💰' : '🎁'
+              const eventType = 'eventType' in m ? m.eventType : ''
+              const icon = eventType === 'donation' ? '💰' : '🎁'
               return (
                 <div
-                  key={`msg-dgg-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
+                  key={`msg-primary-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
                   className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/80"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
@@ -2975,12 +3117,13 @@ export default function CombinedChat({
                 </div>
               )
             }
-            if (m.source === 'dgg-system') {
+            if (m.source.endsWith('-system')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
-              const icon = m.kind === 'ban' ? '🔨' : m.kind === 'unmute' ? '🔓' : '🔇'
+              const kind = 'kind' in m ? m.kind : 'mute'
+              const icon = kind === 'ban' ? '🔨' : kind === 'unmute' ? '🔓' : '🔇'
               return (
                 <div
-                  key={`msg-dgg-system-${(m as CombinedItemWithSeq).seq}-${m.kind}-${m.tsMs}`}
+                  key={`msg-primary-system-${(m as CombinedItemWithSeq).seq}-${kind}-${m.tsMs}`}
                   className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/70"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
@@ -2989,18 +3132,18 @@ export default function CombinedChat({
                 </div>
               )
             }
-            if (m.source === 'dgg-broadcast') {
+            if (m.source.endsWith('-broadcast')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               return (
                 <div
-                  key={`msg-dgg-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.raw?.uuid ?? ''}`}
+                  key={`msg-primary-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${(m.raw as { uuid?: string })?.uuid ?? ''}`}
                   className="msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border"
                   style={{ borderColor: '#edea12' }}
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
                   <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0 flex-1">
                     <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
-                      {renderDggMessageContent(m.content ?? '')}
+                      {renderPrimaryChatMessageContent(m.content ?? '')}
                     </span>
                   </span>
                   <span className="shrink-0 ml-auto" aria-hidden title="Broadcast">📢</span>
@@ -3009,59 +3152,60 @@ export default function CombinedChat({
             }
             const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
             const colorKey =
-              m.source === 'dgg'
-                ? 'dgg'
+              m.source === primaryChatSourceId
+                ? (primaryChatSourceId ?? 'chat')
                 : m.source === 'kick'
-                  ? `kick:${m.slug}`
+                  ? `kick:${'slug' in m ? m.slug : ''}`
                   : m.source === 'youtube'
-                    ? `youtube:${m.videoId}`
-                    : `twitch:${m.channel}`
+                    ? `youtube:${'videoId' in m ? m.videoId : ''}`
+                    : `twitch:${'channel' in m ? m.channel : ''}`
             const displayName = getEmbedDisplayName(colorKey)
             const accent =
-              m.source === 'dgg'
-                ? dggAccentColor
-                : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
+              m.source === primaryChatSourceId
+                ? primaryChatAccentColor
+                : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName, primaryChatSourceId }))
             const badgeText = textColorOn(accent)
             const contentForHighlight = getContentForHighlight(m)
             const contentLower = contentForHighlight.toLowerCase()
             const matchingTerms = highlightTerms.filter((term) => term.trim() && contentLower.includes(term.trim().toLowerCase()))
             const isHighlighted = matchingTerms.length > 0
             const isOwn =
-              m.source === 'dgg' &&
-              dggMeNick != null &&
-              (m.nick?.trim().toLowerCase() === dggMeNick.toLowerCase())
-            const dggColorFlair =
-              m.source === 'dgg' && showDggFlairsAndColors
-                ? usernameColorFlair(flairsList, { features: m.raw.features ?? [] })
+              m.source === primaryChatSourceId &&
+              primaryChatMeNick != null &&
+              ('nick' in m && m.nick?.trim().toLowerCase() === primaryChatMeNick.toLowerCase())
+            const rawMsg = m.raw as PrimaryChatMessage
+            const primaryChatColorFlair =
+              m.source === primaryChatSourceId && showPrimaryChatSourceFlairsAndColors
+                ? usernameColorFlair(flairsList, { features: rawMsg.features ?? [] })
                 : undefined
-            const dggFlairFeatures =
-              m.source === 'dgg' && showDggFlairsAndColors
-                ? (m.raw.features ?? []).filter((f) => flairsMapRef.current.has(f))
+            const primaryChatFlairFeatures =
+              m.source === primaryChatSourceId && showPrimaryChatSourceFlairsAndColors
+                ? (rawMsg.features ?? []).filter((f: string) => flairsMapRef.current.has(f))
                 : []
             return (
               <div
-                key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${m.nick}`}
+                key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
                 className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
               >
                 {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
-                {showSourceLabels && (m.source === 'dgg' ? (dggLabelText != null && dggLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
+                {showSourceLabels && (m.source === primaryChatSourceId ? (primaryChatSourceLabelText != null && primaryChatSourceLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
                   <span
                     className="badge badge-sm shrink-0"
                     style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                   >
-                    {m.source === 'dgg'
-                      ? (dggLabelText ?? '').trim()
+                    {m.source === primaryChatSourceId
+                      ? (primaryChatSourceLabelText ?? '').trim()
                       : (displayName ||
                           (m.source === 'kick'
-                            ? `K:${m.slug}`
+                            ? `K:${'slug' in m ? m.slug : ''}`
                             : m.source === 'youtube'
-                              ? `Y:${m.videoId}`
-                              : `T:${m.channel}`))}
+                              ? `Y:${'videoId' in m ? m.videoId : ''}`
+                              : `T:${'channel' in m ? m.channel : ''}`))}
                   </span>
                 ) : null}
-                {showPlatformIcons && getPlatformIcon(colorKey) ? (
+                {showPlatformIcons && getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId) ? (
                   <img
-                    src={getPlatformIcon(colorKey)}
+                    src={getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId)}
                     alt=""
                     className="w-4 h-4 shrink-0"
                     aria-hidden
@@ -3071,13 +3215,13 @@ export default function CombinedChat({
                   className="shrink-0 flex items-center gap-1 cursor-context-menu"
                   onContextMenu={(e) => openUserTooltip(e, m)}
                   onMouseUp={(e) => e.stopPropagation()}
-                  onDoubleClick={m.source === 'dgg' ? () => handleNickDoubleClick(m.nick) : undefined}
+                  onDoubleClick={m.source === primaryChatSourceId && 'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
                 >
-                  {m.source === 'dgg' ? (
+                  {m.source === primaryChatSourceId ? (
                     <>
-                      {dggFlairFeatures.length > 0 ? (
+                      {primaryChatFlairFeatures.length > 0 ? (
                         <span className="inline-flex items-center">
-                          {dggFlairFeatures.map((f) => {
+                          {primaryChatFlairFeatures.map((f) => {
                             const fl = flairsMapRef.current.get(f)!
                             return (
                               <i
@@ -3092,10 +3236,10 @@ export default function CombinedChat({
                       ) : null}
                       <span className="inline-flex items-center gap-0">
                         <span
-                          className={`font-semibold hover:underline ${dggColorFlair ? `user ${dggColorFlair.name}` : ''}`}
-                          style={dggColorFlair ? undefined : { color: accent }}
+                          className={`font-semibold hover:underline ${primaryChatColorFlair ? `user ${primaryChatColorFlair.name}` : ''}`}
+                          style={primaryChatColorFlair ? undefined : { color: accent }}
                         >
-                          {m.nick}
+                          {'nick' in m ? m.nick : ''}
                         </span>
                         {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
                       </span>
@@ -3103,23 +3247,23 @@ export default function CombinedChat({
                   ) : (
                     <span className="inline-flex items-center gap-0">
                       <span className="font-semibold" style={{ color: accent }}>
-                        {m.nick}
+                        {'nick' in m ? m.nick : ''}
                       </span>
                       {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
                     </span>
                   )}
                 </span>
                 <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0">
-                  {m.source === 'dgg' ? (
+                  {m.source === primaryChatSourceId ? (
                     <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
-                      {renderDggMessageContent(m.content ?? '')}
+                      {renderPrimaryChatMessageContent(m.content ?? '')}
                     </span>
                   ) : m.source === 'kick'
-                    ? renderKickContent(m.raw, onOpenLink).map((node, i) => (
+                    ? renderKickContent(m.raw as KickChatMessage, onOpenLink).map((node, i) => (
                         <Fragment key={`kick-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${i}`}>{node}</Fragment>
                       ))
                     : m.source === 'youtube'
-                      ? renderYouTubeContent(m.raw, onOpenLink)
+                      ? renderYouTubeContent(m.raw as YouTubeChatMessage, onOpenLink)
                       : renderTextWithLinks(m.content ?? '', null, new Map(), onOpenLink)}
                 </span>
               </div>
@@ -3127,13 +3271,13 @@ export default function CombinedChat({
           }
           const { count, emoteKey, source, tsMs, slug } = entry
           const ts = Number.isFinite(tsMs) ? new Date(tsMs).toLocaleTimeString() : ''
-          const isDgg = source === 'dgg'
-          const colorKey = isDgg ? 'dgg' : (slug ? `kick:${slug}` : 'kick')
+          const isPrimaryChat = primaryChatSourceId && source === primaryChatSourceId
+          const colorKey = isPrimaryChat ? primaryChatSourceId : (slug ? `kick:${slug}` : 'kick')
           const displayName = getEmbedDisplayName(colorKey)
-          const accent = isDgg ? dggAccentColor : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName }))
+          const accent = isPrimaryChat ? primaryChatAccentColor : (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName, primaryChatSourceId }))
           const badgeText = textColorOn(accent)
-          const prefix = isDgg ? emoteKey : null
-          const kickParts = !isDgg && emoteKey.startsWith('kick:') ? emoteKey.slice(5).split(':') : []
+          const prefix = isPrimaryChat ? emoteKey : null
+          const kickParts = !isPrimaryChat && emoteKey.startsWith('kick:') ? emoteKey.slice(5).split(':') : []
           const kickId = kickParts.length >= 1 ? Number(kickParts[0]) : 0
           const kickName = kickParts.length >= 2 ? kickParts.slice(1).join(':') : undefined
           const comboStepClass = count >= 50 ? 'x50' : count >= 30 ? 'x30' : count >= 20 ? 'x20' : count >= 10 ? 'x10' : count >= 5 ? 'x5' : 'x2'
@@ -3145,24 +3289,24 @@ export default function CombinedChat({
               data-combo-group={comboStepClass}
             >
               {showTimestamps ? <span className="text-xs text-base-content/50">{ts}</span> : null}
-              {showSourceLabels && (isDgg ? (dggLabelText != null && dggLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
+              {showSourceLabels && (isPrimaryChat ? (primaryChatSourceLabelText != null && primaryChatSourceLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
                 <span
                   className="badge badge-sm align-middle mr-2"
                   style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
                 >
-                  {source === 'dgg' ? (dggLabelText ?? '').trim() : (displayName || (slug ? `K:${slug}` : 'Kick'))}
+                  {primaryChatSourceId && source === primaryChatSourceId ? (primaryChatSourceLabelText ?? '').trim() : (displayName || (slug ? `K:${slug}` : 'Kick'))}
                 </span>
               ) : null}
-              {showPlatformIcons && getPlatformIcon(colorKey) ? (
+              {showPlatformIcons && getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId) ? (
                 <img
-                  src={getPlatformIcon(colorKey)}
+                  src={getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId)}
                   alt=""
                   className="w-4 h-4 shrink-0 align-middle"
                   aria-hidden
                 />
               ) : null}
               <span className="inline-flex items-center gap-1 shrink-0">
-                {isDgg && prefix ? (
+                {isPrimaryChat && prefix ? (
                   <div
                     className={`emote ${prefix} cursor-pointer`}
                     title={`${prefix} (double-click to insert)`}
@@ -3284,7 +3428,7 @@ export default function CombinedChat({
             </div>
           )}
           <div className="flex flex-wrap gap-2 pt-1 border-t border-base-300">
-            {userTooltip.source === 'dgg' && enableDgg && (
+            {primaryChatSourceId && userTooltip.source === primaryChatSourceId && enablePrimaryChat && (
               <button
                 type="button"
                 className="btn btn-xs btn-ghost"
@@ -3391,13 +3535,13 @@ export default function CombinedChat({
                   <span>Chat pane side</span>
                   <span aria-hidden className="text-base-content/50">▸</span>
                 </div>
-                {contextMenuConfig.dgg && (
+                {contextMenuConfig.primaryChat && (
                   <div
                     className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
-                    onMouseEnter={() => setContextMenuHover('dgg')}
+                    onMouseEnter={() => setContextMenuHover(primaryChatSourceId ?? '')}
                     role="menuitem"
                   >
-                    <span>DGG</span>
+                    <span>{primaryChatSourceLabelText ?? 'Chat'}</span>
                     <span aria-hidden className="text-base-content/50">▸</span>
                   </div>
                 )}
@@ -3420,9 +3564,9 @@ export default function CombinedChat({
                     <span>Platform icons</span>
                     {contextMenuConfig.display.showPlatformIcons && <span aria-hidden>✓</span>}
                   </button>
-                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showDggFlairsAndColors} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowDggFlairsAndColors(!contextMenuConfig.display.showDggFlairsAndColors); closeContextMenu() }}>
-                    <span>DGG flairs and colors</span>
-                    {contextMenuConfig.display.showDggFlairsAndColors && <span aria-hidden>✓</span>}
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.display.showPrimaryChatSourceFlairsAndColors} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.display.setShowPrimaryChatSourceFlairsAndColors(!contextMenuConfig.display.showPrimaryChatSourceFlairsAndColors); closeContextMenu() }}>
+                    <span>{(primaryChatSourceLabelText ?? 'Primary').trim() || 'Primary'} flairs and colors</span>
+                    {contextMenuConfig.display.showPrimaryChatSourceFlairsAndColors && <span aria-hidden>✓</span>}
                   </button>
                 </div>
               )}
@@ -3481,14 +3625,14 @@ export default function CombinedChat({
                   </button>
                 </div>
               )}
-              {contextMenuHover === 'dgg' && contextMenuConfig.dgg && (
+              {primaryChatSourceId && contextMenuHover === primaryChatSourceId && contextMenuConfig.primaryChat && (
                 <div
                   className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
-                  onMouseEnter={() => setContextMenuHover('dgg')}
+                  onMouseEnter={() => setContextMenuHover(primaryChatSourceId ?? '')}
                 >
-                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.dgg.showInput} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.dgg!.setShowInput(!contextMenuConfig.dgg!.showInput); closeContextMenu() }}>
+                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.primaryChat.showInput} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.primaryChat!.setShowInput(!contextMenuConfig.primaryChat!.showInput); closeContextMenu() }}>
                     <span>Show chat input</span>
-                    {contextMenuConfig.dgg.showInput && <span aria-hidden>✓</span>}
+                    {contextMenuConfig.primaryChat.showInput && <span aria-hidden>✓</span>}
                   </button>
                 </div>
               )}

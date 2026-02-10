@@ -24,7 +24,7 @@ export type KickChatMessage = {
   }
 }
 
-type KickChannelInfo = { channelId?: number; chatroomId: number }
+type KickChannelInfo = { channelId?: number; chatroomId: number; /** From API when available (e.g. chatroom viewers/chatters). */ chatUserCount?: number | null }
 
 const PUSHER_URL =
   'wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false'
@@ -40,6 +40,32 @@ function safeJsonParse<T = any>(raw: string): T | null {
 function getKickSession() {
   // Use the same persistent session as the renderer windows (so Cloudflare/Kick cookies match).
   return session.fromPartition('persist:main')
+}
+
+/** Get CSRF token from session cookie (XSRF-TOKEN). Kick requires it in X-XSRF-TOKEN header for POST. */
+async function getKickCsrfToken(): Promise<string | null> {
+  const ses = getKickSession()
+  const cookies = await ses.cookies.get({ url: 'https://kick.com' })
+  const xsrf = cookies.find((c) => c.name === 'XSRF-TOKEN')
+  if (!xsrf?.value) return null
+  try {
+    return decodeURIComponent(xsrf.value)
+  } catch {
+    return xsrf.value
+  }
+}
+
+/** Get Bearer token from session_token cookie. Kick requires Authorization: Bearer for authenticated POST. */
+async function getKickSessionBearerToken(): Promise<string | null> {
+  const ses = getKickSession()
+  const cookies = await ses.cookies.get({ url: 'https://kick.com' })
+  const sessionToken = cookies.find((c) => c.name === 'session_token')
+  if (!sessionToken?.value) return null
+  try {
+    return decodeURIComponent(sessionToken.value)
+  } catch {
+    return sessionToken.value
+  }
 }
 
 function headerValue(headers: Record<string, string | string[]>, key: string): string {
@@ -83,6 +109,47 @@ async function kickRequestText(
       res.on('error', (err) => reject(err))
     })
     req.on('error', (err) => reject(err))
+    req.end()
+  })
+}
+
+async function kickPostJson(
+  url: string,
+  body: Record<string, unknown>,
+  opts: { referer?: string }
+): Promise<{ status: number; bodyText: string }> {
+  const bodyStr = JSON.stringify(body)
+  const [csrfToken, bearerToken] = await Promise.all([getKickCsrfToken(), getKickSessionBearerToken()])
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+    ...(opts.referer ? { Referer: opts.referer } : {}),
+  }
+  if (csrfToken) headers['X-XSRF-TOKEN'] = csrfToken
+  if (bearerToken) headers['Authorization'] = `Bearer ${bearerToken}`
+  return new Promise((resolve, reject) => {
+    const req = net.request({
+      method: 'POST',
+      url,
+      session: getKickSession(),
+      redirect: 'follow',
+      useSessionCookies: true,
+      origin: 'https://kick.com',
+      headers,
+    })
+    req.on('response', (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))))
+      res.on('end', () => {
+        resolve({ status: res.statusCode ?? 0, bodyText: Buffer.concat(chunks).toString('utf-8') })
+      })
+      res.on('error', (err) => reject(err))
+    })
+    req.on('error', (err) => reject(err))
+    req.write(bodyStr, 'utf-8')
     req.end()
   })
 }
@@ -260,14 +327,48 @@ async function fetchKickHtml(url: string, slug: string): Promise<string> {
   return bodyText || ''
 }
 
+/** Try to read chat/viewer user count from Kick API response (field names vary). */
+function readChatUserCount(data: any): number | null {
+  if (!data || typeof data !== 'object') return null
+  const n =
+    data.chatters_count ??
+    data.chattersCount ??
+    data.viewers_count ??
+    data.viewersCount ??
+    data.chatroom?.users_online ??
+    data.chatroom?.usersOnline ??
+    data.chatroom?.viewers_count ??
+    data.livestream?.viewer_count ??
+    data.livestream?.viewers_count
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null
+}
+
 async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
-  const urls = [
+  // Dedicated chatroom endpoint: GET /api/v2/channels/{slug}/chatroom returns { id: number, ... }
+  const chatroomUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/chatroom`
+  try {
+    const { status, bodyText } = await kickRequestText(chatroomUrl, {
+      accept: 'application/json,text/plain,*/*',
+      origin: 'https://kick.com',
+      referer: `https://kick.com/${encodeURIComponent(slug)}`,
+    })
+    if (status >= 200 && status < 300) {
+      const data = safeJsonParse<any>(bodyText || '')
+      const chatroomId = Number(data?.id)
+      const chatUserCount = readChatUserCount(data)
+      if (chatroomId > 0) return { chatroomId, chatUserCount }
+    }
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] chatroom_endpoint_exception', [slug, e instanceof Error ? e.message : String(e)])
+  }
+
+  const channelUrls = [
     `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`,
     `https://kick.com/api/v1/channels/${encodeURIComponent(slug)}`,
   ]
 
   let lastErr: unknown = null
-  for (const url of urls) {
+  for (const url of channelUrls) {
     try {
       const { status, headers, bodyText } = await kickRequestText(url, {
         accept: 'application/json,text/plain,*/*',
@@ -296,7 +397,8 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
         ) || 0
 
       if (chatroomId > 0) {
-        return { channelId: channelId > 0 ? channelId : undefined, chatroomId }
+        const chatUserCount = readChatUserCount(data)
+        return { channelId: channelId > 0 ? channelId : undefined, chatroomId, chatUserCount }
       }
       lastErr = new Error(`Missing channelId/chatroomId for slug "${slug}" from ${url}`)
     } catch (e) {
@@ -322,6 +424,82 @@ async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo> {
   }
 
   throw lastErr instanceof Error ? lastErr : new Error(`Failed to fetch Kick channel info for "${slug}"`)
+}
+
+/** Get chat user count for a Kick channel (from API when available). Returns null if unavailable or fetch fails. */
+export async function getKickChatUserCount(slug: string): Promise<number | null> {
+  try {
+    const info = await fetchKickChannelInfo(slug)
+    return info.chatUserCount ?? null
+  } catch {
+    return null
+  }
+}
+
+/** GET /api/v2/channels/{slug}/me — current user's relationship to the channel (requires session). */
+export type KickChannelMe = {
+  subscription?: { id?: number } | null
+  is_super_admin?: boolean
+  is_following?: boolean
+  following_since?: string | null
+  is_broadcaster?: boolean
+  is_moderator?: boolean
+  leaderboards?: { gifts?: { quantity?: number; weekly?: number; monthly?: number } }
+  banned?: unknown
+  celebrations?: unknown[]
+  has_notifications?: boolean
+}
+
+export async function fetchKickChannelMe(slug: string): Promise<KickChannelMe | null> {
+  const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/me`
+  try {
+    const { status, bodyText } = await kickRequestText(url, {
+      accept: 'application/json',
+      origin: 'https://kick.com',
+      referer: `https://kick.com/${encodeURIComponent(slug)}`,
+    })
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<KickChannelMe>(bodyText || '')
+    return data
+  } catch {
+    return null
+  }
+}
+
+async function sendKickMessageToChatroom(
+  chatroomId: number,
+  slug: string,
+  content: string
+): Promise<{ success: boolean; error?: string }> {
+  const url = `https://kick.com/api/v2/messages/send/${chatroomId}`
+  const messageRef = `${Date.now()}`
+  fileLogger.writeLog('info', 'main', '[Kick] send_message attempt', [slug, chatroomId, content.length, url])
+  const { status, bodyText } = await kickPostJson(
+    url,
+    { content, type: 'message', message_ref: messageRef },
+    { referer: `https://kick.com/${encodeURIComponent(slug)}` }
+  )
+  fileLogger.writeLog('info', 'main', '[Kick] send_message response', [slug, status, bodyText?.slice(0, 500) ?? ''])
+  if (status < 200 || status >= 300) {
+    const err = safeJsonParse<{ status?: { message?: string } }>(bodyText)?.status?.message || bodyText?.slice(0, 200) || `HTTP ${status}`
+    return { success: false, error: String(err) }
+  }
+  return { success: true }
+}
+
+/** Send a chat message to a Kick channel (fetches channel info if needed). Use when KickChatManager may not be initialized. */
+export async function sendKickMessage(slug: string, content: string): Promise<{ success: boolean; error?: string }> {
+  const s = String(slug || '').trim().toLowerCase()
+  const text = String(content || '').trim()
+  if (!s || !text) return { success: false, error: 'Missing slug or content' }
+  try {
+    const info = await fetchKickChannelInfo(s)
+    return await sendKickMessageToChatroom(info.chatroomId, s, text)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    fileLogger.writeLog('warn', 'main', '[Kick] send_message_failed', [s, msg])
+    return { success: false, error: msg }
+  }
 }
 
 class KickPusherClient extends EventEmitter {
@@ -663,6 +841,26 @@ export class KickChatManager extends EventEmitter {
       } catch (e) {
         fileLogger.writeLog('warn', 'main', '[Kick] history_refetch_failed', [slug, e instanceof Error ? e.message : String(e)])
       }
+    }
+  }
+
+  /** Send a chat message to a Kick channel (uses cached slugToInfo if available). */
+  async sendMessage(slug: string, content: string): Promise<{ success: boolean; error?: string }> {
+    const s = String(slug || '').trim().toLowerCase()
+    const text = String(content || '').trim()
+    if (!s || !text) return { success: false, error: 'Missing slug or content' }
+    try {
+      let info = this.slugToInfo.get(s)
+      if (!info) {
+        info = await fetchKickChannelInfo(s)
+        this.slugToInfo.set(s, info)
+        this.chatroomToSlug.set(info.chatroomId, s)
+      }
+      return await sendKickMessageToChatroom(info.chatroomId, s, text)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      fileLogger.writeLog('warn', 'main', '[Kick] send_message_failed', [s, msg])
+      return { success: false, error: msg }
     }
   }
 

@@ -6,15 +6,21 @@ import { createServer } from 'http'
 import { readFileSync, statSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
-import { getDggConfig, getPlatformUrls } from './envConfig'
+import { getPlatformUrls } from './envConfig'
+import { getPrimaryChatSource, getRendererConfigOverlay, getExtensionSettingsSchemas, getLiveMessageHandler, getChatSourceApi } from './extensions/context.js'
+import type { LiveMessageHandlerApi } from './extensions/context.js'
 import { ChatWebSocket } from './chatWebSocket'
 import { LiveWebSocket } from './liveWebSocket'
 import { mentionCache } from './mentionCache'
-import { KickChatManager } from './kickChatManager'
+import { KickChatManager, fetchKickChannelMe, getKickChatUserCount, sendKickMessage } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
 import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeLiveOrLatest'
 import { checkUrlIsLive } from './urlIsLive'
+import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
+import type { ProtocolHandleResult } from './extensions/types.js'
+import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
+import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -39,33 +45,84 @@ if (appRoot) {
   }
 }
 
-const dggConfig = getDggConfig()
 const platformUrls = getPlatformUrls()
 
-/** Serializable app config for renderer (DGG URLs + platform base URLs). */
+/** Serializable app config for renderer. Chat source configs come from extensions via overlay.chatSources. */
 export function getAppConfigForRenderer() {
+  const overlay = getRendererConfigOverlay()
+  const chatSources = overlay.chatSources ?? {}
+  const platformUrlsFromOverlay: Record<string, string> = {
+    youtube: platformUrls.youtube,
+    kick: platformUrls.kick,
+    twitch: platformUrls.twitch,
+    twitter: platformUrls.twitter,
+    reddit: platformUrls.reddit,
+  }
+  for (const [id, c] of Object.entries(chatSources)) {
+    // Use loginUrl for Connections "Log in" button; fall back to baseUrl for display if needed
+    if (c?.loginUrl) platformUrlsFromOverlay[id] = c.loginUrl
+    else if (c?.baseUrl) platformUrlsFromOverlay[id] = c.baseUrl
+  }
   return {
-    dgg: {
-      baseUrl: dggConfig.baseUrl,
-      loginUrl: dggConfig.loginUrl,
-      emotesJsonUrl: dggConfig.emotesJsonUrl,
-      emotesCssUrl: dggConfig.emotesCssUrl,
-      flairsJsonUrl: dggConfig.flairsJsonUrl,
-      flairsCssUrl: dggConfig.flairsCssUrl,
-    },
-    platformUrls: {
-      dgg: platformUrls.dgg,
-      destiny: platformUrls.destiny,
-      youtube: platformUrls.youtube,
-      kick: platformUrls.kick,
-      twitch: platformUrls.twitch,
-      twitter: platformUrls.twitter,
-      reddit: platformUrls.reddit,
-    },
+    chatSources,
+    platformUrls: platformUrlsFromOverlay,
+    extensions: getLoadedExtensions().map((e) => ({ id: e.id, name: e.name, version: e.version })),
+    extensionSettingsSchemas: getExtensionSettingsSchemas(),
+    connectionPlatforms: overlay.connectionPlatforms ?? [],
   }
 }
 
 ipcMain.handle('get-app-config', () => getAppConfigForRenderer())
+
+ipcMain.handle('get-installed-extensions', () => readExtensionsList())
+
+ipcMain.handle('extension-install-from-url', async (_event, manifestUrl: string) => {
+  if (!manifestUrl || typeof manifestUrl !== 'string') {
+    return { ok: false, error: 'Missing or invalid manifest URL' }
+  }
+  const result = await installFromManifestUrl(manifestUrl.trim())
+  if (result.ok) {
+    reloadExtensions()
+    if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+  }
+  return result
+})
+
+ipcMain.handle('extension-set-enabled', async (_event, payload: { id: string; enabled: boolean }) => {
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : ''
+  const enabled = Boolean(payload?.enabled)
+  if (!id) return { ok: false, error: 'Missing extension id' }
+  const updated = setExtensionEnabled(id, enabled)
+  if (!updated) return { ok: false, error: 'Extension not found' }
+  reloadExtensions()
+  if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+  return { ok: true }
+})
+
+ipcMain.handle('extension-reinstall', async (_event, extensionId: string) => {
+  const id = typeof extensionId === 'string' ? extensionId.trim() : ''
+  if (!id) return { ok: false, error: 'Missing extension id' }
+  const list = readExtensionsList()
+  const ext = list.find((e) => e.id === id)
+  if (!ext) return { ok: false, error: 'Extension not found' }
+  const result = await installFromManifestUrl(ext.updateUrl)
+  if (result.ok) {
+    reloadExtensions()
+    if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+  }
+  return result
+})
+
+ipcMain.handle('extension-uninstall', async (_event, extensionId: string) => {
+  const id = typeof extensionId === 'string' ? extensionId.trim() : ''
+  if (!id) return { ok: false, error: 'Missing extension id' }
+  const result = uninstallExtension(id)
+  if (result.ok) {
+    reloadExtensions()
+    if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+  }
+  return result
+})
 
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
@@ -87,27 +144,29 @@ if (process.argv.includes('--version')) {
 
 let win: BrowserWindow | null
 let viewerWin: BrowserWindow | null = null
+/** Protocol results from launch URL (before renderer loaded); sent when main window finishes loading. */
+let pendingProtocolResults: ProtocolHandleResult[] = []
 
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
 let liveWebSocket: LiveWebSocket | null = null
-/** Current embed keys and display names from DGG live feed. Used to treat YouTube as live when it appears in DGG. */
-const currentDggEmbedKeys = new Set<string>()
-const currentDggEmbedByKey = new Map<string, { displayName?: string }>()
-function makeDggEmbedKey(platform: string, id: string): string {
+/** Current embed keys (and optional display names) from the live WebSocket feed. Populated by the extension's onLiveMessage handler. Used e.g. to treat YouTube as live when it appears in the feed. */
+const currentLiveEmbedKeys = new Set<string>()
+const currentLiveEmbedByKey = new Map<string, { displayName?: string }>()
+function makeLiveEmbedKey(platform: string, id: string): string {
   const p = String(platform || '').toLowerCase()
   const rawId = String(id || '')
   const idNorm = p === 'youtube' ? rawId : rawId.toLowerCase()
   return `${p}:${idNorm}`
 }
-function getDggYouTubeVideoIdForStreamer(streamerNickname?: string): string | null {
-  const ytKeys = [...currentDggEmbedKeys].filter((k) => k.startsWith('youtube:'))
+function getLiveFeedYouTubeVideoIdForStreamer(streamerNickname?: string): string | null {
+  const ytKeys = [...currentLiveEmbedKeys].filter((k) => k.startsWith('youtube:'))
   if (ytKeys.length === 0) return null
   if (ytKeys.length === 1) return ytKeys[0].slice('youtube:'.length)
   const nick = (streamerNickname || '').trim().toLowerCase()
   if (nick) {
     for (const key of ytKeys) {
-      const meta = currentDggEmbedByKey.get(key)
+      const meta = currentLiveEmbedByKey.get(key)
       const display = (meta?.displayName || '').trim().toLowerCase()
       if (display && (display.includes(nick) || nick.includes(display))) return key.slice('youtube:'.length)
     }
@@ -213,11 +272,12 @@ async function getCookiesForUrl(url: string): Promise<string> {
       return cookieString
     }
     
-    // For DGG (destiny.gg or configured backend), include cookies from configured cookie domains
-    if (dggConfig.cookieDomains.some((d) => d === hostname || (d.startsWith('.') && (hostname === d.slice(1) || hostname.endsWith('.' + d.slice(1)))))) {
-      const dggDomains = dggConfig.cookieDomains
+    // For extension chat source cookie domains, collect cookies from all configured domains
+    const primary = getPrimaryChatSource()
+    if (primary?.config.cookieDomains.some((d) => d === hostname || (d.startsWith('.') && (hostname === d.slice(1) || hostname.endsWith('.' + d.slice(1)))))) {
+      const domains = primary.config.cookieDomains
       const allCookies: Electron.Cookie[] = []
-      for (const domain of dggDomains) {
+      for (const domain of domains) {
         try {
           const cookies = await getDefaultSession().cookies.get({ domain })
           allCookies.push(...cookies)
@@ -237,7 +297,7 @@ async function getCookiesForUrl(url: string): Promise<string> {
         .map(cookie => `${cookie.name}=${cookie.value}`)
         .join('; ')
       if (cookieString) {
-        console.log(`Found ${uniqueCookies.size} cookies for destiny.gg (www + chat)`)
+        console.log(`[connections] Found ${uniqueCookies.size} cookies for chat source (${primary.id})`)
       }
       return cookieString
     }
@@ -437,6 +497,18 @@ function createApplicationMenu() {
           label: 'Hide title bar (Alt)',
           click: () => {
             win?.webContents.send('title-bar-toggle')
+          }
+        }
+      ]
+    },
+    {
+      label: 'Extensions',
+      submenu: [
+        {
+          label: 'Reload extensions',
+          click: () => {
+            reloadExtensions()
+            if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
           }
         }
       ]
@@ -912,19 +984,23 @@ function createWindow() {
     }
   )
 
-  // DGG embeds (e.g. chat embed) – URLs from config
-  session.webRequest.onHeadersReceived(
-    {
-      urls: [
-        dggConfig.baseUrl + '/*',
-        ...dggConfig.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d + '/*'),
-      ],
-    },
-    (details, callback) => {
-      console.log(`[Main Process] Modified CSP for Destiny: ${details.url.substring(0, 80)}`)
-      modifyCSPForEmbeds(details, callback)
-    }
-  )
+  // Chat source embeds (CSP) – when a chat source extension is installed
+  const primary = getPrimaryChatSource()
+  if (primary) {
+    const { config } = primary
+    session.webRequest.onHeadersReceived(
+      {
+        urls: [
+          config.baseUrl + '/*',
+          ...config.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d + '/*'),
+        ],
+      },
+      (details, callback) => {
+        console.log(`[Main Process] Modified CSP for chat source: ${details.url.substring(0, 80)}`)
+        modifyCSPForEmbeds(details, callback)
+      }
+    )
+  }
 
   // Enable auto-update logic
   update(win)
@@ -965,7 +1041,7 @@ function createWindow() {
     contextMenu.popup()
   })
 
-  // Handle external links (e.g. from Destiny embed chat) per chat link-open setting
+  // Handle external links (e.g. from embed chat) per chat link-open setting
   win.webContents.on('will-navigate', (event, navigationUrl) => {
     const parsedUrl = new URL(navigationUrl)
     const currentUrl = win?.webContents.getURL()
@@ -1015,9 +1091,13 @@ function createWindow() {
     return { action: 'deny' }
   })
 
-  // Test active push message to Renderer-process.
+  // Test active push message to Renderer-process. Also flush any protocol results from launch URL.
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
+    while (pendingProtocolResults.length > 0) {
+      const result = pendingProtocolResults.shift()!
+      if (win && !win.isDestroyed()) win.webContents.send('protocol-result', result)
+    }
   })
 
   if (VITE_DEV_SERVER_URL) {
@@ -1265,6 +1345,12 @@ ipcMain.handle('set-chat-link-open-action', (_event, action: LinkOpenAction) => 
 
 ipcMain.handle('fetch-mentions', async (_event, username: string, size: number = 150, offset: number = 0, useCache: boolean = true) => {
   try {
+    const primary = getPrimaryChatSource()
+    const api = primary ? getChatSourceApi(primary.id) : undefined
+    if (!api?.fetchMentions) {
+      return { success: false, error: 'Chat source does not support mentions search' }
+    }
+
     // Check cache first if enabled
     if (useCache) {
       const cachedIds = mentionCache.getCachedQuery(username, size, offset)
@@ -1277,88 +1363,30 @@ ipcMain.handle('fetch-mentions', async (_event, username: string, size: number =
       }
     }
 
-    const url = `https://polecat.me/api/mentions/${encodeURIComponent(username)}?size=${size}&offset=${offset}`
-    
-    console.log(`[Main Process] Fetching mentions for "${username}":`)
-    console.log(`  - URL: ${url}`)
-    console.log(`  - Size: ${size}, Offset: ${offset}`)
-    console.log(`  - Request time: ${new Date().toISOString()}`)
-    
-    const startTime = Date.now()
-    const response = await fetch(url, {
-      cache: 'no-store', // Prevent caching
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
-    })
-    
-    const fetchTime = Date.now() - startTime
-    console.log(`  - Response status: ${response.status} (took ${fetchTime}ms)`)
-    
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response')
-      console.error(`  - Error response body: ${errorText}`)
-      throw new Error(`HTTP error! status: ${response.status}`)
+    const result = await api.fetchMentions(username, size, offset)
+    if (!result.success || !Array.isArray(result.data)) {
+      return { success: false, error: result.error || 'Fetch failed' }
     }
-    
-    const data = await response.json()
-    const dataLength = Array.isArray(data) ? data.length : 0
-    console.log(`  - Received ${dataLength} mentions`)
-    
-    // Add unique ID to each mention using date and username directly (no hash needed)
-    if (dataLength > 0 && Array.isArray(data)) {
-      const dataWithIds = data.map((mention: any) => {
-        // Use date-nick directly as unique ID (unique enough)
-        const uniqueId = `${mention.date || ''}-${mention.nick || ''}`
-        return {
-          ...mention,
-          id: uniqueId
-        }
-      })
-      
-      const firstDate = dataWithIds[0]?.date ? new Date(dataWithIds[0].date).toISOString() : 'N/A'
-      const lastDate = dataWithIds[dataLength - 1]?.date ? new Date(dataWithIds[dataLength - 1].date).toISOString() : 'N/A'
-      console.log(`  - Date range: ${firstDate} (first) to ${lastDate} (last)`)
-      
-      // Check the order - is first item newest or oldest?
-      const dates = dataWithIds.map((m: any) => m.date).filter((d: any) => d != null)
-      if (dates.length > 1) {
-        const firstIsNewer = dates[0] > dates[dates.length - 1]
-        console.log(`  - Order: ${firstIsNewer ? 'NEWEST FIRST (descending)' : 'OLDEST FIRST (ascending)'}`)
-      }
-      
-      // Log a few sample dates to verify
-      const sampleDates = dataWithIds.slice(0, 5).map((m: any, i: number) => 
-        `${i}: ${m.date ? new Date(m.date).toISOString() : 'N/A'} (id: ${m.id})`
-      )
-      console.log(`  - First 5 dates:`, sampleDates)
-      
-      // Store in cache
-      if (useCache) {
-        mentionCache.storeQuery(username, size, offset, dataWithIds)
-      }
-      
-      return { success: true, data: dataWithIds, cached: false }
+
+    const data = result.data
+    const dataLength = data.length
+    console.log(`[Main Process] Received ${dataLength} mentions from chat source`)
+
+    const dataWithIds = dataLength > 0
+      ? data.map((mention: any) => {
+          const uniqueId = `${mention.date ?? ''}-${mention.nick ?? ''}`
+          return { ...mention, id: uniqueId }
+        })
+      : data
+
+    if (useCache && dataWithIds.length > 0) {
+      mentionCache.storeQuery(username, size, offset, dataWithIds)
     }
-    
-    return { success: true, data, cached: false }
+
+    return { success: true, data: dataWithIds, cached: false }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    const errorStack = error instanceof Error ? error.stack : undefined
-    
     console.error('[Main Process] Error fetching mentions:', error)
-    console.error(`  - Username: ${username}`)
-    console.error(`  - Size: ${size}, Offset: ${offset}`)
-    console.error(`  - Error message: ${errorMessage}`)
-    if (errorStack) {
-      console.error(`  - Error stack: ${errorStack}`)
-    }
-    
-    // Also log to stderr for better visibility
-    console.error(`[Main Process] FAILED to fetch mentions for "${username}": ${errorMessage}`)
-    
     return { success: false, error: errorMessage }
   }
 })
@@ -1373,154 +1401,34 @@ ipcMain.handle('get-cache-stats', async () => {
   return mentionCache.getStats()
 })
 
-// Fallback API: rustlesearch.dev search API
-// Used when mentions API returns no results
-// Parameters:
-//   - filterTerms: array of search terms (joined with |)
-//   - searchAfter: optional pagination token from previous response
-//   - size: number of results to fetch
-// Note: username parameter exists but won't be used for now
+// Chat log search: delegated to primary chat source extension
 ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searchAfter?: number, size: number = 150) => {
   try {
-    const terms = Array.isArray(filterTerms) ? filterTerms : []
-    const textParam = terms.map((t) => String(t).trim()).filter(Boolean).join('|')
-
-    // Build URL: channel=Destinygg always; text= only when we have filter terms (empty = channel history)
-    const url = new URL('https://api-v2.rustlesearch.dev/anon/search')
-    url.searchParams.set('channel', 'Destinygg')
-    if (textParam) url.searchParams.set('text', textParam)
-    if (searchAfter) {
-      url.searchParams.set('search_after', searchAfter.toString()) // API uses underscore, not camelCase
+    const primary = getPrimaryChatSource()
+    const api = primary ? getChatSourceApi(primary.id) : undefined
+    if (!api?.fetchRustlesearch) {
+      return { success: false, error: 'Chat source does not support log search' }
     }
-    // Optional: date range (commented out for now, can be added later)
-    // const today = new Date()
-    // const oneYearAgo = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate())
-    // url.searchParams.set('start_date', oneYearAgo.toISOString().split('T')[0])
-    // url.searchParams.set('end_date', today.toISOString().split('T')[0])
-    
-    console.log(`[Main Process] Fetching rustlesearch for terms: ${terms.length ? terms.join(', ') : '(channel only)'}`)
-    console.log(`  - URL: ${url.toString()}`)
-    console.log(`  - SearchAfter: ${searchAfter || 'none'}, Size: ${size}`)
-    
-    const startTime = Date.now()
-    const response = await fetch(url.toString(), {
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
-    })
-    
-    const fetchTime = Date.now() - startTime
-    console.log(`  - Response status: ${response.status} (took ${fetchTime}ms)`)
-    
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response')
-      console.error(`  - Error response body: ${errorText}`)
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-    
-    const result = await response.json()
-    
-    if (result.type !== 'Success' || !result.data) {
-      throw new Error(result.error || 'Invalid response format')
-    }
-    
-    // Log response structure for debugging
-    console.log(`  - Response data keys: ${Object.keys(result.data).join(', ')}`)
-    if (result.data.searchAfter !== undefined) {
-      console.log(`  - Response-level searchAfter: ${result.data.searchAfter}`)
-    }
-    
-    const messages = result.data.messages || []
-    const dataLength = messages.length
-    console.log(`  - Received ${dataLength} messages`)
-    
-    // Log first message structure for debugging
-    if (messages.length > 0) {
-      console.log(`  - First message keys: ${Object.keys(messages[0]).join(', ')}`)
-      if (messages[0].searchAfter !== undefined) {
-        console.log(`  - First message searchAfter: ${messages[0].searchAfter}`)
-      }
-    }
-    
-    // Map rustlesearch format to MentionData format
-    const mappedData = messages.map((msg: any) => {
-      // Convert ISO timestamp to number (milliseconds)
-      const date = new Date(msg.ts).getTime()
-      // Use date-username as unique ID
-      const uniqueId = `${date}-${msg.username || ''}`
-      
+    const result = await api.fetchRustlesearch(
+      Array.isArray(filterTerms) ? filterTerms : [],
+      searchAfter,
+      size
+    )
+    if (result.success) {
       return {
-        id: uniqueId,
-        date: date,
-        text: msg.text || '',
-        nick: msg.username || '',
-        flairs: '', // rustlesearch doesn't provide flairs
-        matchedTerms: terms // All terms matched since we searched for them (empty when channel-only)
-      }
-    })
-    
-    // Get the last searchAfter value for pagination
-    // According to the API, each message has a searchAfter field
-    // We need to use the searchAfter from the last (oldest) message for the next page
-    let lastSearchAfter: number | undefined = undefined
-    
-    if (messages.length > 0) {
-      // Messages are returned in descending order (newest first)
-      // The last message in the array is the oldest, and its searchAfter should be used for next page
-      const lastMessage = messages[messages.length - 1]
-      if (lastMessage.searchAfter !== undefined) {
-        lastSearchAfter = lastMessage.searchAfter
-      } else {
-        // Fallback: use the timestamp if searchAfter is missing
-        const sortedByDate = [...mappedData].sort((a, b) => a.date - b.date)
-        lastSearchAfter = sortedByDate[sortedByDate.length - 1].date
-        console.log(`  - Warning: Last message missing searchAfter, using timestamp as fallback`)
+        success: true,
+        data: result.data ?? [],
+        searchAfter: result.searchAfter,
+        hasMore: result.hasMore ?? false,
       }
     }
-    
-    console.log(`  - Mapped ${mappedData.length} messages`)
-    if (lastSearchAfter) {
-      const lastMsg = messages[messages.length - 1]
-      console.log(`  - Using searchAfter: ${lastSearchAfter} (from last message's searchAfter field: ${lastMsg.searchAfter})`)
-    } else {
-      console.log(`  - No searchAfter value available (no more pages)`)
-    }
-    
-    return { 
-      success: true, 
-      data: mappedData,
-      searchAfter: lastSearchAfter, // Return for pagination
-      hasMore: dataLength > 0 && lastSearchAfter !== undefined // Has more if we got results and have a searchAfter
+    return {
+      success: false,
+      error: result.error ?? 'Search failed',
+      rateLimitInfo: (result as any).rateLimitInfo,
     }
   } catch (error) {
     console.error('[Main Process] Error fetching rustlesearch:', error)
-    console.error(`  - Filter terms: ${(filterTerms || []).join(', ') || '(channel only)'}`)
-    if (error instanceof Error) {
-      console.error(`  - Error message: ${error.message}`)
-      console.error(`  - Error stack: ${error.stack}`)
-      
-      // Include rate limit info in response if available
-      const rateLimitInfo = (error as any).rateLimitInfo
-      if (rateLimitInfo) {
-        const retryAfter = rateLimitInfo.retryAfter
-        const retryDate = retryAfter ? new Date(Date.now() + retryAfter * 1000) : null
-        
-        return { 
-          success: false, 
-          error: error.message,
-          rateLimitInfo: {
-            retryAfter,
-            retryDate: retryDate?.toISOString(),
-            limit: rateLimitInfo.limit,
-            remaining: rateLimitInfo.remaining,
-            reset: rateLimitInfo.reset
-          }
-        }
-      }
-    }
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
 })
@@ -2426,12 +2334,12 @@ ipcMain.handle('fetch-image', async (_event, imageUrl: string) => {
 })
 
 // YouTube: resolve channel to live stream or latest video (no API key; scrape + RSS)
-// useDggFallback: when true (default), if scrape fails or video not in DGG list, substitute DGG's current YT video (for + Link add). When false (pinned streamer poll), never substitute so each channel resolves to its own stream.
+// usePrimaryChatFallback: when true (default), if scrape fails or video not in primary chat source list, substitute that source's current YT video (for + Link add). When false (pinned streamer poll), never substitute so each channel resolves to its own stream.
 ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, options?: { streamerNickname?: string; useDggFallback?: boolean }) => {
   const raw = (channelIdOrUrl || '').trim()
   const channelIdOrUrlNormalized = normalizeYouTubeChannelInput(raw)
   const streamerNickname = options?.streamerNickname
-  const useDggFallback = options?.useDggFallback !== false
+  const usePrimaryChatFallback = options?.useDggFallback !== false
   try {
     const result = await getYouTubeLiveOrLatest(channelIdOrUrlNormalized)
     if ('error' in result) {
@@ -2439,12 +2347,12 @@ ipcMain.handle('youtube-live-or-latest', async (_event, channelIdOrUrl: string, 
     }
     let isLive = result.isLive
     let videoId = result.videoId
-    if (useDggFallback && (!isLive || !videoId || !currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId)))) {
-      const dggVideoId = getDggYouTubeVideoIdForStreamer(streamerNickname)
-      if (dggVideoId) {
-        videoId = dggVideoId
+    if (usePrimaryChatFallback && (!isLive || !videoId || !currentLiveEmbedKeys.has(makeLiveEmbedKey('youtube', videoId)))) {
+      const feedVideoId = getLiveFeedYouTubeVideoIdForStreamer(streamerNickname)
+      if (feedVideoId) {
+        videoId = feedVideoId
         isLive = true
-      } else if (videoId && currentDggEmbedKeys.has(makeDggEmbedKey('youtube', videoId))) {
+      } else if (videoId && currentLiveEmbedKeys.has(makeLiveEmbedKey('youtube', videoId))) {
         isLive = true
       }
     }
@@ -2550,17 +2458,21 @@ ipcMain.handle('fetch-reddit-embed', async (_event, redditUrl: string, theme: 'l
   }
 })
 
-// Connections / Accounts: set cookies from pasted string (per platform). Uses persist:main so embeds and chat use them.
+// Connections / Accounts: set cookies from pasted string (per platform). Uses persist:main. Extension platforms from overlay.chatSources.
 function getConnectionsPlatforms(): Record<string, string> {
-  return {
-    dgg: platformUrls.dgg,
-    destiny: platformUrls.destiny,
+  const overlay = getRendererConfigOverlay()
+  const out: Record<string, string> = {
     youtube: platformUrls.youtube,
     kick: platformUrls.kick,
     twitch: platformUrls.twitch,
     twitter: platformUrls.twitter,
     reddit: platformUrls.reddit,
   }
+  const chatSources = overlay.chatSources ?? {}
+  for (const [id, c] of Object.entries(chatSources)) {
+    if (c?.baseUrl) out[id] = c.baseUrl
+  }
+  return out
 }
 
 function parseCookieString(cookieString: string): Array<{ name: string; value: string }> {
@@ -2608,9 +2520,10 @@ ipcMain.handle(
   try {
     const platform = String(payload?.platform || '').toLowerCase().trim()
     const platforms = getConnectionsPlatforms()
-    const baseUrl = platforms[platform] || platforms[platform === 'dgg' ? 'destiny' : platform]
+    const baseUrl = platforms[platform]
     if (!baseUrl) {
-      return { success: false, error: `Unknown platform: ${platform}. Use one of: dgg, youtube, kick, twitch, twitter, reddit.` }
+      const keys = Object.keys(platforms).join(', ')
+      return { success: false, error: `Unknown platform: ${platform}. Use one of: ${keys}.` }
     }
     let pairs: Array<{ name: string; value: string }>
     if (payload?.cookies && typeof payload.cookies === 'object') {
@@ -2645,37 +2558,40 @@ ipcMain.handle(
   }
 })
 
-// Domains that "Delete all sessions" clears. DGG domains from config; others fixed.
-const CONNECTIONS_CLEAR_DOMAINS = [
-  ...dggConfig.cookieDomains,
-  'youtube.com',
-  'www.youtube.com',
-  '.youtube.com',
-  'google.com',
-  '.google.com',
-  'googlevideo.com',
-  '.googlevideo.com',
-  'ytimg.com',
-  '.ytimg.com',
-  'kick.com',
-  'www.kick.com',
-  'web.kick.com',
-  'twitch.tv',
-  'www.twitch.tv',
-  'twitter.com',
-  'x.com',
-  'twimg.com',
-  '.twitter.com',
-  '.x.com',
-  'reddit.com',
-  'www.reddit.com',
-  '.reddit.com',
-]
+// Domains that "Delete all sessions" clears. Chat source domains from extension when installed; others fixed.
+function getConnectionsClearDomains(): string[] {
+  const primary = getPrimaryChatSource()
+  return [
+    ...(primary?.config.cookieDomains ?? []),
+    'youtube.com',
+    'www.youtube.com',
+    '.youtube.com',
+    'google.com',
+    '.google.com',
+    'googlevideo.com',
+    '.googlevideo.com',
+    'ytimg.com',
+    '.ytimg.com',
+    'kick.com',
+    'www.kick.com',
+    'web.kick.com',
+    'twitch.tv',
+    'www.twitch.tv',
+    'twitter.com',
+    'x.com',
+    'twimg.com',
+    '.twitter.com',
+    '.x.com',
+    'reddit.com',
+    'www.reddit.com',
+    '.reddit.com',
+  ]
+}
 
 function cookieDomainMatches(domain: string | undefined): boolean {
   if (!domain) return false
   const d = domain.toLowerCase().trim()
-  return CONNECTIONS_CLEAR_DOMAINS.some((clear) => {
+  return getConnectionsClearDomains().some((clear) => {
     const c = clear.toLowerCase()
     if (d === c) return true
     if (c.startsWith('.')) return d === c.slice(1) || d.endsWith(c)
@@ -2704,7 +2620,7 @@ ipcMain.handle('connections-clear-all-sessions', async () => {
         // ignore per-cookie errors
       }
     }
-    // Disconnect DGG chat so it stops using the old auth. Next connect will use (now empty) cookies.
+    // Disconnect chat WebSocket so it stops using the old auth. Next connect will use (now empty) cookies.
     if (chatWebSocket) {
       try {
         chatWebSocket.disconnect()
@@ -2715,7 +2631,7 @@ ipcMain.handle('connections-clear-all-sessions', async () => {
       chatWebSocket = null
     }
 
-    console.log(`[connections] Cleared ${total} cookies; DGG chat disconnected (same session used by chat, embeds, etc.)`)
+    console.log(`[connections] Cleared ${total} cookies; chat disconnected (same session used by chat, embeds, etc.)`)
     return { success: true, count: total }
   } catch (e) {
     console.error('[connections] clear-all-sessions error:', e)
@@ -2761,28 +2677,40 @@ ipcMain.handle('connections-clear-entire-cookie-store', async () => {
   }
 })
 
-// URLs used to read cookies per platform (persist:main session). DGG from config.
-const CONNECTIONS_GET_COOKIE_URLS: Record<string, string[]> = {
-  dgg: [
-    dggConfig.baseUrl,
-    ...dggConfig.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d),
-  ],
-  youtube: ['https://www.youtube.com', 'https://youtube.com', 'https://www.google.com', 'https://google.com'],
-  kick: ['https://www.kick.com', 'https://kick.com', 'https://web.kick.com'],
-  twitch: ['https://www.twitch.tv', 'https://twitch.tv'],
-  twitter: ['https://twitter.com', 'https://x.com', 'https://twimg.com'],
-  reddit: ['https://www.reddit.com', 'https://reddit.com'],
+// URLs used to read cookies per platform (persist:main session). Extension platforms from getPrimaryChatSource.
+function getConnectionsGetCookieUrls(): Record<string, string[]> {
+  const primary = getPrimaryChatSource()
+  const base: Record<string, string[]> = {
+    youtube: ['https://www.youtube.com', 'https://youtube.com', 'https://www.google.com', 'https://google.com'],
+    kick: ['https://www.kick.com', 'https://kick.com', 'https://web.kick.com'],
+    twitch: ['https://www.twitch.tv', 'https://twitch.tv'],
+    twitter: ['https://twitter.com', 'https://x.com', 'https://twimg.com'],
+    reddit: ['https://www.reddit.com', 'https://reddit.com'],
+  }
+  if (primary) {
+    base[primary.id] = [
+      primary.config.baseUrl,
+      ...primary.config.cookieDomains.filter((d) => !d.startsWith('.')).map((d) => 'https://' + d),
+    ]
+  }
+  return base
 }
 
-// Cookie names that indicate a real login. "Logged in" is true only when at least one of these exists (avoids
-// treating tracking/anonymous cookies as logged-in; e.g. opening YouTube sets cookies but not auth).
-const CONNECTIONS_AUTH_COOKIE_NAMES: Record<string, string[]> = {
-  dgg: ['sid', 'rememberme'],
-  youtube: ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'SIDCC', 'NID', 'LOGIN_INFO'],
-  kick: ['kick_session', 'session_token'],
-  twitch: ['auth-token', 'unique_id'],
-  twitter: ['auth_token', 'ct0'],
-  reddit: ['reddit_session'],
+// Cookie names that indicate a real login. Built-in platforms fixed; extension platforms from connectionPlatforms.
+function getConnectionsAuthCookieNames(): Record<string, string[]> {
+  const base: Record<string, string[]> = {
+    youtube: ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'SIDCC', 'NID', 'LOGIN_INFO'],
+    kick: ['kick_session', 'session_token'],
+    twitch: ['auth-token', 'unique_id'],
+    twitter: ['auth_token', 'ct0'],
+    reddit: ['reddit_session'],
+  }
+  const connectionPlatforms = getRendererConfigOverlay().connectionPlatforms ?? []
+  for (const p of connectionPlatforms) {
+    const names = p.cookieNames?.length ? p.cookieNames : p.manualCookieNames ?? []
+    if (names.length) base[p.id] = names
+  }
+  return base
 }
 
 ipcMain.handle(
@@ -2791,7 +2719,7 @@ ipcMain.handle(
     _event,
     { platformId, cookieNames }: { platformId: string; cookieNames: string[] }
   ) => {
-    const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
+    const urls = getConnectionsGetCookieUrls()[platformId]
     if (!urls || !Array.isArray(cookieNames) || cookieNames.length === 0) {
       return {}
     }
@@ -2814,7 +2742,7 @@ ipcMain.handle(
 )
 
 function cookieNameIndicatesAuth(platformId: string, cookieName: string): boolean {
-  const names = CONNECTIONS_AUTH_COOKIE_NAMES[platformId]
+  const names = getConnectionsAuthCookieNames()[platformId]
   if (!names || names.length === 0) return false
   const n = cookieName.trim()
   if (names.includes(n)) return true
@@ -2824,8 +2752,8 @@ function cookieNameIndicatesAuth(platformId: string, cookieName: string): boolea
 }
 
 ipcMain.handle('connections-has-cookies', async (_event, platformId: string) => {
-  const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
-  const authNames = CONNECTIONS_AUTH_COOKIE_NAMES[platformId]
+  const urls = getConnectionsGetCookieUrls()[platformId]
+  const authNames = getConnectionsAuthCookieNames()[platformId]
   if (!urls) return false
   if (!authNames || authNames.length === 0) return false
   const ses = getDefaultSession()
@@ -2843,7 +2771,7 @@ ipcMain.handle('connections-has-cookies', async (_event, platformId: string) => 
 })
 
 ipcMain.handle('connections-clear-platform', async (_event, platformId: string) => {
-  const urls = CONNECTIONS_GET_COOKIE_URLS[platformId]
+  const urls = getConnectionsGetCookieUrls()[platformId]
   if (!urls) return { success: false, error: 'Unknown platform', count: 0 }
   const ses = getDefaultSession()
   let total = 0
@@ -2862,7 +2790,8 @@ ipcMain.handle('connections-clear-platform', async (_event, platformId: string) 
       // ignore per-url
     }
   }
-  if (platformId === 'dgg' && chatWebSocket) {
+  const primary = getPrimaryChatSource()
+  if (primary && platformId === primary.id && chatWebSocket) {
     try {
       chatWebSocket.disconnect()
       chatWebSocket.destroy()
@@ -2877,16 +2806,23 @@ ipcMain.handle('connections-clear-platform', async (_event, platformId: string) 
 // Open login window for services
 ipcMain.handle('open-login-window', async (_event, service: string) => {
   try {
+    const primary = getPrimaryChatSource()
+    const overlay = getRendererConfigOverlay()
     const loginUrls: Record<string, string> = {
       twitter: 'https://twitter.com/i/flow/login',
       tiktok: 'https://www.tiktok.com/login',
       reddit: 'https://www.reddit.com/login',
-      destiny: dggConfig.loginUrl,
-      dgg: dggConfig.loginUrl,
       youtube: platformUrls.youtube,
       kick: platformUrls.kick,
       twitch: platformUrls.twitch,
     }
+    // Extension connection platforms provide their own loginUrl. Renderer sends loginService; key by both id and loginService.
+    for (const p of overlay.connectionPlatforms ?? []) {
+      if (!p.loginUrl) continue
+      if (p.id) loginUrls[p.id.toLowerCase()] = p.loginUrl
+      if (p.loginService) loginUrls[p.loginService.toLowerCase()] = p.loginUrl
+    }
+    if (primary) loginUrls[primary.id] = primary.config.loginUrl
 
     const url = loginUrls[service.toLowerCase()] || 'https://www.google.com'
     
@@ -2953,11 +2889,13 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
         }
       }
 
-      // Destiny.gg login (typically sets sid / rememberme)
-      if (!removed && cookie.domain && cookie.domain.includes('destiny.gg')) {
-        if (cookie.name === 'sid' || cookie.name === 'rememberme') {
-          console.log(`✅ Destiny cookie set: ${cookie.name} for ${cookie.domain}`)
-          win?.webContents.send('login-success', 'destiny')
+      // Chat source login: cookie set for primary chat source domains
+      const primary = getPrimaryChatSource()
+      if (primary && !removed && cookie.domain && primary.config.cookieDomains.some((d) => cookie.domain === d || cookie.domain?.endsWith('.' + d.replace(/^\./, '')))) {
+        const authNames = getConnectionsAuthCookieNames()[primary.id]
+        if (authNames?.includes(cookie.name)) {
+          console.log(`[connections] Chat source cookie set: ${cookie.name} for ${cookie.domain}`)
+          win?.webContents.send('login-success', primary.id)
         }
       }
     })
@@ -2978,8 +2916,10 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
 // Chat WebSocket IPC handlers
 ipcMain.handle('chat-websocket-connect', async (_event) => {
   try {
+    const primary = getPrimaryChatSource()
+    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
     if (!chatWebSocket) {
-      chatWebSocket = new ChatWebSocket(dggConfig.chatWssUrl, dggConfig.chatOrigin)
+      chatWebSocket = new ChatWebSocket(primary.config.chatWssUrl, primary.config.chatOrigin)
       
       // Helper function to safely send messages to renderer
       const safeSend = (channel: string, ...args: any[]) => {
@@ -3173,11 +3113,11 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
     }
 
     if (!chatWebSocket.isConnected()) {
-      const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
+      const cookieStr = await getCookiesForUrl(primary.config.baseUrl)
       chatWebSocket.connect({
         headers: {
           Cookie: cookieStr,
-          Origin: dggConfig.chatOrigin,
+          Origin: primary.config.chatOrigin,
         },
       })
     }
@@ -3237,52 +3177,55 @@ ipcMain.handle('chat-websocket-cast-poll-vote', async (_event, payload: { option
   return { success: sent }
 })
 
-/** Send a DGG whisper via the chat WebSocket: PRIVMSG {"nick":"<recipient>","data":"<message>"}. */
-ipcMain.handle('dgg-send-whisper', async (_event, payload: { recipient: string; message: string }) => {
+/** Send a whisper via the chat WebSocket: PRIVMSG {"nick":"<recipient>","data":"<message>"}. sourceId optional; primary chat source used if omitted. */
+ipcMain.handle('chat-source-send-whisper', async (_event, payload: { sourceId?: string; recipient: string; message: string }) => {
   const recipient = typeof payload?.recipient === 'string' ? payload.recipient.trim() : ''
   const message = typeof payload?.message === 'string' ? payload.message.trim() : ''
   if (!recipient) {
-    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Missing recipient', []) } catch { /* ignore */ }
+    try { fileLogger.writeLog('warn', 'main', '[send-whisper] Missing recipient', []) } catch { /* ignore */ }
     return { success: false, error: 'Missing recipient' }
   }
   if (!message) {
-    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Missing message', []) } catch { /* ignore */ }
+    try { fileLogger.writeLog('warn', 'main', '[send-whisper] Missing message', []) } catch { /* ignore */ }
     return { success: false, error: 'Missing message' }
   }
   if (!chatWebSocket?.isConnected()) {
-    try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] Chat not connected', [recipient]) } catch { /* ignore */ }
-    return { success: false, error: 'DGG chat not connected. Connect to DGG chat first.' }
+    try { fileLogger.writeLog('warn', 'main', '[send-whisper] Chat not connected', [recipient]) } catch { /* ignore */ }
+    return { success: false, error: 'Chat not connected. Connect to chat first.' }
   }
   try {
-    try { fileLogger.writeLog('info', 'main', '[dgg-send-whisper] Attempt', [recipient, message.length]) } catch { /* ignore */ }
+    try { fileLogger.writeLog('info', 'main', '[send-whisper] Attempt', [recipient, message.length]) } catch { /* ignore */ }
     const line = `PRIVMSG ${JSON.stringify({ nick: recipient, data: message })}`
     const sent = sendChatRaw(line)
     if (sent) {
-      try { fileLogger.writeLog('info', 'main', '[dgg-send-whisper] OK (WebSocket)', [recipient]) } catch { /* ignore */ }
+      try { fileLogger.writeLog('info', 'main', '[send-whisper] OK (WebSocket)', [recipient]) } catch { /* ignore */ }
     } else {
-      try { fileLogger.writeLog('warn', 'main', '[dgg-send-whisper] WebSocket send failed', [recipient]) } catch { /* ignore */ }
+      try { fileLogger.writeLog('warn', 'main', '[send-whisper] WebSocket send failed', [recipient]) } catch { /* ignore */ }
       return { success: false, error: 'Failed to send (WebSocket)' }
     }
     return { success: true }
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e)
-    try { fileLogger.writeLog('error', 'main', '[dgg-send-whisper] Exception', [recipient, err, e instanceof Error ? e.stack : '']) } catch { /* ignore */ }
+    try { fileLogger.writeLog('error', 'main', '[send-whisper] Exception', [recipient, err, e instanceof Error ? e.stack : '']) } catch { /* ignore */ }
     return { success: false, error: err }
   }
 })
 
-/** GET https://www.destiny.gg/api/messages/unread — returns list of unread private message summaries. */
-ipcMain.handle('dgg-messages-unread', async (_event) => {
+/** GET chat source API unread messages — returns list of unread private message summaries. sourceId optional; primary used if omitted. */
+ipcMain.handle('chat-source-messages-unread', async (_event, _payload?: { sourceId?: string }) => {
   try {
-    const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
-    if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
-    const res = await fetch(`${dggConfig.baseUrl}${dggConfig.apiUnread}`, {
+    const primary = getPrimaryChatSource()
+    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
+    const { config } = primary
+    const cookieStr = await getCookiesForUrl(config.baseUrl)
+    if (!cookieStr) return { success: false, error: 'Not logged in (no cookies)', data: null }
+    const res = await fetch(`${config.baseUrl}${config.apiUnread}`, {
       method: 'GET',
       headers: {
         Cookie: cookieStr,
         Accept: 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-        Referer: `${dggConfig.baseUrl}/`,
+        Referer: `${config.baseUrl}/`,
       },
       redirect: 'follow',
     })
@@ -3295,21 +3238,24 @@ ipcMain.handle('dgg-messages-unread', async (_event) => {
   }
 })
 
-/** GET https://www.destiny.gg/api/messages/usr/:username/inbox — returns inbox/conversation with that user. */
-ipcMain.handle('dgg-messages-inbox', async (_event, payload: { username: string }) => {
+/** GET chat source API inbox — returns inbox/conversation with that user. sourceId optional; primary used if omitted. */
+ipcMain.handle('chat-source-messages-inbox', async (_event, payload: { sourceId?: string; username: string }) => {
   const username = typeof payload?.username === 'string' ? payload.username.trim() : ''
   if (!username) return { success: false, error: 'Missing username', data: null }
   try {
-    const cookieStr = await getCookiesForUrl(dggConfig.baseUrl)
-    if (!cookieStr) return { success: false, error: 'Not logged in to Destiny.gg (no cookies)', data: null }
+    const primary = getPrimaryChatSource()
+    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
+    const { config } = primary
+    const cookieStr = await getCookiesForUrl(config.baseUrl)
+    if (!cookieStr) return { success: false, error: 'Not logged in (no cookies)', data: null }
     const encoded = encodeURIComponent(username)
-    const res = await fetch(`${dggConfig.baseUrl}${dggConfig.apiInboxPath}/${encoded}/inbox`, {
+    const res = await fetch(`${config.baseUrl}${config.apiInboxPath}/${encoded}/inbox`, {
       method: 'GET',
       headers: {
         Cookie: cookieStr,
         Accept: 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-        Referer: `${dggConfig.baseUrl}/`,
+        Referer: `${config.baseUrl}/`,
       },
       redirect: 'follow',
     })
@@ -3322,7 +3268,7 @@ ipcMain.handle('dgg-messages-inbox', async (_event, payload: { username: string 
   }
 })
 
-/** Send "watching" to DGG chat WebSocket so embeds can show who is watching what.
+/** Send "watching" to chat WebSocket so embeds can show who is watching what.
  * Not wired to UI yet (may be against TOS). Callable via ipcRenderer.invoke('chat-websocket-send-watching', { platform, id }). */
 ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platform: string; id: string }) => {
   const platform = typeof payload?.platform === 'string' ? payload.platform.trim() : ''
@@ -3336,8 +3282,10 @@ ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platfor
 // Live (embeds) WebSocket IPC handlers
 ipcMain.handle('live-websocket-connect', async (_event) => {
   try {
+    const primary = getPrimaryChatSource()
+    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
     if (!liveWebSocket) {
-      liveWebSocket = new LiveWebSocket(dggConfig.liveWssUrl, dggConfig.liveOrigin)
+      liveWebSocket = new LiveWebSocket(primary.config.liveWssUrl, primary.config.liveOrigin)
 
       const safeSend = (channel: string, ...args: any[]) => {
         try {
@@ -3370,28 +3318,29 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
         safeSend('live-websocket-error', { message })
       })
       liveWebSocket.on('message', (data: any) => {
-        safeSend('live-websocket-message', data)
-        const type = data?.type
-        const payload = data?.data
-        if (type === 'dggApi:embeds' && Array.isArray(payload)) {
-          currentDggEmbedKeys.clear()
-          currentDggEmbedByKey.clear()
-          payload.forEach((embed: { platform?: string; id?: string; mediaItem?: { metadata?: { displayName?: string } } }) => {
-            if (embed?.platform && embed?.id) {
-              const key = makeDggEmbedKey(embed.platform, embed.id)
-              currentDggEmbedKeys.add(key)
-              const displayName = embed?.mediaItem?.metadata?.displayName
-              if (displayName) currentDggEmbedByKey.set(key, { displayName })
-            }
-          })
+        const handler = getLiveMessageHandler()
+        if (handler) {
+          const api: LiveMessageHandlerApi = {
+            sendToRenderer: (channel: string, ...args: unknown[]) => safeSend(channel, ...args),
+            setLiveEmbeds(keys, byKey) {
+              currentLiveEmbedKeys.clear()
+              for (const k of keys) currentLiveEmbedKeys.add(k)
+              currentLiveEmbedByKey.clear()
+              if (byKey) {
+                const m = byKey instanceof Map ? byKey : new Map(Object.entries(byKey))
+                m.forEach((v, k) => currentLiveEmbedByKey.set(k, v))
+              }
+            },
+          }
+          try {
+            handler(data, api)
+          } catch (err) {
+            fileLogger.writeLog('warn', 'main', '[live-websocket] handler_error', [String(err)])
+            safeSend('live-websocket-message', data)
+          }
+        } else {
+          safeSend('live-websocket-message', data)
         }
-        // Dedicated IPC channels for new live WS types (for future use by renderer)
-        if (type === 'dggApi:hosting') safeSend('live-websocket-hosting', payload)
-        else if (type === 'dggApi:youtubeVods') safeSend('live-websocket-youtube-vods', payload)
-        else if (type === 'dggApi:videos') safeSend('live-websocket-videos', payload)
-        else if (type === 'dggApi:streamInfo') safeSend('live-websocket-stream-info', payload)
-        else if (type === 'dggApi:events') safeSend('live-websocket-events', payload)
-        else if (type === 'dggApi:bannedEmbeds') safeSend('live-websocket-banned-embeds', payload)
       })
     }
 
@@ -3524,6 +3473,42 @@ ipcMain.handle('kick-chat-refetch-history', async (_event, payload?: { slugs?: s
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
+  }
+})
+
+/** GET Kick /api/v2/channels/{slug}/me — current user's relationship (following, mod, subscription, etc.). */
+ipcMain.handle('kick-channel-me', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return { success: false, data: null }
+    const data = await fetchKickChannelMe(slug)
+    return { success: true, data }
+  } catch {
+    return { success: false, data: null }
+  }
+})
+
+/** Get Kick chat user count for a channel (from API when available). */
+ipcMain.handle('get-kick-chat-user-count', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return null
+    return await getKickChatUserCount(slug)
+  } catch {
+    return null
+  }
+})
+
+/** POST Kick /api/v2/messages/send/{chatroomId} — send a chat message to a Kick channel. */
+ipcMain.handle('kick-send-message', async (_event, payload: { slug: string; content: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    const content = typeof payload?.content === 'string' ? payload.content : ''
+    if (!slug) return { success: false, error: 'Missing slug' }
+    if (kickChatManager) return await kickChatManager.sendMessage(slug, content)
+    return await sendKickMessage(slug, content)
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
   }
 })
 
@@ -3664,27 +3649,25 @@ function stringifyArgs(args: any[]): string {
   return args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')
 }
 
+// Log only the stringified message once (no args) to avoid duplicate content in file
 console.log = (...args: any[]) => {
-  fileLogger.writeLog('info', 'main', stringifyArgs(args), args)
-  // Do not forward to console so all output goes to log files only
+  fileLogger.writeLog('info', 'main', stringifyArgs(args), [])
 }
 
 console.error = (...args: any[]) => {
-  fileLogger.writeLog('error', 'main', stringifyArgs(args), args)
-  // Do not forward to console so issues are in log files only
+  fileLogger.writeLog('error', 'main', stringifyArgs(args), [])
 }
 
 console.warn = (...args: any[]) => {
-  fileLogger.writeLog('warn', 'main', stringifyArgs(args), args)
-  // Do not forward to console so issues are in log files only
+  fileLogger.writeLog('warn', 'main', stringifyArgs(args), [])
 }
 
 console.info = (...args: any[]) => {
-  fileLogger.writeLog('info', 'main', stringifyArgs(args), args)
+  fileLogger.writeLog('info', 'main', stringifyArgs(args), [])
 }
 
 console.debug = (...args: any[]) => {
-  fileLogger.writeLog('debug', 'main', stringifyArgs(args), args)
+  fileLogger.writeLog('debug', 'main', stringifyArgs(args), [])
 }
 
 // IPC handler for renderer process to send logs
@@ -3722,9 +3705,121 @@ app.on('before-quit', () => {
   fileLogger.close()
 })
 
+// Protocol URL: omnichat://<operation>?<params>. On Windows argv can be reordered/split; reassemble if needed.
+function findProtocolUrlInArgv(argv: string[]): string | null {
+  if (!argv || !Array.isArray(argv)) return null
+  const prefix = `${PROTOCOL_SCHEME}:`
+  let baseUrl: string | null = null
+  let baseIndex = -1
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (typeof arg !== 'string') continue
+    if (arg.toLowerCase().startsWith(prefix)) {
+      baseUrl = arg
+      baseIndex = i
+      break
+    }
+  }
+  // Fallback: Windows/Chromium may reorder; URL might appear in the middle of an arg (e.g. path\exe "omnichat://...")
+  if (!baseUrl) {
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i]
+      if (typeof arg !== 'string') continue
+      const idx = arg.toLowerCase().indexOf(prefix)
+      if (idx >= 0) {
+        baseUrl = arg.slice(idx)
+        baseIndex = i
+        break
+      }
+    }
+  }
+  if (!baseUrl) return null
+  // If URL already has a query and looks complete, use as-is
+  if (baseUrl.includes('?') && baseUrl.includes('=')) return baseUrl
+  // Reassemble: base + trailing args that look like query params (key=value)
+  const paramArgs = argv.slice(baseIndex + 1).filter((a) => typeof a === 'string' && a.includes('=') && !a.startsWith('-'))
+  if (paramArgs.length === 0) return baseUrl
+  const separator = baseUrl.includes('?') ? '&' : '?'
+  return baseUrl + separator + paramArgs.join('&')
+}
+
 app.whenReady().then(() => {
+  // Log launch argv (first 8 args) so we can see if protocol URL was passed on Windows
+  try {
+    const argvPreview = process.argv.slice(0, 8).map((a) => (typeof a === 'string' && a.length > 80 ? a.slice(0, 80) + '...' : a))
+    fileLogger.writeLog('info', 'main', '[protocol] launch argv', argvPreview)
+  } catch { /* ignore */ }
+
+  // Register as default handler for omnichat:// so "Install in Omni Chat" / add-streamer links open this app.
+  // On Windows in dev, the OS launches process.execPath with only the URL as arg, so Electron treats the URL as
+  // the app path and fails. Pass the main script path so the OS runs: electron.exe main.js "omnichat://..."
+  if (process.platform === 'win32' && VITE_DEV_SERVER_URL) {
+    const mainPath = path.join(__dirname, 'main.js')
+    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [mainPath])
+  } else {
+    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME)
+  }
+
+  // Single instance: when user clicks omnichat:// while app is running, we get second-instance with the URL
+  const gotLock = app.requestSingleInstanceLock()
+  if (!gotLock) {
+    app.quit()
+    return
+  }
+  app.on('second-instance', (_event, argv) => {
+    // Always log so we can see what Windows passed (argv format can differ; we were only logging when URL was found).
+    try {
+      const preview = Array.isArray(argv)
+        ? argv.slice(0, 6).map((a) => (typeof a === 'string' ? (a.length > 100 ? a.slice(0, 100) + '...' : a) : String(a)))
+        : []
+      fileLogger.writeLog('info', 'main', '[protocol] second-instance argv', [argv?.length ?? 0, preview])
+    } catch { /* ignore */ }
+    const url = findProtocolUrlInArgv(argv)
+    if (url) {
+      try { fileLogger.writeLog('info', 'main', '[protocol] second-instance URL', [url.slice(0, 120)]) } catch { /* ignore */ }
+      handleProtocolUrl(url, {
+        sendProtocolResult: (result) => {
+          if (win && !win.isDestroyed()) win.webContents.send('protocol-result', result)
+          try { fileLogger.writeLog('info', 'main', '[protocol] result sent to renderer', [result.ok ? 'ok' : result.message]) } catch { /* ignore */ }
+        }
+      }).catch((e) => console.error('[Main] Protocol handle error:', e))
+    } else if (Array.isArray(argv) && argv.length > 0) {
+      try { fileLogger.writeLog('info', 'main', '[protocol] second-instance no URL in argv', []) } catch { /* ignore */ }
+    }
+    if (win && !win.isDestroyed()) {
+      win.focus()
+    }
+  })
+
+  // macOS: open-url when user clicks omnichat:// (first launch or when app already running)
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    if (parseProtocolUrl(url)) {
+      handleProtocolUrl(url, {
+        sendProtocolResult: (result) => {
+          if (win && !win.isDestroyed()) win.webContents.send('protocol-result', result)
+        }
+      }).catch((e) => console.error('[Main] Protocol handle error:', e))
+    }
+  })
+
+  // Load installed extensions (metadata only for now)
+  loadExtensions()
+
   // Clear expired cache entries on startup
   mentionCache.clearExpired()
   createApplicationMenu()
   createWindow()
+
+  // First launch with protocol URL (e.g. Windows): argv may contain the URL. Defer send until
+  // the main window has loaded so the renderer's protocol-result listener is attached.
+  const argvUrl = findProtocolUrlInArgv(process.argv)
+  if (argvUrl) {
+    try { fileLogger.writeLog('info', 'main', '[protocol] launch URL (pending until load)', [argvUrl.slice(0, 120)]) } catch { /* ignore */ }
+    handleProtocolUrl(argvUrl, {
+      sendProtocolResult: (result) => {
+        pendingProtocolResults.push(result)
+      }
+    }).catch((e) => console.error('[Main] Protocol handle error:', e))
+  }
 })

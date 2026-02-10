@@ -21,7 +21,7 @@ import {
 
 const STORAGE_KEY_UPDATE_LAST_CHECKED = 'omni-screen:update-last-checked'
 
-/** Base platform list; loginUrl may be overridden from get-app-config. */
+/** Base platform list; chat source platforms come from extensions via connectionPlatforms. loginUrl may be overridden from get-app-config. */
 const CONNECTIONS_PLATFORMS_BASE: Array<{
   id: string
   label: string
@@ -36,17 +36,6 @@ const CONNECTIONS_PLATFORMS_BASE: Array<{
   /** When set, show one input per cookie (for httpOnly); user can paste from DevTools or use Log in in browser. */
   manualCookieNames?: string[]
 }> = [
-  {
-    id: 'dgg',
-    label: 'Destiny.gg (DGG)',
-    loginUrl: 'https://www.destiny.gg/login',
-    loginService: 'destiny',
-    description: 'Used for DGG chat (combined chat), whispers, and DGG API.',
-    cookieNames: ['sid', 'rememberme'],
-    snippet: `(function(){var n=['sid','rememberme'];var c=document.cookie.split(';').map(function(s){var i=s.indexOf('=');return i>=0?[s.slice(0,i).trim(),s.slice(i+1).trim()]:null}).filter(Boolean);var o=c.filter(function(p){return n.indexOf(p[0])>=0}).map(function(p){return p[0]+'='+p[1]}).join('; ');console.log('Paste this into Omni Screen:',o);try{copy(JSON.stringify(o))}catch(e){}return o;})()`,
-    httpOnlyNote: "DGG session cookies (sid, rememberme) are httpOnly. Use \"Log in in browser\" below or fill the fields manually (copy from DevTools → Application → Cookies).",
-    manualCookieNames: ['sid', 'rememberme'],
-  },
   {
     id: 'youtube',
     label: 'YouTube',
@@ -99,23 +88,30 @@ const CONNECTIONS_PLATFORMS_BASE: Array<{
   },
 ]
 
-/** Resolve CONNECTIONS_PLATFORMS with login URLs from app config when available. */
+/** Resolve CONNECTIONS_PLATFORMS: base list + extension-provided chat sources. Login URLs from app config when available. */
 function useConnectionsPlatforms() {
   const [config, setConfig] = useState<{
-    dgg: { loginUrl: string }
     platformUrls: Record<string, string>
+    connectionPlatforms?: Array<{ id: string; label: string; loginUrl: string; loginService: string; description: string; cookieNames: string[]; snippet: string; namePrefix?: string; httpOnlyNote?: string; manualCookieNames?: string[] }>
   } | null>(null)
-  useEffect(() => {
+  const refetchConfig = useCallback(() => {
     window.ipcRenderer.invoke('get-app-config').then(setConfig).catch(() => {})
   }, [])
+  useEffect(() => {
+    refetchConfig()
+  }, [refetchConfig])
+  // When extensions are toggled/reloaded, refetch so Connections list and login URLs stay in sync
+  useEffect(() => {
+    const handler = () => refetchConfig()
+    window.ipcRenderer.on('extensions-reloaded', handler)
+    return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
+  }, [refetchConfig])
   return useMemo(() => {
-    return CONNECTIONS_PLATFORMS_BASE.map((p) => {
-      const loginUrl =
-        p.id === 'dgg' || p.id === 'destiny'
-          ? config?.dgg.loginUrl ?? p.loginUrl
-          : (config?.platformUrls[p.id] ?? p.loginUrl)
-      return { ...p, loginUrl }
-    })
+    const list = [...CONNECTIONS_PLATFORMS_BASE, ...(config?.connectionPlatforms ?? [])]
+    return list.map((p) => ({
+      ...p,
+      loginUrl: config?.platformUrls?.[p.id] ?? p.loginUrl,
+    }))
   }, [config])
 }
 
@@ -195,11 +191,18 @@ function Menu({ onNavigate }: MenuProps) {
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
+  const [extensionsOpen, setExtensionsOpen] = useState(false)
+  type InstalledExt = { id: string; name: string; version: string; updateUrl: string; enabled: boolean; description?: string; tags?: string[]; icon?: string }
+  const [extensionsList, setExtensionsList] = useState<InstalledExt[]>([])
+  const [extensionInstallUrl, setExtensionInstallUrl] = useState('')
+  const [extensionInstallStatus, setExtensionInstallStatus] = useState<{ ok: boolean; message?: string; extensionId?: string } | null>(null)
+  /** Fetched manifests for community extensions (manifestUrl -> manifest or null). */
+  const [communityManifests, setCommunityManifests] = useState<Record<string, { id: string; name: string; description?: string; icon?: string; tags?: string[] } | null>>({})
+  const [extensionActionStatus, setExtensionActionStatus] = useState<string | null>(null)
   const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
 
-  // Connections: pasted cookie strings per platform (local state only; Save sends to main)
+  // Connections: pasted cookie strings per platform (local state only; Save sends to main). Extension platforms get keys when CONNECTIONS_PLATFORMS includes them; use ?? '' when reading.
   const [connectionsDraft, setConnectionsDraft] = useState<Record<string, string>>({
-    dgg: '',
     youtube: '',
     kick: '',
     twitch: '',
@@ -262,6 +265,59 @@ function Menu({ onNavigate }: MenuProps) {
     if (!connectionsOpen) return
     refreshConnectionsAll()
   }, [connectionsOpen, refreshConnectionsAll])
+
+  /** Community extensions: manifest URLs. Fetched to show name, description, icon, tags. */
+  const COMMUNITY_EXTENSION_URLS = useMemo(() => [
+    'https://raw.githubusercontent.com/NickMarcha/omni-screen-dgg/refs/heads/main/manifest.json',
+  ], [])
+
+  const refreshInstalledExtensions = useCallback(() => {
+    window.ipcRenderer.invoke('get-installed-extensions').then((list: InstalledExt[]) => setExtensionsList(Array.isArray(list) ? list : [])).catch(() => setExtensionsList([]))
+  }, [])
+
+  // When Extensions modal opens or extensions-reloaded, refresh installed list
+  useEffect(() => {
+    if (!extensionsOpen) return
+    refreshInstalledExtensions()
+  }, [extensionsOpen, refreshInstalledExtensions])
+  useEffect(() => {
+    const handler = () => refreshInstalledExtensions()
+    window.ipcRenderer.on('extensions-reloaded', handler)
+    return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
+  }, [refreshInstalledExtensions])
+
+  // When Extensions modal opens, fetch community manifests to show name/description/icon/tags
+  useEffect(() => {
+    if (!extensionsOpen || COMMUNITY_EXTENSION_URLS.length === 0) return
+    let cancelled = false
+    const run = async () => {
+      const next: Record<string, { id: string; name: string; description?: string; icon?: string; tags?: string[] } | null> = {}
+      for (const url of COMMUNITY_EXTENSION_URLS) {
+        try {
+          const res = await fetch(url, { headers: { Accept: 'application/json' } })
+          if (cancelled) return
+          if (!res.ok) {
+            next[url] = null
+            continue
+          }
+          const m = await res.json()
+          next[url] = {
+            id: m?.id ?? '',
+            name: m?.name ?? new URL(url).pathname.split('/').pop() ?? 'Extension',
+            description: m?.description,
+            icon: m?.icon,
+            tags: Array.isArray(m?.tags) ? m.tags : undefined,
+          }
+        } catch {
+          if (cancelled) return
+          next[url] = null
+        }
+      }
+      if (!cancelled) setCommunityManifests((prev) => ({ ...prev, ...next }))
+    }
+    run()
+    return () => { cancelled = true }
+  }, [extensionsOpen, COMMUNITY_EXTENSION_URLS])
 
   // When login window closes, refresh so manual fields and logged-in state stay in sync
   useEffect(() => {
@@ -488,12 +544,15 @@ function Menu({ onNavigate }: MenuProps) {
           <p className="text-base-content/50 text-xs text-center">
             {lastCheckedAt == null ? 'Last checked: never' : `Last checked: ${formatLastCheckedAgo(lastCheckedAt)}`}
           </p>
-          <div className="flex gap-2 w-full">
-            <button className="btn btn-outline flex-1" onClick={() => setSettingsOpen(true)}>
+          <div className="flex gap-2 w-full flex-wrap">
+            <button className="btn btn-outline flex-1 min-w-0" onClick={() => setSettingsOpen(true)}>
               Settings
             </button>
-            <button className="btn btn-outline flex-1" onClick={() => setConnectionsOpen(true)}>
+            <button className="btn btn-outline flex-1 min-w-0" onClick={() => setConnectionsOpen(true)}>
               Connections
+            </button>
+            <button className="btn btn-outline flex-1 min-w-0" onClick={() => { setExtensionInstallStatus(null); setExtensionInstallUrl(''); setExtensionsOpen(true) }}>
+              Extensions
             </button>
           </div>
         </div>
@@ -667,7 +726,7 @@ function Menu({ onNavigate }: MenuProps) {
                     <div className="min-w-0 flex-1">
                       <div className="font-medium">Kick embeds: Kickstiny</div>
                       <div className="text-xs text-base-content/60 mt-1">
-                        Injects kickstiny.user.js into Kick player embeds.
+                        Injects kickstiny.user.js into Kick player embeds for improved video controls.
                       </div>
                       <a
                         href="https://github.com/destinygg/kickstiny"
@@ -675,7 +734,7 @@ function Menu({ onNavigate }: MenuProps) {
                         rel="noreferrer"
                         className="link link-primary text-xs mt-0.5 inline-block"
                       >
-                        github.com/destinygg/kickstiny
+                        Kickstiny (GitHub)
                       </a>
                     </div>
                     <input
@@ -711,7 +770,7 @@ function Menu({ onNavigate }: MenuProps) {
 
       {/* Connections Modal.
           Clear messages don't show cookie counts: the same number often reappears because embeds/loaded content
-          immediately set cookies again (session is persist:main); clearing still logs out DGG and wipes session cookies. */}
+          immediately set cookies again (session is persist:main); clearing wipes session cookies including chat. */}
       {connectionsOpen && (
         <div className="modal modal-open">
           <div className="modal-box bg-base-300 text-base-content max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1010,6 +1069,181 @@ function Menu({ onNavigate }: MenuProps) {
             </div>
             <div className="modal-action mt-4 flex-shrink-0">
               <button className="btn btn-ghost" onClick={() => setConnectionsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Extensions Modal */}
+      {extensionsOpen && (
+        <div className="modal modal-open">
+          <div className="modal-box bg-base-300 text-base-content max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+            <h3 className="font-bold text-lg mb-2">Extensions</h3>
+            <p className="text-sm text-base-content/70 mb-4">
+              Extensions add chat sources and options. Configure them in Omni Screen Settings → Extensions.
+            </p>
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-4">
+              {/* Community extensions: one-click install */}
+              <div>
+                <div className="font-medium text-sm mb-2">Community</div>
+                <p className="text-xs text-base-content/60 mb-2">Install extensions from the community list.</p>
+                <ul className="space-y-3">
+                  {COMMUNITY_EXTENSION_URLS.map((manifestUrl) => {
+                    const manifest = communityManifests[manifestUrl]
+                    const installed = extensionsList.find((e) => e.id === (manifest?.id ?? '') || e.updateUrl === manifestUrl)
+                    return (
+                      <li key={manifestUrl} className="flex items-start gap-3 p-3 rounded-lg bg-base-200/50 border border-base-200">
+                        {manifest?.icon ? (
+                          <img src={manifest.icon} alt="" className="w-10 h-10 rounded object-contain shrink-0 bg-base-100" />
+                        ) : (
+                          <div className="w-10 h-10 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40 text-lg" aria-hidden>📦</div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-sm">{manifest?.name ?? 'Loading…'}</div>
+                          {manifest?.description && <p className="text-xs text-base-content/60 mt-0.5 line-clamp-2">{manifest.description}</p>}
+                          {manifest?.tags && manifest.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {manifest.tags.map((t) => (
+                                <span key={t} className="badge badge-ghost badge-xs">{t}</span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="mt-2">
+                            {installed ? (
+                              <span className="text-xs text-success">Installed (v{installed.version})</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-xs"
+                                disabled={!manifest}
+                                onClick={async () => {
+                                  setExtensionActionStatus(null)
+                                  const result = await window.ipcRenderer.invoke('extension-install-from-url', manifestUrl)
+                                  setExtensionActionStatus(result.ok ? `Installed: ${result.id}` : (result.error ?? 'Failed'))
+                                  if (result.ok) refreshInstalledExtensions()
+                                }}
+                              >
+                                Install
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+                {extensionActionStatus && (
+                  <p className={`text-xs mt-2 ${extensionActionStatus.startsWith('Installed') ? 'text-success' : 'text-error'}`}>
+                    {extensionActionStatus}
+                  </p>
+                )}
+              </div>
+
+              {/* Installed extensions: icon, enable/disable, reinstall */}
+              <div className="border-t border-base-200 pt-4">
+                <div className="font-medium text-sm mb-2">Installed</div>
+                {extensionsList.length === 0 ? (
+                  <p className="text-sm text-base-content/60">No extensions installed.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {extensionsList.map((ext) => (
+                      <li key={ext.id} className="flex items-center gap-3 py-2 px-2 rounded border border-base-200 bg-base-200/30">
+                        {ext.icon ? (
+                          <img src={ext.icon} alt="" className="w-8 h-8 rounded object-contain shrink-0 bg-base-100" />
+                        ) : (
+                          <div className="w-8 h-8 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40 text-sm" aria-hidden>📦</div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <span className="font-medium text-sm block truncate">{ext.name}</span>
+                          <span className="text-base-content/60 text-xs">v{ext.version}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <label className="label cursor-pointer gap-1.5 py-0">
+                            <span className="label-text text-xs">On</span>
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-sm"
+                              checked={ext.enabled}
+                              onChange={async (e) => {
+                                const result = await window.ipcRenderer.invoke('extension-set-enabled', { id: ext.id, enabled: e.target.checked })
+                                if (result.ok) refreshInstalledExtensions()
+                              }}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs"
+                            title="Reinstall (fetch latest)"
+                            onClick={async () => {
+                              setExtensionActionStatus(null)
+                              const result = await window.ipcRenderer.invoke('extension-reinstall', ext.id)
+                              setExtensionActionStatus(result.ok ? `Reinstalled: ${ext.id}` : (result.error ?? 'Failed'))
+                              if (result.ok) refreshInstalledExtensions()
+                            }}
+                          >
+                            Reinstall
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs text-error"
+                            title="Uninstall extension"
+                            onClick={async () => {
+                              if (!window.confirm(`Uninstall "${ext.name}"? You can install it again from Community or by URL.`)) return
+                              setExtensionActionStatus(null)
+                              const result = await window.ipcRenderer.invoke('extension-uninstall', ext.id)
+                              setExtensionActionStatus(result.ok ? `Uninstalled: ${ext.id}` : (result.error ?? 'Failed'))
+                              if (result.ok) refreshInstalledExtensions()
+                            }}
+                          >
+                            Uninstall
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="border-t border-base-200 pt-4">
+                <div className="font-medium text-sm mb-2">Install from URL</div>
+                <p className="text-xs text-base-content/60 mb-2">Paste the manifest JSON URL (e.g. from extension docs).</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm flex-1"
+                    placeholder="https://.../manifest.json"
+                    value={extensionInstallUrl}
+                    onChange={(e) => { setExtensionInstallUrl(e.target.value); setExtensionInstallStatus(null) }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={async () => {
+                      const url = extensionInstallUrl.trim()
+                      if (!url) return
+                      setExtensionInstallStatus(null)
+                      const result = await window.ipcRenderer.invoke('extension-install-from-url', url)
+                      setExtensionInstallStatus({ ok: result.ok, message: result.ok ? `Installed: ${result.id}` : (result.error ?? 'Failed'), extensionId: result.id })
+                      if (result.ok) {
+                        refreshInstalledExtensions()
+                        setExtensionInstallUrl('')
+                      }
+                    }}
+                  >
+                    Install
+                  </button>
+                </div>
+                {extensionInstallStatus && (
+                  <p className={`text-xs mt-2 ${extensionInstallStatus.ok ? 'text-success' : 'text-error'}`}>
+                    {extensionInstallStatus.message}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="modal-action mt-4 flex-shrink-0">
+              <button className="btn btn-ghost" onClick={() => setExtensionsOpen(false)}>
                 Close
               </button>
             </div>

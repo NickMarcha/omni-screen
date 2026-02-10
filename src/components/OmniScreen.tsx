@@ -13,12 +13,12 @@ import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
-/** Log to console and to app log file (so user can search logs without DevTools). */
-function logPinned(message: string, detail?: unknown) {
+/** Log for bookmarked streamers (settings list: YT/Kick/Twitch poll and results). Not for pinned embeds. */
+function logBookmarked(message: string, detail?: unknown) {
   const line = detail !== undefined ? `${message} ${JSON.stringify(detail)}` : message
-  console.log('[OmniScreen:pinned]', message, detail !== undefined ? detail : '')
+  console.log('[OmniScreen:bookmarked]', message, detail !== undefined ? detail : '')
   try {
-    window.ipcRenderer?.invoke('log-to-file', 'info', `[OmniScreen:pinned] ${line}`, [])
+    window.ipcRenderer?.invoke('log-to-file', 'info', `[OmniScreen:bookmarked] ${line}`, [])
   } catch {
     // ignore
   }
@@ -27,10 +27,117 @@ function logPinned(message: string, detail?: unknown) {
 type ChatPaneSide = 'left' | 'right'
 type CombinedSortMode = 'timestamp' | 'arrival'
 
-type LiveWsMessage =
-  | { type: 'dggApi:embeds'; data: LiveEmbed[] }
-  | { type: 'dggApi:bannedEmbeds'; data: BannedEmbed[] | null }
-  | { type: string; data: any }
+/** User count button with hover tooltip (portal so it isn't clipped by overflow). */
+function CombinedUserCountButton(props: {
+  displayedCount: number
+  cycleLabel: string | null
+  onCycle: () => void
+  counts: { primary: number; kick: Record<string, number> } | null
+  primaryLabel: string
+  enabledKickSlugs: string[]
+}) {
+  const [hover, setHover] = useState(false)
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
+  const anchorRef = useRef<HTMLSpanElement>(null)
+  const leaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const updateRect = useCallback(() => {
+    anchorRef.current && setAnchorRect(anchorRef.current.getBoundingClientRect())
+  }, [])
+
+  const handleEnter = useCallback(() => {
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current)
+      leaveTimeoutRef.current = null
+    }
+    updateRect()
+    setHover(true)
+  }, [updateRect])
+
+  const handleLeave = useCallback(() => {
+    leaveTimeoutRef.current = setTimeout(() => setHover(false), 150)
+  }, [])
+
+  const counts = props.counts
+  const tooltipEl =
+    hover &&
+    anchorRect &&
+    counts &&
+    document.body &&
+    createPortal(
+      <div
+        className="fixed z-[99999] py-2 px-3 rounded-lg border border-base-300 bg-base-200 shadow-lg text-left min-w-[160px] text-xs"
+        style={{
+          left: anchorRect.left,
+          top: anchorRect.bottom + 4,
+        }}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
+      >
+        <div className="font-medium text-base-content/90 mb-1 whitespace-nowrap">Showing: {props.cycleLabel ?? '—'}</div>
+        <div className="text-base-content/60 space-y-0.5">
+          <div>
+            Total: {counts.primary + Object.values(counts.kick).reduce((a, b) => a + b, 0)}
+          </div>
+          <div>
+            {props.primaryLabel || 'Primary'}: {counts.primary}
+          </div>
+          {props.enabledKickSlugs.map((slug) => (
+            <div key={slug}>
+              Kick / {slug}: {counts.kick[slug] ?? 0}
+            </div>
+          ))}
+        </div>
+      </div>,
+      document.body
+    )
+
+  return (
+    <>
+      <span
+        ref={anchorRef}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
+        className="inline-flex"
+      >
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs p-0 min-h-0 h-auto font-normal text-base-content/60 hover:text-base-content/80"
+          onClick={props.onCycle}
+          title="Click to cycle: total → primary → each Kick channel"
+        >
+          {props.displayedCount} users
+        </button>
+      </span>
+      {tooltipEl}
+    </>
+  )
+}
+
+/** Extension metadata from main (get-app-config). */
+interface InstalledExtensionInfo {
+  id: string
+  name: string
+  version: string
+}
+/** Extension settings section schema (from extension via registerSettings). */
+interface ExtensionSettingField {
+  key: string
+  type: 'boolean' | 'string' | 'number'
+  label: string
+  default: boolean | string | number
+  description?: string
+  placeholder?: string
+}
+interface ExtensionSettingsSection {
+  id: string
+  label: string
+  placement: 'omni_screen' | 'link_scroller' | 'connections'
+  fields: ExtensionSettingField[]
+}
+
+/** Live WebSocket message (generic; embeds/banned come via dedicated channels from extension). */
+type LiveWsMessage = { type: string; data: unknown }
 
 interface LiveEmbed {
   platform: string
@@ -56,7 +163,7 @@ interface BannedEmbed {
 }
 
 /** Bookmarked streamer: up to 3 platforms (YouTube channel, Kick, Twitch); optional nickname and accent color. */
-export interface PinnedStreamer {
+export interface BookmarkedStreamer {
   id: string
   nickname: string
   youtubeChannelId?: string
@@ -72,6 +179,26 @@ export interface PinnedStreamer {
   openWhenLive?: boolean
   /** When true, hide the source label (badge) in combined chat for this streamer's messages. */
   hideLabelInCombinedChat?: boolean
+}
+
+const HEX_COLOR_REGEX = /^#[0-9A-Fa-f]{6}$/
+
+/** Build omnichat://add-streamer URL from a bookmarked streamer (for sharing). */
+function buildAddStreamerUrl(streamer: BookmarkedStreamer, includeColors: boolean): string {
+  const params = new URLSearchParams()
+  params.set('nickname', (streamer.nickname || 'Unnamed').trim())
+  if (streamer.youtubeChannelId?.trim()) params.set('youtube', streamer.youtubeChannelId.trim())
+  if (streamer.kickSlug?.trim()) params.set('kick', streamer.kickSlug.trim().toLowerCase())
+  if (streamer.twitchLogin?.trim()) params.set('twitch', streamer.twitchLogin.trim().toLowerCase())
+  if (streamer.openWhenLive === false) params.set('openWhenLive', 'false')
+  if (streamer.hideLabelInCombinedChat === true) params.set('hideLabel', 'true')
+  if (includeColors) {
+    if (streamer.color && HEX_COLOR_REGEX.test(streamer.color)) params.set('color', streamer.color)
+    if (streamer.youtubeColor && HEX_COLOR_REGEX.test(streamer.youtubeColor)) params.set('youtubeColor', streamer.youtubeColor)
+    if (streamer.kickColor && HEX_COLOR_REGEX.test(streamer.kickColor)) params.set('kickColor', streamer.kickColor)
+    if (streamer.twitchColor && HEX_COLOR_REGEX.test(streamer.twitchColor)) params.set('twitchColor', streamer.twitchColor)
+  }
+  return `omnichat://add-streamer?${params.toString()}`
 }
 
 function makeEmbedKey(platform: string, id: string) {
@@ -110,7 +237,13 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
   combinedChatOverlayOpacity: number
   combinedHeaderText: string
   combinedMsgCount: number
-  combinedDggUserCount: number
+  combinedPrimaryChatUserCount: number
+  combinedDisplayedUserCount: number
+  combinedUserCounts: { primary: number; kick: Record<string, number> } | null
+  combinedUserCountCycleLabel: string | null
+  onCycleUserCount: () => void
+  enabledKickSlugs: string[]
+  primaryChatSourceLabelText: string
   setOverlayHeaderVisible: (v: boolean | ((prev: boolean) => boolean)) => void
   setCombinedChatOverlayMode: (v: boolean | ((prev: boolean) => boolean)) => void
   setOverlayOpacityDropdownOpen: (v: boolean | ((prev: boolean) => boolean)) => void
@@ -177,7 +310,15 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
       >
         <div className="text-xs text-base-content/70 truncate flex-1 min-w-0">{p.combinedHeaderText}</div>
         <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1 flex-wrap">
-          {p.combinedMsgCount} msgs · {p.combinedDggUserCount} users
+          {p.combinedMsgCount} msgs ·{' '}
+          <CombinedUserCountButton
+            displayedCount={p.combinedDisplayedUserCount}
+            cycleLabel={p.combinedUserCountCycleLabel}
+            onCycle={p.onCycleUserCount}
+            counts={p.combinedUserCounts}
+            primaryLabel={p.primaryChatSourceLabelText}
+            enabledKickSlugs={p.enabledKickSlugs}
+          />
           <button
             type="button"
             className="btn btn-xs btn-ghost"
@@ -382,7 +523,7 @@ function PieChartSvg({
 
 const CHANNEL_LABEL_MAX = 20
 
-/** Short label for pinned streamer channel: e.g. "destiny" from "https://www.youtube.com/destiny". Up to CHANNEL_LABEL_MAX chars. */
+/** Short label for bookmarked streamer channel: e.g. "channel" from "https://www.youtube.com/channel". Up to CHANNEL_LABEL_MAX chars. */
 function shortChannelLabel(value: string, kind: 'yt' | 'kick' | 'twitch'): string {
   const v = (value || '').trim()
   if (!v) return ''
@@ -405,7 +546,7 @@ function shortChannelLabel(value: string, kind: 'yt' | 'kick' | 'twitch'): strin
   return v.slice(0, CHANNEL_LABEL_MAX) + (v.length > CHANNEL_LABEL_MAX ? '…' : '')
 }
 
-/** Full URL for a pinned streamer platform value (YouTube channel, Kick streamer, Twitch channel). */
+/** Full URL for a bookmarked streamer platform value (YouTube channel, Kick streamer, Twitch channel). */
 function platformChannelUrl(value: string, kind: 'yt' | 'kick' | 'twitch'): string {
   const v = (value || '').trim()
   if (!v) return '#'
@@ -417,7 +558,7 @@ function platformChannelUrl(value: string, kind: 'yt' | 'kick' | 'twitch'): stri
   return `https://www.youtube.com/${v}`
 }
 
-function formatDggFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
+function formatPrimaryChatFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
   const parts: string[] = []
   if (kb.ctrl) parts.push('Ctrl')
   if (kb.alt) parts.push('Alt')
@@ -443,17 +584,17 @@ function canonicalEmbedKey(key: string): string {
   return parsed ? makeEmbedKey(parsed.platform, parsed.id) : key
 }
 
-/** Find all pinned streamers that own this embed key (same key can belong to multiple streamers, e.g. same YT stream). */
+/** Find all bookmarked streamers that own this embed key (same key can belong to multiple streamers, e.g. same YT stream). */
 function findStreamersForKey(
   key: string,
-  streamers: PinnedStreamer[],
+  streamers: BookmarkedStreamer[],
   youtubeVideoToStreamerIds?: Map<string, string[]>
-): PinnedStreamer[] {
+): BookmarkedStreamer[] {
   const parsed = parseEmbedKey(key)
   if (!parsed) return []
   const { platform, id } = parsed
   const idLower = id.toLowerCase()
-  const result: PinnedStreamer[] = []
+  const result: BookmarkedStreamer[] = []
   for (const s of streamers) {
     if (platform === 'kick' && s.kickSlug && s.kickSlug.toLowerCase() === idLower) result.push(s)
     else if (platform === 'twitch' && s.twitchLogin && s.twitchLogin.toLowerCase() === idLower) result.push(s)
@@ -524,8 +665,8 @@ function isLikelyYouTubeId(id: string) {
   return /^[a-zA-Z0-9_-]{8,20}$/.test(id)
 }
 
-/** Destiny-style # links: #kick/dggjams, #twitch/whatever, #youtube/videoId */
-function parseDestinyHashLink(s: string): { platform: string; id: string } | null {
+/** Hash-style # links: #kick/slug, #twitch/whatever, #youtube/videoId */
+function parseHashLink(s: string): { platform: string; id: string } | null {
   const m = String(s || '').trim().match(/^#(kick|twitch|youtube)\/([^\s]+)$/i)
   if (!m) return null
   const platform = m[1].toLowerCase()
@@ -547,7 +688,7 @@ function buildEmbedUrl(platform: string, id: string): string {
 function parseEmbedUrl(url: string): { platform: string; id: string } | null {
   const s = String(url || '').trim()
   if (!s) return null
-  const hashParsed = parseDestinyHashLink(s)
+  const hashParsed = parseHashLink(s)
   if (hashParsed) return hashParsed
   try {
     const u = new URL(s.startsWith('http') ? s : `https://${s}`)
@@ -582,7 +723,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [availableEmbeds, setAvailableEmbeds] = useState<Map<string, LiveEmbed>>(new Map())
   const [bannedEmbeds, setBannedEmbeds] = useState<Map<string, BannedEmbed>>(new Map())
 
-  // ---- Pinned embeds (temporary; from pasted links or "Pin" from dock) ----
+  // ---- Pinned embeds (manual; from pasted links or "Pin" from dock; removable via Unpin button). Stored separately from bookmarked streamers. ----
   const [pinnedEmbeds, setPinnedEmbeds] = useState<Map<string, LiveEmbed>>(() => {
     try {
       const raw = localStorage.getItem('omni-screen:pinned-embeds') ?? localStorage.getItem('omni-screen:manual-embeds')
@@ -636,7 +777,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   selectedEmbedKeysRef.current = selectedEmbedKeys
   const selectedEmbedChatKeysRef = useRef(selectedEmbedChatKeys)
   selectedEmbedChatKeysRef.current = selectedEmbedChatKeys
-  const handleDestinyLinkRef = useRef<(platform: string, id: string) => void>(() => {})
+  const handleChatSourceLinkRef = useRef<(platform: string, id: string) => void>(() => {})
 
   const [autoplay, setAutoplay] = useState(true)
   const [mute, setMute] = useState(true)
@@ -650,11 +791,117 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return saved === '1' || saved === 'true'
   })
 
-  // ---- Chat pane (combined chat only; DGG is included via combined chat) ----
+  // ---- Chat pane (combined chat only; primary chat source is included via combined chat when extension is installed) ----
   const [chatPaneOpen, setChatPaneOpen] = useState(true)
-  const [combinedIncludeDgg, setCombinedIncludeDgg] = useState<boolean>(() => {
-    const saved = localStorage.getItem('omni-screen:combined-include-dgg')
-    if (saved === '0' || saved === 'false') return false
+  const [primaryChatSourceId, setPrimaryChatSourceId] = useState<string | null>(null)
+  const [primaryChatSourceAvailable, setPrimaryChatSourceAvailable] = useState<boolean>(false)
+  const [primaryChatSourceIconUrl, setPrimaryChatSourceIconUrl] = useState<string | undefined>(undefined)
+  const [installedExtensions, setInstalledExtensions] = useState<InstalledExtensionInfo[]>([])
+  const [extensionSettingsSchemas, setExtensionSettingsSchemas] = useState<Record<string, ExtensionSettingsSection[]>>({})
+  /** Per-extension settings (keyed by ext id, then field key). Persisted in localStorage omni-screen:ext-settings:${extId}. */
+  const [extensionSettings, setExtensionSettings] = useState<Record<string, Record<string, boolean | string | number>>>({})
+  const refetchAppConfig = useCallback(() => {
+    window.ipcRenderer.invoke('get-app-config').then((config: {
+      chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string }>
+      extensions?: InstalledExtensionInfo[]
+      extensionSettingsSchemas?: Record<string, ExtensionSettingsSection[]>
+    }) => {
+      const chatSources = config?.chatSources ?? {}
+      const primaryId = Object.keys(chatSources)[0] ?? null
+      const primary = primaryId ? chatSources[primaryId] : undefined
+      setPrimaryChatSourceId(primaryId)
+      setPrimaryChatSourceAvailable(!!primary?.baseUrl)
+      setPrimaryChatSourceIconUrl(typeof primary?.platformIconUrl === 'string' ? primary.platformIconUrl : undefined)
+      setInstalledExtensions(Array.isArray(config?.extensions) ? config.extensions : [])
+      setExtensionSettingsSchemas(config?.extensionSettingsSchemas && typeof config.extensionSettingsSchemas === 'object' ? config.extensionSettingsSchemas : {})
+    }).catch(() => {
+      setPrimaryChatSourceId(null)
+      setPrimaryChatSourceAvailable(false)
+      setPrimaryChatSourceIconUrl(undefined)
+      setInstalledExtensions([])
+      setExtensionSettingsSchemas({})
+    })
+  }, [])
+  useEffect(() => {
+    refetchAppConfig()
+  }, [refetchAppConfig])
+  // When extensions are toggled/reloaded, refetch so combined chat source and extension list stay in sync
+  useEffect(() => {
+    const handler = () => refetchAppConfig()
+    window.ipcRenderer.on('extensions-reloaded', handler)
+    return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
+  }, [refetchAppConfig])
+  // Hydrate extension settings from localStorage (and migrate legacy chat-source keys into ext-settings when present).
+  useEffect(() => {
+    const schemas = extensionSettingsSchemas
+    const extIds = Object.keys(schemas)
+    if (extIds.length === 0) return
+    const next: Record<string, Record<string, boolean | string | number>> = {}
+    for (const extId of extIds) {
+      const sections = schemas[extId]
+      if (!Array.isArray(sections)) continue
+      const defaults: Record<string, boolean | string | number> = {}
+      for (const sec of sections) {
+        if (!Array.isArray(sec.fields)) continue
+        for (const f of sec.fields) {
+          defaults[f.key] = f.default
+        }
+      }
+      try {
+        const raw = localStorage.getItem(`omni-screen:ext-settings:${extId}`)
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, unknown>
+          for (const [k, v] of Object.entries(parsed)) {
+            if (k in defaults && (typeof v === 'boolean' || typeof v === 'string' || typeof v === 'number')) {
+              defaults[k] = v
+            }
+          }
+        } else {
+          // One-time migration from legacy keys into ext-settings (show chat input is app-level, not extension)
+          const include = localStorage.getItem('omni-screen:combined-include-primary-chat')
+          const flairs = localStorage.getItem('omni-screen:combined-disable-primary-chat-flairs-colors')
+          const labelColor = localStorage.getItem('omni-screen:primary-chat-label-color-override')
+          const labelText = localStorage.getItem('omni-screen:primary-chat-label-text')
+          if (include === '0' || include === 'false') defaults['includeInCombined'] = false
+          if (flairs === '1' || flairs === 'true') defaults['flairsAndColors'] = false
+          if (typeof labelColor === 'string' && labelColor.trim() !== '') defaults['labelColor'] = labelColor.trim()
+          if (typeof labelText === 'string') defaults['labelText'] = labelText
+          try {
+            localStorage.setItem(`omni-screen:ext-settings:${extId}`, JSON.stringify(defaults))
+          } catch {
+            // ignore
+          }
+        }
+        next[extId] = defaults
+      } catch {
+        next[extId] = defaults
+      }
+    }
+    setExtensionSettings((prev) => (Object.keys(next).length === 0 ? prev : { ...prev, ...next }))
+  }, [extensionSettingsSchemas])
+  const setExtensionSetting = useCallback((extId: string, key: string, value: boolean | string | number) => {
+    setExtensionSettings((prev) => {
+      const ext = { ...(prev[extId] ?? {}), [key]: value }
+      const next = { ...prev, [extId]: ext }
+      try {
+        localStorage.setItem(`omni-screen:ext-settings:${extId}`, JSON.stringify(ext))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
+  /** Primary chat source options from extension settings (Extensions tab). */
+  const primaryExtSettings = primaryChatSourceId ? (extensionSettings[primaryChatSourceId] ?? {}) : {}
+  const combinedIncludePrimaryChat = (primaryExtSettings.includeInCombined as boolean | undefined) ?? true
+  const combinedDisablePrimaryChatFlairsAndColors = !((primaryExtSettings.flairsAndColors as boolean | undefined) ?? true)
+  const primaryChatSourceLabelColorOverride = (primaryExtSettings.labelColor as string | undefined) ?? ''
+  const primaryChatSourceLabelText = (primaryExtSettings.labelText as string | undefined) ?? (primaryChatSourceId ?? '')
+  const setPrimaryChatFlairsFromChat = useCallback((v: boolean) => primaryChatSourceId && setExtensionSetting(primaryChatSourceId, 'flairsAndColors', v), [primaryChatSourceId])
+  /** Show chat input is app-level (combined chat input visibility), not part of any extension. */
+  const [showChatInput, setShowChatInput] = useState<boolean>(() => {
+    const v = localStorage.getItem('omni-screen:show-chat-input') ?? localStorage.getItem('omni-screen:show-primary-chat-input')
+    if (v === '0' || v === 'false') return false
     return true
   })
   const initialCombinedMaxMessages = useMemo(() => {
@@ -692,9 +939,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const saved = Number(localStorage.getItem('omni-screen:youtube-poll-multiplier'))
     return Number.isFinite(saved) && saved > 0 ? saved : 1
   })
-  /** Multiplier for pinned streamers' YouTube live check interval only (separate from combined chat YT poll). */
-  const [pinnedYoutubeCheckMultiplier, setPinnedYoutubeCheckMultiplier] = useState<number>(() => {
-    const saved = Number(localStorage.getItem('omni-screen:pinned-youtube-check-multiplier'))
+  /** Multiplier for bookmarked streamers' YouTube live check interval only (separate from combined chat YT poll). */
+  const [bookmarkedYoutubeCheckMultiplier, setBookmarkedYoutubeCheckMultiplier] = useState<number>(() => {
+    let saved = Number(localStorage.getItem('omni-screen:bookmarked-youtube-check-multiplier'))
+    if (!Number.isFinite(saved) || saved <= 0) {
+      saved = Number(localStorage.getItem('omni-screen:pinned-youtube-check-multiplier'))
+    }
     return Number.isFinite(saved) && saved > 0 ? saved : 1
   })
   const [combinedHighlightTerms, setCombinedHighlightTerms] = useState<string[]>(() => {
@@ -717,25 +967,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === '1' || saved === 'true') return true
     return false
   })
-  const [combinedDisableDggFlairsAndColors, setCombinedDisableDggFlairsAndColors] = useState<boolean>(() => {
-    const saved = localStorage.getItem('omni-screen:combined-disable-dgg-flairs-colors')
-    if (saved === '1' || saved === 'true') return true
-    return false
-  })
   const [chatLinkOpenAction, setChatLinkOpenAction] = useState<'none' | 'clipboard' | 'browser' | 'viewer'>(() => {
     const saved = localStorage.getItem('omni-screen:chat-link-open-action')
     if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
     return 'browser'
   })
-  const [showDggInput, setShowDggInput] = useState<boolean>(() => {
-    const saved = localStorage.getItem('omni-screen:show-dgg-input')
-    if (saved === '0' || saved === 'false') return false
-    return true
-  })
-  type DggFocusKeybind = { key: string; ctrl: boolean; shift: boolean; alt: boolean }
-  const [dggFocusKeybind, setDggFocusKeybind] = useState<DggFocusKeybind>(() => {
+  type PrimaryChatFocusKeybind = { key: string; ctrl: boolean; shift: boolean; alt: boolean }
+  const [primaryChatFocusKeybind, setPrimaryChatFocusKeybind] = useState<PrimaryChatFocusKeybind>(() => {
     try {
-      const saved = localStorage.getItem('omni-screen:dgg-focus-keybind')
+      const saved = localStorage.getItem('omni-screen:primary-chat-focus-keybind')
       if (!saved) return { key: ' ', ctrl: true, shift: false, alt: false }
       const parsed = JSON.parse(saved)
       if (parsed && typeof parsed.key === 'string') {
@@ -749,32 +989,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     } catch {}
     return { key: ' ', ctrl: true, shift: false, alt: false }
   })
-  /** DGG label/badge color in combined chat. Empty = use theme default. Default #ffffff (white). */
-  const [dggLabelColorOverride, setDggLabelColorOverride] = useState<string>(() => {
-    const saved = localStorage.getItem('omni-screen:dgg-label-color-override')
-    if (saved === '' || saved == null) return '#ffffff'
-    if (/^#[0-9A-Fa-f]{6}$/.test(saved)) return saved
-    if (/^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)$/.test(saved)) {
-      const m = saved.match(/\d+/g)
-      if (m && m.length === 3) {
-        const r = parseInt(m[0], 10)
-        const g = parseInt(m[1], 10)
-        const b = parseInt(m[2], 10)
-        if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
-          return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')
-        }
-      }
-    }
-    return ''
-  })
-  /** DGG label text in combined chat badge. Default "dgg". Empty string is valid (user can leave blank for special behaviour). */
-  const [dggLabelText, setDggLabelText] = useState<string>(() => {
-    const key = 'omni-screen:dgg-label-text'
-    const saved = localStorage.getItem(key)
-    return saved !== null ? saved : 'dgg'
-  })
-  const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
-  const dggChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
+  const primaryChatInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const primaryChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
 
   // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
   const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
@@ -936,18 +1152,32 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
   }, [combinedChatOverlayMode])
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
-  const [combinedDggUserCount, setCombinedDggUserCount] = useState(0)
+  const [combinedPrimaryChatUserCount, setCombinedPrimaryChatUserCount] = useState(0)
+  /** Full breakdown for header: total vs per-channel cycle and hover tooltip. */
+  const [combinedUserCounts, setCombinedUserCounts] = useState<{ primary: number; kick: Record<string, number> } | null>(null)
+  /** 0 = total, 1 = primary, 2+ = Kick by index in enabledKickSlugs. */
+  const [combinedUserCountCycle, setCombinedUserCountCycle] = useState(0)
   const pinnedEmbedsRef = useRef<Map<string, LiveEmbed>>(pinnedEmbeds)
   pinnedEmbedsRef.current = pinnedEmbeds
-  const pinnedOriginatedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
+  const bookmarkedOriginatedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const [ytChannelLoading, setYtChannelLoading] = useState(false)
   const [ytChannelError, setYtChannelError] = useState<string | null>(null)
   const [pasteLinkError, setPasteLinkError] = useState<string | null>(null)
 
-  // ---- Pinned streamers (group embeds by streamer; nickname; poll options in modal) ----
-  const [pinnedStreamers, setPinnedStreamers] = useState<PinnedStreamer[]>(() => {
+  // ---- Bookmarked streamers (permanent list in Settings; when live appear in dock). Stored separately from pinned embeds (manual, unpinnable). ----
+  const [bookmarkedStreamers, setBookmarkedStreamers] = useState<BookmarkedStreamer[]>(() => {
     try {
-      const raw = localStorage.getItem('omni-screen:pinned-streamers')
+      let raw = localStorage.getItem('omni-screen:bookmarked-streamers')
+      if (!raw) {
+        raw = localStorage.getItem('omni-screen:pinned-streamers')
+        if (raw) {
+          try {
+            localStorage.setItem('omni-screen:bookmarked-streamers', raw)
+          } catch {
+            // ignore
+          }
+        }
+      }
       if (!raw) return []
       const arr = JSON.parse(raw)
       if (!Array.isArray(arr)) return []
@@ -961,23 +1191,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
         twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
         openWhenLive: x.openWhenLive === true,
-      })) as PinnedStreamer[]
+      })) as BookmarkedStreamer[]
     } catch {
       return []
     }
   })
-  type SettingsTab = 'pinned' | 'chat' | 'liteLinkScroller' | 'keybinds'
+  type SettingsTab = 'bookmarks' | 'chat' | 'liteLinkScroller' | 'extensions' | 'keybinds'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('pinned')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('bookmarks')
   const settingsTabContentRef = useRef<HTMLDivElement>(null)
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
-  /** YouTube embed key -> pinned streamer ids that resolved to this video (multiple streamers can share same stream). */
+  /** YouTube embed key -> bookmarked streamer ids that resolved to this video (multiple streamers can share same stream). */
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
-  /** Embeds from pinned streamer poll only (not in pinned list, not persisted). "Unpin" does not apply to these. */
-  const [pinnedOriginatedEmbeds, setPinnedOriginatedEmbeds] = useState<Map<string, LiveEmbed>>(() => new Map())
-  pinnedOriginatedEmbedsRef.current = pinnedOriginatedEmbeds
-  /** Increment to trigger one immediate run of pinned streamer polls (e.g. Refresh button). */
-  const [pinnedPollRefreshTrigger, setPinnedPollRefreshTrigger] = useState(0)
+  /** Embeds from bookmarked streamer poll only (not in pinned-embeds list, not persisted). "Unpin" does not apply to these. */
+  const [bookmarkedOriginatedEmbeds, setBookmarkedOriginatedEmbeds] = useState<Map<string, LiveEmbed>>(() => new Map())
+  bookmarkedOriginatedEmbedsRef.current = bookmarkedOriginatedEmbeds
+  /** Increment to trigger one immediate run of bookmarked streamer polls (e.g. Refresh button). */
+  const [bookmarkedPollRefreshTrigger, setBookmarkedPollRefreshTrigger] = useState(0)
 
   /** Preferred platform order for "turn on" dock click: first matching platform's video is enabled. */
   const PREFERRED_PLATFORMS_DEFAULT: ('youtube' | 'kick' | 'twitch')[] = ['youtube', 'kick', 'twitch']
@@ -1005,11 +1235,38 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   useEffect(() => {
     try {
-      localStorage.setItem('omni-screen:pinned-streamers', JSON.stringify(pinnedStreamers))
+      localStorage.setItem('omni-screen:bookmarked-streamers', JSON.stringify(bookmarkedStreamers))
     } catch {
       // ignore
     }
-  }, [pinnedStreamers])
+  }, [bookmarkedStreamers])
+
+  // Sync from localStorage when protocol add-streamer adds a bookmark (from another window or before OmniScreen mounted)
+  useEffect(() => {
+    const handler = () => {
+      try {
+        const raw = localStorage.getItem('omni-screen:bookmarked-streamers')
+        if (!raw) return
+        const arr = JSON.parse(raw)
+        if (!Array.isArray(arr)) return
+        const next = arr.filter((x: any) => x && typeof x.id === 'string').map((x: any) => ({
+          ...x,
+          nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
+          color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
+          youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
+          kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
+          twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
+          openWhenLive: x.openWhenLive === true,
+        })) as BookmarkedStreamer[]
+        setBookmarkedStreamers(next)
+        setBookmarkedPollRefreshTrigger((t) => t + 1)
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener('bookmarked-streamers-changed', handler)
+    return () => window.removeEventListener('bookmarked-streamers-changed', handler)
+  }, [])
 
   useEffect(() => {
     try {
@@ -1039,8 +1296,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         setShowLabels: setCombinedShowLabels,
         showPlatformIcons: combinedShowPlatformIcons,
         setShowPlatformIcons: setCombinedShowPlatformIcons,
-        showDggFlairsAndColors: !combinedDisableDggFlairsAndColors,
-        setShowDggFlairsAndColors: (v) => setCombinedDisableDggFlairsAndColors(!v),
+        showPrimaryChatSourceFlairsAndColors: !combinedDisablePrimaryChatFlairsAndColors,
+        setShowPrimaryChatSourceFlairsAndColors: setPrimaryChatFlairsFromChat,
       },
       order: { sortMode: combinedSortMode, setSortMode: setCombinedSortMode },
       emotes: {
@@ -1049,7 +1306,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       },
       linkAction: { value: chatLinkOpenAction, setValue: setChatLinkOpenAction },
       paneSide: { value: chatPaneSide, setPaneSide: setChatPaneSide },
-      dgg: combinedIncludeDgg ? { showInput: showDggInput, setShowInput: setShowDggInput } : undefined,
+      primaryChat: combinedIncludePrimaryChat ? { showInput: showChatInput, setShowInput: setShowChatInput } : undefined,
       highlightTerms: combinedHighlightTerms,
       addHighlightTerm: (term: string) => {
         const t = term.trim()
@@ -1064,20 +1321,21 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       combinedShowTimestamps,
       combinedShowLabels,
       combinedShowPlatformIcons,
-      combinedDisableDggFlairsAndColors,
+      combinedDisablePrimaryChatFlairsAndColors,
       combinedSortMode,
       combinedPauseEmoteAnimationsOffScreen,
       chatLinkOpenAction,
       chatPaneSide,
-      combinedIncludeDgg,
-      showDggInput,
+      combinedIncludePrimaryChat,
+      showChatInput,
+      setPrimaryChatFlairsFromChat,
       combinedHighlightTerms,
     ]
   )
 
   const combinedHeaderText = useMemo(() => {
     const parts: string[] = []
-    if (combinedIncludeDgg) parts.push('dgg')
+    if (combinedIncludePrimaryChat && primaryChatSourceId) parts.push(primaryChatSourceId)
 
     const extra: string[] = []
     selectedEmbedChatKeys.forEach((k) => {
@@ -1101,7 +1359,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     const remaining = parts.length - shown.length
     const summary = shown.length ? `${shown.join(', ')}${remaining > 0 ? ` +${remaining} others` : ''}` : 'none'
     return `Chat (combined: ${summary})`
-  }, [combinedIncludeDgg, selectedEmbedChatKeys])
+  }, [combinedIncludePrimaryChat, selectedEmbedChatKeys])
 
 
   // ---- Center grid sizing (responsive to window size) ----
@@ -1144,7 +1402,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     [pinnedEmbeds, removePinnedEmbed],
   )
 
-  // Merge pinned (temporary list), pinned-originated (bookmark poll), and DGG embeds.
+  // Merge pinned (manual list), bookmarked-originated (bookmark poll), and primary chat source (live feed) embeds.
   // When only metadata (e.g. viewer count) changes, return same Map ref to avoid re-renders that coincide with overlay flash.
   const stableCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
   const combinedAvailableEmbeds = useMemo(() => {
@@ -1153,7 +1411,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       const c = canonicalEmbedKey(k)
       m.set(c, v)
     })
-    pinnedOriginatedEmbeds.forEach((v, k) => {
+    bookmarkedOriginatedEmbeds.forEach((v, k) => {
       const c = canonicalEmbedKey(k)
       if (!m.has(c)) m.set(c, v)
     })
@@ -1171,19 +1429,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (keysUnchanged) {
       for (const [k, v] of m) prev.set(k, v)
       for (const k of [...prev.keys()]) if (!m.has(k)) prev.delete(k)
-      logPinned('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: prev.size, stable: true })
+      logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: prev.size, stable: true })
       return prev
     }
     stableCombinedEmbedsRef.current = m
-    logPinned('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: pinnedOriginatedEmbeds.size, dggCount: availableEmbeds.size, combinedCount: m.size })
+    logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: m.size })
     return m
-  }, [availableEmbeds, pinnedEmbeds, pinnedOriginatedEmbeds])
+  }, [availableEmbeds, pinnedEmbeds, bookmarkedOriginatedEmbeds])
   const combinedAvailableEmbedsRef = useRef<Map<string, LiveEmbed>>(combinedAvailableEmbeds)
   combinedAvailableEmbedsRef.current = combinedAvailableEmbeds
   const prevCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
-  const prevPinnedOriginatedRef = useRef<Map<string, LiveEmbed>>(new Map())
+  const prevBookmarkedOriginatedRef = useRef<Map<string, LiveEmbed>>(new Map())
 
-  /** When poll or DGG removes an embed that the user is watching, add to pinned list (📌) so it stays in the list. */
+  /** When poll or live feed removes an embed that the user is watching, add to pinned list (📌) so it stays in the list. */
   useEffect(() => {
     const prev = prevCombinedEmbedsRef.current
     const current = combinedAvailableEmbeds
@@ -1211,19 +1469,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   /** When a bookmarked streamer comes live and that streamer has openWhenLive, add preferred platform video to selection. */
   useEffect(() => {
-    const prev = prevPinnedOriginatedRef.current
-    const current = pinnedOriginatedEmbeds
-    prevPinnedOriginatedRef.current = new Map(current)
+    const prev = prevBookmarkedOriginatedRef.current
+    const current = bookmarkedOriginatedEmbeds
+    prevBookmarkedOriginatedRef.current = new Map(current)
     if (prev.size === 0) return
     const prevKeys = new Set(prev.keys())
     const newKeys = Array.from(current.keys()).filter((k) => !prevKeys.has(k))
     if (newKeys.length === 0) return
     const toAdd = new Set<string>()
     for (const newKey of newKeys) {
-      const streamers = findStreamersForKey(newKey, pinnedStreamers, youtubeVideoToStreamerId).filter((s) => s.openWhenLive === true)
+      const streamers = findStreamersForKey(newKey, bookmarkedStreamers, youtubeVideoToStreamerId).filter((s) => s.openWhenLive === true)
       for (const s of streamers) {
         const streamerKeys = Array.from(combinedAvailableEmbeds.keys()).filter((k) =>
-          findStreamersForKey(k, pinnedStreamers, youtubeVideoToStreamerId).some((x) => x.id === s.id),
+          findStreamersForKey(k, bookmarkedStreamers, youtubeVideoToStreamerId).some((x) => x.id === s.id),
         )
         const anySelected = streamerKeys.some((k) => selectedEmbedKeys.has(k))
         if (anySelected) continue
@@ -1243,33 +1501,33 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         return next
       })
     }
-  }, [pinnedOriginatedEmbeds, preferredPlatformOrder, pinnedStreamers, youtubeVideoToStreamerId, combinedAvailableEmbeds, selectedEmbedKeys])
+  }, [bookmarkedOriginatedEmbeds, preferredPlatformOrder, bookmarkedStreamers, youtubeVideoToStreamerId, combinedAvailableEmbeds, selectedEmbedKeys])
 
-  /** Why each embed is in the list: Bookmarked (bookmarked streamer), DGG (websocket), Pinned (temporary list). */
+  /** Why each embed is in the list: Bookmarked (bookmarked streamer), Live feed (websocket), Pinned (manual list). */
   const embedSourcesByKey = useMemo(() => {
-    const out = new Map<string, { pinned: boolean; dgg: boolean; pinnedToList: boolean }>()
+    const out = new Map<string, { bookmarked: boolean; fromLiveEmbed: boolean; pinnedToList: boolean }>()
     for (const key of combinedAvailableEmbeds.keys()) {
-      const pinned = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId).length > 0
-      const dgg = availableEmbeds.has(key)
+      const bookmarked = findStreamersForKey(key, bookmarkedStreamers, youtubeVideoToStreamerId).length > 0
+      const fromLiveEmbed = availableEmbeds.has(key)
       const pinnedToList = isPinnedEmbedKey(key)
-      out.set(key, { pinned, dgg, pinnedToList })
+      out.set(key, { bookmarked, fromLiveEmbed, pinnedToList })
     }
     return out
-  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId, availableEmbeds, isPinnedEmbedKey])
+  }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId, availableEmbeds, isPinnedEmbedKey])
 
-  /** Icons for embed source: 🔖 bookmarked, #️⃣ DGG embed, 📌 pinned. */
-  function embedSourceIcons(s: { pinned: boolean; dgg: boolean; pinnedToList: boolean }): { icon: string; title: string }[] {
+  /** Icons for embed source: 🔖 bookmarked, #️⃣ live embed, 📌 pinned. */
+  function embedSourceIcons(s: { bookmarked: boolean; fromLiveEmbed: boolean; pinnedToList: boolean }): { icon: string; title: string }[] {
     const out: { icon: string; title: string }[] = []
     if (s.pinnedToList) out.push({ icon: '📌', title: 'Pinned' })
-    if (s.pinned) out.push({ icon: '🔖', title: 'Bookmarked' })
-    if (s.dgg) out.push({ icon: '#️⃣', title: 'DGG embed' })
+    if (s.bookmarked) out.push({ icon: '🔖', title: 'Bookmarked' })
+    if (s.fromLiveEmbed) out.push({ icon: '#️⃣', title: 'Live embed' })
     return out
   }
 
   /** Combined chat: color for an embed key. Bookmarked: use streamer platform/dock color if set, else fixed default. Non-bookmarked: palette color. */
   const getEmbedColor = useCallback(
     (key: string, displayName?: string) => {
-      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamers = findStreamersForKey(key, bookmarkedStreamers, youtubeVideoToStreamerId)
       const s = streamers[0]
       if (s) {
         const parsed = parseEmbedKey(key)
@@ -1287,16 +1545,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       }
       return omniColorForKey(key, { displayName })
     },
-    [pinnedStreamers, youtubeVideoToStreamerId],
+    [bookmarkedStreamers, youtubeVideoToStreamerId],
   )
 
   /** True if the embed key belongs to a bookmarked streamer that has hideLabelInCombinedChat. */
   const getEmbedLabelHidden = useCallback(
     (key: string) => {
-      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamers = findStreamersForKey(key, bookmarkedStreamers, youtubeVideoToStreamerId)
       return streamers.some((s) => s.hideLabelInCombinedChat === true)
     },
-    [pinnedStreamers, youtubeVideoToStreamerId],
+    [bookmarkedStreamers, youtubeVideoToStreamerId],
   )
 
   useEffect(() => {
@@ -1339,21 +1597,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   // Persist all combined chat and chat pane settings in one place so none are missed on restart.
   useEffect(() => {
     try {
-      localStorage.setItem('omni-screen:combined-include-dgg', combinedIncludeDgg ? '1' : '0')
       localStorage.setItem('omni-screen:combined-max-messages', String(combinedMaxMessages))
       localStorage.setItem('omni-screen:combined-max-messages-scroll', String(combinedMaxMessagesScroll))
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
+      localStorage.setItem('omni-screen:show-chat-input', showChatInput ? '1' : '0')
       localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
       localStorage.setItem('omni-screen:combined-highlight-terms', JSON.stringify(combinedHighlightTerms))
       localStorage.setItem('omni-screen:combined-pause-emote-offscreen', combinedPauseEmoteAnimationsOffScreen ? '1' : '0')
-      localStorage.setItem('omni-screen:combined-disable-dgg-flairs-colors', combinedDisableDggFlairsAndColors ? '1' : '0')
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
-      localStorage.setItem('omni-screen:show-dgg-input', showDggInput ? '1' : '0')
-      localStorage.setItem('omni-screen:dgg-focus-keybind', JSON.stringify(dggFocusKeybind))
-      localStorage.setItem('omni-screen:dgg-label-color-override', dggLabelColorOverride)
-      localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
+      localStorage.setItem('omni-screen:primary-chat-focus-keybind', JSON.stringify(primaryChatFocusKeybind))
       localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
       localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
       localStorage.setItem('omni-screen:combined-chat-overlay-mode', combinedChatOverlayMode ? '1' : '0')
@@ -1368,21 +1622,17 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // ignore
     }
   }, [
-    combinedIncludeDgg,
     combinedMaxMessages,
     combinedMaxMessagesScroll,
     combinedShowTimestamps,
     combinedShowLabels,
     combinedShowPlatformIcons,
+    showChatInput,
     combinedSortMode,
-    dggLabelColorOverride,
-    dggLabelText,
     combinedHighlightTerms,
     combinedPauseEmoteAnimationsOffScreen,
-    combinedDisableDggFlairsAndColors,
     chatLinkOpenAction,
-    showDggInput,
-    dggFocusKeybind,
+    primaryChatFocusKeybind,
     chatPaneWidth,
     chatPaneSide,
     combinedChatOverlayMode,
@@ -1390,15 +1640,6 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     overlayMessagesClickThrough,
     liteLinkScrollerSettings,
   ])
-
-  // Persist DGG label text in its own effect so it always saves even if the big effect's try block fails partway.
-  useEffect(() => {
-    try {
-      localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
-    } catch {
-      // ignore
-    }
-  }, [dggLabelText])
 
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
@@ -1424,7 +1665,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (!data || data.type !== 'MSG' || !data.message) return
       const msg = data.message
       const text = msg.data ?? ''
-      const cards = buildLinkCardsFromMessage('dgg', 'Destinygg', msg.nick ?? '', typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(), text)
+      const platformId = primaryChatSourceId ?? 'chat'
+      const cards = buildLinkCardsFromMessage(platformId, platformId, msg.nick ?? '', typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(), text)
       appendCards(cards)
     }
     const handleDggHistory = (_e: unknown, history: { type?: string; messages?: Array<{ nick?: string; data?: string; timestamp?: number }> }) => {
@@ -1433,7 +1675,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       history.messages.forEach((m) => {
         const text = m.data ?? ''
         const dateMs = typeof m.timestamp === 'number' ? m.timestamp : Date.now()
-        cards.push(...buildLinkCardsFromMessage('dgg', 'Destinygg', m.nick ?? '', dateMs, text))
+        const platformId = primaryChatSourceId ?? 'chat'
+        cards.push(...buildLinkCardsFromMessage(platformId, platformId, m.nick ?? '', dateMs, text))
       })
       appendCards(cards)
     }
@@ -1467,7 +1710,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       window.ipcRenderer.off('youtube-chat-message', handleYouTube)
       window.ipcRenderer.off('twitch-chat-message', handleTwitch)
     }
-  }, [liteLinkScrollerSettings.maxMessages])
+  }, [liteLinkScrollerSettings.maxMessages, primaryChatSourceId])
 
   useEffect(() => {
     const max = liteLinkScrollerSettings.maxMessages
@@ -1479,23 +1722,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (settingsModalOpen) return
       const target = e.target as Node
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
-      if (!chatPaneOpen || !combinedIncludeDgg || !showDggInput) return
+      if (!chatPaneOpen || !combinedIncludePrimaryChat || !showChatInput) return
       const key = e.key === ' ' ? ' ' : e.key
-      if (dggFocusKeybind.key !== key || dggFocusKeybind.ctrl !== e.ctrlKey || dggFocusKeybind.shift !== e.shiftKey || dggFocusKeybind.alt !== e.altKey) return
+      if (primaryChatFocusKeybind.key !== key || primaryChatFocusKeybind.ctrl !== e.ctrlKey || primaryChatFocusKeybind.shift !== e.shiftKey || primaryChatFocusKeybind.alt !== e.altKey) return
       e.preventDefault()
-      dggInputRef.current?.focus()
+      primaryChatInputRef.current?.focus()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [settingsModalOpen, chatPaneOpen, combinedIncludeDgg, showDggInput, dggFocusKeybind])
+  }, [settingsModalOpen, chatPaneOpen, combinedIncludePrimaryChat, showChatInput, primaryChatFocusKeybind])
 
   useEffect(() => {
     const handler = (_: unknown, payload: { platform: string; id: string }) => {
-      if (payload?.platform && payload?.id) handleDestinyLinkRef.current?.(payload.platform, payload.id)
+      if (payload?.platform && payload?.id) handleChatSourceLinkRef.current?.(payload.platform, payload.id)
     }
-    window.ipcRenderer?.on('add-embed-from-destiny-link', handler)
+    window.ipcRenderer?.on('add-embed-from-chat-source-link', handler)
     return () => {
-      window.ipcRenderer?.off('add-embed-from-destiny-link', handler)
+      window.ipcRenderer?.off('add-embed-from-chat-source-link', handler)
     }
   }, [])
 
@@ -1508,11 +1751,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   }, [youTubePollMultiplier])
   useEffect(() => {
     try {
-      localStorage.setItem('omni-screen:pinned-youtube-check-multiplier', String(pinnedYoutubeCheckMultiplier))
+      localStorage.setItem('omni-screen:bookmarked-youtube-check-multiplier', String(bookmarkedYoutubeCheckMultiplier))
     } catch {
       // ignore
     }
-  }, [pinnedYoutubeCheckMultiplier])
+  }, [bookmarkedYoutubeCheckMultiplier])
 
   useEffect(() => {
     try {
@@ -1587,87 +1830,89 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
   }, [])
 
-  // Connect to live.destiny.gg websocket (via main process to avoid Origin restrictions)
+  // Connect to primary chat source live WebSocket (via main process)
   useEffect(() => {
     let alive = true
+
+    const handleEmbeds = (_event: any, data: LiveEmbed[] | undefined) => {
+      if (!alive) return
+      const list = Array.isArray(data) ? data : []
+      const next = new Map<string, LiveEmbed>()
+      const legacyToCanonical = new Map<string, string>()
+      list.forEach((embed: LiveEmbed) => {
+        if (!embed?.platform || !embed?.id) return
+        const canonicalKey = makeEmbedKey(embed.platform, embed.id)
+        next.set(canonicalKey, embed)
+        const legacyKey = makeLegacyEmbedKey(embed.platform, embed.id)
+        if (legacyKey !== canonicalKey) legacyToCanonical.set(legacyKey, canonicalKey)
+      })
+      const pinnedList = pinnedEmbedsRef.current
+      const pinned = bookmarkedOriginatedEmbedsRef.current
+      const combined = combinedAvailableEmbedsRef.current
+      const watched = new Set([...selectedEmbedKeysRef.current, ...selectedEmbedChatKeysRef.current])
+      const keysToPin = new Set<string>()
+      watched.forEach((k) => {
+        const c = canonicalEmbedKey(k)
+        if (next.has(k) || next.has(c) || pinnedList.has(k) || pinnedList.has(c) || pinned.has(k) || pinned.has(c)) return
+        const migrated = legacyToCanonical.get(k)
+        if (migrated && (next.has(migrated) || pinnedList.has(migrated) || pinned.has(migrated))) return
+        const embed = combined.get(k) || combined.get(c) || (migrated ? combined.get(migrated) : undefined)
+        if (embed) keysToPin.add(c)
+      })
+      const pinnedListNext = new Map(pinnedList)
+      keysToPin.forEach((c) => {
+        const embed = combined.get(c)
+        if (embed) pinnedListNext.set(c, embed)
+      })
+      const keepKey = (key: string) => {
+        const c = canonicalEmbedKey(key)
+        if (next.has(key) || next.has(c) || pinnedListNext.has(key) || pinnedListNext.has(c) || pinned.has(key) || pinned.has(c)) return true
+        const migrated = legacyToCanonical.get(key)
+        return Boolean(migrated && (next.has(migrated) || pinnedListNext.has(migrated) || pinned.has(migrated)))
+      }
+      if (keysToPin.size > 0) {
+        setPinnedEmbeds((prev) => {
+          const m = new Map(prev)
+          keysToPin.forEach((c) => {
+            const embed = combined.get(c)
+            if (embed) m.set(c, embed)
+          })
+          return m
+        })
+      }
+      setAvailableEmbeds(next)
+      setSelectedEmbedKeys((prev) => new Set([...prev].filter(keepKey)))
+      setSelectedEmbedChatKeys((prev) => new Set([...prev].filter(keepKey)))
+    }
+
+    const handleBannedEmbeds = (_event: any, data: BannedEmbed[] | null | undefined) => {
+      if (!alive) return
+      const list = data == null || !Array.isArray(data) ? [] : data
+      const next = new Map<string, BannedEmbed>()
+      list.forEach((banned: BannedEmbed) => {
+        if (!banned?.platform || !banned?.name) return
+        next.set(makeEmbedKey(banned.platform, banned.name), banned)
+      })
+      setBannedEmbeds(next)
+    }
 
     const handleMessage = (_event: any, payload: any) => {
       if (!alive) return
       const parsed = payload as LiveWsMessage
       if (!parsed || typeof parsed.type !== 'string') return
-
-      if (parsed.type === 'dggApi:embeds') {
-        const next = new Map<string, LiveEmbed>()
-        const legacyToCanonical = new Map<string, string>()
-        const data = (parsed as { type: 'dggApi:embeds'; data: LiveEmbed[] }).data || []
-        data.forEach((embed: LiveEmbed) => {
-          if (!embed?.platform || !embed?.id) return
-          const canonicalKey = makeEmbedKey(embed.platform, embed.id)
-          next.set(canonicalKey, embed)
-
-          const legacyKey = makeLegacyEmbedKey(embed.platform, embed.id)
-          if (legacyKey !== canonicalKey) legacyToCanonical.set(legacyKey, canonicalKey)
-        })
-
-        const pinnedList = pinnedEmbedsRef.current
-        const pinned = pinnedOriginatedEmbedsRef.current
-        const combined = combinedAvailableEmbedsRef.current
-        const watched = new Set([...selectedEmbedKeysRef.current, ...selectedEmbedChatKeysRef.current])
-        const keysToPin = new Set<string>()
-        watched.forEach((k) => {
-          const c = canonicalEmbedKey(k)
-          if (next.has(k) || next.has(c) || pinnedList.has(k) || pinnedList.has(c) || pinned.has(k) || pinned.has(c)) return
-          const migrated = legacyToCanonical.get(k)
-          if (migrated && (next.has(migrated) || pinnedList.has(migrated) || pinned.has(migrated))) return
-          const embed = combined.get(k) || combined.get(c) || (migrated ? combined.get(migrated) : undefined)
-          if (embed) keysToPin.add(c)
-        })
-        const pinnedListNext = new Map(pinnedList)
-        keysToPin.forEach((c) => {
-          const embed = combined.get(c)
-          if (embed) pinnedListNext.set(c, embed)
-        })
-        const keepKey = (key: string) => {
-          const c = canonicalEmbedKey(key)
-          if (next.has(key) || next.has(c) || pinnedListNext.has(key) || pinnedListNext.has(c) || pinned.has(key) || pinned.has(c)) return true
-          const migrated = legacyToCanonical.get(key)
-          return Boolean(migrated && (next.has(migrated) || pinnedListNext.has(migrated) || pinned.has(migrated)))
-        }
-        // Do not use startViewTransition here: it creates a full-document ::view-transition overlay
-        // that flashes over the page (especially over video embeds) and coincided with the reported flash.
-        if (keysToPin.size > 0) {
-          setPinnedEmbeds((prev) => {
-            const m = new Map(prev)
-            keysToPin.forEach((c) => {
-              const embed = combined.get(c)
-              if (embed) m.set(c, embed)
-            })
-            return m
-          })
-        }
-        setAvailableEmbeds(next)
-        setSelectedEmbedKeys((prev) => new Set([...prev].filter(keepKey)))
-        setSelectedEmbedChatKeys((prev) => new Set([...prev].filter(keepKey)))
-        return
-      }
-
-      if (parsed.type === 'dggApi:bannedEmbeds') {
-        const next = new Map<string, BannedEmbed>()
-        const data = (parsed as { type: 'dggApi:bannedEmbeds'; data: BannedEmbed[] | null }).data || []
-        data.forEach((banned: BannedEmbed) => {
-          if (!banned?.platform || !banned?.name) return
-          next.set(makeEmbedKey(banned.platform, banned.name), banned)
-        })
-        setBannedEmbeds(next)
-      }
+      // Embeds and banned embeds are handled by live-websocket-embeds / live-websocket-banned-embeds from extension
     }
 
     window.ipcRenderer.invoke('live-websocket-connect').catch(() => {})
     window.ipcRenderer.on('live-websocket-message', handleMessage)
+    window.ipcRenderer.on('live-websocket-embeds', handleEmbeds)
+    window.ipcRenderer.on('live-websocket-banned-embeds', handleBannedEmbeds)
 
     return () => {
       alive = false
       window.ipcRenderer.off('live-websocket-message', handleMessage)
+      window.ipcRenderer.off('live-websocket-embeds', handleEmbeds)
+      window.ipcRenderer.off('live-websocket-banned-embeds', handleBannedEmbeds)
       window.ipcRenderer.invoke('live-websocket-disconnect').catch(() => {})
     }
   }, [])
@@ -1745,13 +1990,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: uniq }).catch(() => {})
   }, [chatPaneOpen, selectedEmbedChatKeys])
 
-  // Poll pinned streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No DGG required.
+  // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
   useEffect(() => {
-    const withYt = pinnedStreamers.filter((s) => s.youtubeChannelId?.trim())
-    logPinned('YT poll: pinnedStreamers with YT', { count: withYt.length, streamers: withYt.map((s) => ({ id: s.id, nickname: s.nickname, yt: s.youtubeChannelId })) })
+    const withYt = bookmarkedStreamers.filter((s) => s.youtubeChannelId?.trim())
+    logBookmarked('YT poll: bookmarked streamers with YT', { count: withYt.length, streamers: withYt.map((s) => ({ id: s.id, nickname: s.nickname, yt: s.youtubeChannelId })) })
     if (withYt.length === 0) {
       setYoutubeVideoToStreamerId((prev) => (prev.size === 0 ? prev : new Map()))
-      setPinnedOriginatedEmbeds((prev) => {
+      setBookmarkedOriginatedEmbeds((prev) => {
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('youtube:')) next.delete(k)
         return next.size === prev.size ? prev : next
@@ -1759,10 +2004,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       return
     }
     const baseMs = 60_000
-    const intervalMs = Math.max(15_000, Math.round(baseMs * pinnedYoutubeCheckMultiplier))
+    const intervalMs = Math.max(15_000, Math.round(baseMs * bookmarkedYoutubeCheckMultiplier))
     let cancelled = false
     const run = async () => {
-      /** key -> streamer ids that resolved to this video (multiple pinned can share same stream). */
+      /** key -> streamer ids that resolved to this video (multiple bookmarked can share same stream). */
       const nextMap = new Map<string, string[]>()
       const newEmbeds = new Map<string, LiveEmbed>()
       for (const s of withYt) {
@@ -1772,7 +2017,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         try {
           const r = await window.ipcRenderer.invoke('youtube-live-or-latest', channelId, { streamerNickname: s.nickname, useDggFallback: false }) as { isLive?: boolean; videoId?: string; error?: string }
           if (cancelled) return
-          logPinned('YT result', { nickname: s.nickname || s.id, channelId, isLive: r?.isLive, videoId: r?.videoId, error: r?.error })
+          logBookmarked('YT result', { nickname: s.nickname || s.id, channelId, isLive: r?.isLive, videoId: r?.videoId, error: r?.error })
           if (r?.isLive && r?.videoId) {
             const key = makeEmbedKey('youtube', r.videoId)
             const ids = nextMap.get(key) ?? []
@@ -1785,11 +2030,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             })
           }
         } catch (e) {
-          logPinned('YT error', { nickname: s.nickname || s.id, channelId, err: String(e) })
+          logBookmarked('YT error', { nickname: s.nickname || s.id, channelId, err: String(e) })
         }
       }
       if (cancelled) return
-      logPinned('YT poll done', { youtubeVideoToStreamerId: Object.fromEntries(nextMap), newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
+      logBookmarked('YT poll done', { youtubeVideoToStreamerId: Object.fromEntries(nextMap), newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
       setYoutubeVideoToStreamerId((prev) => {
         if (prev.size !== nextMap.size) return nextMap
         for (const [k, nextIds] of nextMap) {
@@ -1798,7 +2043,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         }
         return prev
       })
-      setPinnedOriginatedEmbeds((prev) => {
+      setBookmarkedOriginatedEmbeds((prev) => {
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('youtube:')) next.delete(k)
         newEmbeds.forEach((embed, key) => next.set(canonicalEmbedKey(key), embed))
@@ -1811,12 +2056,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       cancelled = true
       clearInterval(t)
     }
-  }, [pinnedStreamers, pinnedYoutubeCheckMultiplier, pinnedPollRefreshTrigger])
+  }, [bookmarkedStreamers, bookmarkedYoutubeCheckMultiplier, bookmarkedPollRefreshTrigger])
 
-  // Poll pinned streamers' Kick channels: add live embeds when live (grouped by findStreamerForKey). No DGG required.
+  // Poll bookmarked streamers' Kick channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
   useEffect(() => {
-    const withKick = pinnedStreamers.filter((s) => s.kickSlug?.trim())
-    logPinned('Kick poll: pinnedStreamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
+    const withKick = bookmarkedStreamers.filter((s) => s.kickSlug?.trim())
+    logBookmarked('Kick poll: bookmarked streamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
     if (withKick.length === 0) return
     const intervalMs = 60_000
     let cancelled = false
@@ -1829,7 +2074,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         try {
           const r = await window.ipcRenderer.invoke('url-is-live', `https://kick.com/${slug}`) as { live?: boolean; error?: string }
           if (cancelled) return
-          logPinned('Kick result', { nickname: s.nickname || s.id, slug, live: r?.live, error: r?.error })
+          logBookmarked('Kick result', { nickname: s.nickname || s.id, slug, live: r?.live, error: r?.error })
           if (r?.live) {
             const key = makeEmbedKey('kick', slug)
             newEmbeds.set(key, {
@@ -1839,12 +2084,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             })
           }
         } catch (e) {
-          logPinned('Kick error', { nickname: s.nickname || s.id, slug, err: String(e) })
+          logBookmarked('Kick error', { nickname: s.nickname || s.id, slug, err: String(e) })
         }
       }
       if (cancelled) return
-      logPinned('Kick poll done', { newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
-      setPinnedOriginatedEmbeds((prev) => {
+      logBookmarked('Kick poll done', { newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
+      setBookmarkedOriginatedEmbeds((prev) => {
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('kick:')) next.delete(k)
         newEmbeds.forEach((embed, key) => next.set(canonicalEmbedKey(key), embed))
@@ -1857,12 +2102,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       cancelled = true
       clearInterval(t)
     }
-  }, [pinnedStreamers, pinnedPollRefreshTrigger])
+  }, [bookmarkedStreamers, bookmarkedPollRefreshTrigger])
 
-  // Poll pinned streamers' Twitch channels: add live embeds when live (grouped by findStreamerForKey). No DGG required.
+  // Poll bookmarked streamers' Twitch channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
   useEffect(() => {
-    const withTwitch = pinnedStreamers.filter((s) => s.twitchLogin?.trim())
-    logPinned('Twitch poll: pinnedStreamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
+    const withTwitch = bookmarkedStreamers.filter((s) => s.twitchLogin?.trim())
+    logBookmarked('Twitch poll: bookmarked streamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
     if (withTwitch.length === 0) return
     const intervalMs = 60_000
     let cancelled = false
@@ -1875,7 +2120,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         try {
           const r = await window.ipcRenderer.invoke('url-is-live', `https://twitch.tv/${login}`) as { live?: boolean; error?: string }
           if (cancelled) return
-          logPinned('Twitch result', { nickname: s.nickname || s.id, login, live: r?.live, error: r?.error })
+          logBookmarked('Twitch result', { nickname: s.nickname || s.id, login, live: r?.live, error: r?.error })
           if (r?.live) {
             const key = makeEmbedKey('twitch', login)
             newEmbeds.set(key, {
@@ -1885,12 +2130,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             })
           }
         } catch (e) {
-          logPinned('Twitch error', { nickname: s.nickname || s.id, login, err: String(e) })
+          logBookmarked('Twitch error', { nickname: s.nickname || s.id, login, err: String(e) })
         }
       }
       if (cancelled) return
-      logPinned('Twitch poll done', { newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
-      setPinnedOriginatedEmbeds((prev) => {
+      logBookmarked('Twitch poll done', { newEmbedsCount: newEmbeds.size, newEmbedsKeys: Array.from(newEmbeds.keys()) })
+      setBookmarkedOriginatedEmbeds((prev) => {
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('twitch:')) next.delete(k)
         newEmbeds.forEach((embed, key) => next.set(canonicalEmbedKey(key), embed))
@@ -1903,7 +2148,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       cancelled = true
       clearInterval(t)
     }
-  }, [pinnedStreamers, pinnedPollRefreshTrigger])
+  }, [bookmarkedStreamers, bookmarkedPollRefreshTrigger])
 
   const selectedEmbeds = useMemo(() => {
     const arr: { key: string; embed: LiveEmbed }[] = []
@@ -1957,11 +2202,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     })
   }, [])
 
-  /** Display names for combined chat channel labels; prefer pinned streamer nickname when available. */
+  /** Display names for combined chat channel labels; prefer bookmarked streamer nickname when available. */
   const embedDisplayNameByKey = useMemo(() => {
     const out: Record<string, string> = {}
     for (const [key, e] of combinedAvailableEmbeds.entries()) {
-      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamers = findStreamersForKey(key, bookmarkedStreamers, youtubeVideoToStreamerId)
       const nickname = streamers.map((s) => s.nickname?.trim()).find(Boolean)
       if (nickname) {
         out[key] = nickname
@@ -1971,7 +2216,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       }
     }
     return out
-  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId])
+  }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId])
 
   /** Lookup display name by message key (canonicalizes so youtube:rvijzhO5Shc matches youtube:rvijzho5shc). */
   const getEmbedDisplayName = useCallback(
@@ -1979,8 +2224,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     [embedDisplayNameByKey],
   )
 
-  /** Destiny # link: add embed to split or shake if already selected. Used by combined chat and DGG embed IPC. */
-  const handleDestinyLink = useCallback(
+  /** Chat source # link: add embed to split or shake if already selected. Used by combined chat and live embed IPC. */
+  const handleChatSourceLink = useCallback(
     (platform: string, id: string) => {
       const key = makeEmbedKey(platform, id)
       const canonical = canonicalEmbedKey(key)
@@ -1995,23 +2240,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   )
 
   useEffect(() => {
-    handleDestinyLinkRef.current = handleDestinyLink
-  }, [handleDestinyLink])
+    handleChatSourceLinkRef.current = handleChatSourceLink
+  }, [handleChatSourceLink])
 
   const handleChatOpenLink = useCallback(
     (url: string) => {
       const trimmed = String(url || '').trim()
       if (trimmed.startsWith('#')) {
-        const parsed = parseDestinyHashLink(trimmed)
+        const parsed = parseHashLink(trimmed)
         if (parsed) {
-          handleDestinyLink(parsed.platform, parsed.id)
+          handleChatSourceLink(parsed.platform, parsed.id)
           return
         }
       }
       if (chatLinkOpenAction === 'none') return
       window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: chatLinkOpenAction }).catch(() => {})
     },
-    [chatLinkOpenAction, handleDestinyLink],
+    [chatLinkOpenAction, handleChatSourceLink],
   )
 
   const enabledKickSlugs = useMemo(() => {
@@ -2023,6 +2268,37 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     })
     return Array.from(new Set(slugs)).sort()
   }, [selectedEmbedChatKeys])
+
+  /** User count cycle: 0 = total, 1 = primary, 2..n = Kick slugs. */
+  const combinedUserCountCycleSteps = 1 + 1 + enabledKickSlugs.length
+  const combinedDisplayedUserCount = useMemo(() => {
+    if (!combinedUserCounts) return combinedPrimaryChatUserCount
+    const total = combinedUserCounts.primary + Object.values(combinedUserCounts.kick).reduce((a, b) => a + b, 0)
+    if (combinedUserCountCycle === 0) return total
+    if (combinedUserCountCycle === 1) return combinedUserCounts.primary
+    const kickIdx = combinedUserCountCycle - 2
+    const slug = enabledKickSlugs[kickIdx]
+    return slug != null ? (combinedUserCounts.kick[slug] ?? 0) : total
+  }, [combinedUserCounts, combinedUserCountCycle, enabledKickSlugs, combinedPrimaryChatUserCount])
+
+  const combinedUserCountCycleLabel = useMemo(() => {
+    if (!combinedUserCounts) return null
+    if (combinedUserCountCycle === 0) return 'Total'
+    if (combinedUserCountCycle === 1) return primaryChatSourceLabelText || 'Primary'
+    const kickIdx = combinedUserCountCycle - 2
+    const slug = enabledKickSlugs[kickIdx]
+    return slug != null ? `Kick / ${slug}` : 'Total'
+  }, [combinedUserCountCycle, enabledKickSlugs, primaryChatSourceLabelText])
+
+  const cycleCombinedUserCount = useCallback(() => {
+    setCombinedUserCountCycle((i) => (i + 1) % combinedUserCountCycleSteps)
+  }, [combinedUserCountCycleSteps])
+
+  useEffect(() => {
+    if (combinedUserCountCycle >= combinedUserCountCycleSteps) {
+      setCombinedUserCountCycle(0)
+    }
+  }, [combinedUserCountCycle, combinedUserCountCycleSteps])
 
   const openKickHistorySetup = useCallback(() => {
     const slug = enabledKickSlugs[0] || ''
@@ -2070,7 +2346,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       const viewers = e.mediaItem?.metadata?.viewers
 
       const banned = bannedEmbeds.get(item.key)
-      const streamers = findStreamersForKey(item.key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamers = findStreamersForKey(item.key, bookmarkedStreamers, youtubeVideoToStreamerId)
       const streamerColor = streamers[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamers[0].color) ? streamers[0].color : undefined
       const accent = streamerColor ?? (streamers.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(item.key, { displayName: e.mediaItem?.metadata?.displayName }))
 
@@ -2125,23 +2401,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         </div>
       )
     },
-    [autoplay, bannedEmbeds, cinemaMode, mute, pinnedStreamers, shakeEmbedKey, toggleEmbed, youtubeVideoToStreamerId],
+    [autoplay, bannedEmbeds, cinemaMode, mute, bookmarkedStreamers, shakeEmbedKey, toggleEmbed, youtubeVideoToStreamerId],
   )
 
-  /** Dock item: merged pinned group (same keys = one button) or single embed. */
+  /** Dock item: merged bookmarked group (same keys = one button) or single embed. */
   type DockItem =
-    | { type: 'group'; streamers: PinnedStreamer[]; keys: string[] }
+    | { type: 'group'; streamers: BookmarkedStreamer[]; keys: string[] }
     | { type: 'single'; key: string }
 
   const dockItems = useMemo((): DockItem[] => {
     const allKeys = Array.from(combinedAvailableEmbeds.keys())
     const streamerToKeys = new Map<string, string[]>()
-    for (const s of pinnedStreamers) {
+    for (const s of bookmarkedStreamers) {
       streamerToKeys.set(s.id, [])
     }
     const ungrouped: string[] = []
     for (const key of allKeys) {
-      const streamers = findStreamersForKey(key, pinnedStreamers, youtubeVideoToStreamerId)
+      const streamers = findStreamersForKey(key, bookmarkedStreamers, youtubeVideoToStreamerId)
       if (streamers.length > 0) {
         for (const streamer of streamers) {
           streamerToKeys.get(streamer.id)!.push(key)
@@ -2151,8 +2427,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       }
     }
     // Build per-streamer key sets, then merge: same key set = one dock button (avoid duplicate buttons for same stream)
-    const keySetToStreamers = new Map<string, PinnedStreamer[]>()
-    for (const s of pinnedStreamers) {
+    const keySetToStreamers = new Map<string, BookmarkedStreamer[]>()
+    for (const s of bookmarkedStreamers) {
       const keys = [...streamerToKeys.get(s.id)!].filter((k) => combinedAvailableEmbeds.has(k)).sort()
       if (keys.length === 0) continue
       const sig = keys.join('\0')
@@ -2161,12 +2437,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       keySetToStreamers.set(sig, list)
     }
     const result: DockItem[] = []
-    // Preserve pinned streamer order: use first streamer's index for sort
-    const pinnedIndex = new Map(pinnedStreamers.map((s, i) => [s.id, i]))
+    // Preserve bookmarked streamer order: use first streamer's index for sort
+    const bookmarkedIndex = new Map(bookmarkedStreamers.map((s, i) => [s.id, i]))
     const groups = Array.from(keySetToStreamers.entries()).map(([sig, streamers]) => ({
       streamers,
       keys: sig.split('\0'),
-      minIndex: Math.min(...streamers.map((s) => pinnedIndex.get(s.id) ?? 9999)),
+      minIndex: Math.min(...streamers.map((s) => bookmarkedIndex.get(s.id) ?? 9999)),
     }))
     groups.sort((a, b) => a.minIndex - b.minIndex)
     const keysInGroups = new Set<string>()
@@ -2182,8 +2458,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       if (a.type === 'group' && b.type === 'single') return -1
       if (a.type === 'single' && b.type === 'group') return 1
       if (a.type === 'group' && b.type === 'group') {
-        const aMin = Math.min(...a.streamers.map((s) => pinnedIndex.get(s.id) ?? 9999))
-        const bMin = Math.min(...b.streamers.map((s) => pinnedIndex.get(s.id) ?? 9999))
+        const aMin = Math.min(...a.streamers.map((s) => bookmarkedIndex.get(s.id) ?? 9999))
+        const bMin = Math.min(...b.streamers.map((s) => bookmarkedIndex.get(s.id) ?? 9999))
         return aMin - bMin
       }
       const aKey = a.type === 'single' ? a.key : a.keys[0]
@@ -2194,9 +2470,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       const bv = Number(bEmb?.count ?? bEmb?.mediaItem?.metadata?.viewers ?? 0) || 0
       return bv - av
     })
-    logPinned('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
+    logBookmarked('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
     return result
-  }, [combinedAvailableEmbeds, pinnedStreamers, youtubeVideoToStreamerId])
+  }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId])
 
   const dockRef = useRef<HTMLDivElement | null>(null)
   const dockBarRef = useRef<HTMLDivElement | null>(null)
@@ -2206,7 +2482,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [dockContextMenuAt, setDockContextMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [dockContextMenuHover, setDockContextMenuHover] = useState<'preferred' | 'dockPosition' | null>(null)
   const dockContextMenuRef = useRef<HTMLDivElement | null>(null)
-  /** Which embed key is currently "watching" on live.destiny.gg (shows 👀 in dock). Only one at a time. */
+  /** Which embed key is currently "watching" in the live embed view (shows 👀 in dock). Only one at a time. */
   const [watchedEmbedKey, setWatchedEmbedKey] = useState<string | null>(null)
   /** Right-click on a dock item: context menu position and item. */
   const [dockItemContextMenu, setDockItemContextMenu] = useState<{ x: number; y: number; item: DockItem } | null>(null)
@@ -2458,13 +2734,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           chatPortalTarget &&
           createPortal(
             <CombinedChat
-              enableDgg={combinedIncludeDgg}
-              showDggInput={showDggInput}
+              primaryChatSourceId={primaryChatSourceId}
+              enablePrimaryChat={combinedIncludePrimaryChat && primaryChatSourceAvailable}
+              showPrimaryChatInput={showChatInput}
+              enabledKickSlugs={enabledKickSlugs}
               getEmbedDisplayName={getEmbedDisplayName}
               getEmbedColor={getEmbedColor}
               getEmbedLabelHidden={getEmbedLabelHidden}
-              dggLabelColor={dggLabelColorOverride || undefined}
-              dggLabelText={dggLabelText}
+              primaryChatSourceLabelColor={primaryChatSourceLabelColorOverride || undefined}
+              primaryChatSourceLabelText={primaryChatSourceLabelText}
+              primaryChatSourceIconUrl={primaryChatSourceIconUrl}
               onOpenLink={handleChatOpenLink}
               maxMessages={combinedMaxMessages}
               maxMessagesScroll={combinedMaxMessagesScroll}
@@ -2474,13 +2753,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               sortMode={combinedSortMode}
               highlightTerms={combinedHighlightTerms}
               pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
-              showDggFlairsAndColors={!combinedDisableDggFlairsAndColors}
+              showPrimaryChatSourceFlairsAndColors={!combinedDisablePrimaryChatFlairsAndColors}
               contextMenuConfig={combinedChatContextMenuConfig}
               onCountChange={setCombinedMsgCount}
-              onDggUserCountChange={setCombinedDggUserCount}
-              dggInputRef={dggInputRef}
-              dggChatActionsRef={dggChatActionsRef}
-              focusShortcutLabel={formatDggFocusKeybind(dggFocusKeybind)}
+              onPrimaryChatUserCountChange={setCombinedPrimaryChatUserCount}
+              onCombinedUserCountsChange={setCombinedUserCounts}
+              primaryChatInputRef={primaryChatInputRef}
+              primaryChatActionsRef={primaryChatActionsRef}
+              focusShortcutLabel={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
               overlayMode={combinedChatOverlayMode}
               overlayOpacity={combinedChatOverlayOpacity}
               messagesClickThrough={combinedChatOverlayMode ? overlayMessagesClickThrough : false}
@@ -2536,7 +2816,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       {combinedHeaderText}
                     </div>
                     <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
-                      {combinedMsgCount} msgs · {combinedDggUserCount} users
+                      {combinedMsgCount} msgs ·{' '}
+                      <CombinedUserCountButton
+                        displayedCount={combinedDisplayedUserCount}
+                        cycleLabel={combinedUserCountCycleLabel}
+                        onCycle={cycleCombinedUserCount}
+                        counts={combinedUserCounts}
+                        primaryLabel={primaryChatSourceLabelText ?? ''}
+                        enabledKickSlugs={enabledKickSlugs}
+                      />
                       <button
                         type="button"
                         className="btn btn-xs btn-ghost"
@@ -2620,7 +2908,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 combinedChatOverlayOpacity={combinedChatOverlayOpacity}
                 combinedHeaderText={combinedHeaderText}
                 combinedMsgCount={combinedMsgCount}
-                combinedDggUserCount={combinedDggUserCount}
+                combinedPrimaryChatUserCount={combinedPrimaryChatUserCount}
+                combinedDisplayedUserCount={combinedDisplayedUserCount}
+                combinedUserCounts={combinedUserCounts}
+                combinedUserCountCycleLabel={combinedUserCountCycleLabel}
+                onCycleUserCount={cycleCombinedUserCount}
+                enabledKickSlugs={enabledKickSlugs}
+                primaryChatSourceLabelText={primaryChatSourceLabelText ?? ''}
                 setOverlayHeaderVisible={setOverlayHeaderVisible}
                 setCombinedChatOverlayMode={setCombinedChatOverlayMode}
                 setOverlayOpacityDropdownOpen={setOverlayOpacityDropdownOpen}
@@ -2665,7 +2959,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             const videoOn = keys.some((k) => selectedEmbedKeys.has(k))
                             const chatOn = keys.some((k) => selectedEmbedChatKeys.has(k))
                             const label = item.type === 'group' ? item.streamers.map((s) => s.nickname || 'Unnamed').join(', ') : (firstEmbed?.id ?? firstKey)
-                            const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId)
+                            const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, bookmarkedStreamers, youtubeVideoToStreamerId)
                             const streamerColor = streamersForAccent[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamersForAccent[0].color) ? streamersForAccent[0].color : undefined
                             const accent = streamerColor ?? (streamersForAccent.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName }))
                             const active = videoOn || chatOn
@@ -2699,8 +2993,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
                       <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">➕</label>
                       <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
-                        <input type="text" placeholder="Paste link or YouTube channel" className="input input-sm input-bordered w-full" id="omni-add-embed-input" disabled={ytChannelLoading} autoComplete="off" onKeyDown={async (e) => { if (e.key !== 'Enter') return; const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }} />
-                        <button type="button" className="btn btn-sm btn-primary" title="Add embed" disabled={ytChannelLoading} onClick={async () => { const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setPinnedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }}>{ytChannelLoading ? '…' : 'Add'}</button>
+                        <input type="text" placeholder="Paste link or YouTube channel" className="input input-sm input-bordered w-full" id="omni-add-embed-input" disabled={ytChannelLoading} autoComplete="off" onKeyDown={async (e) => { if (e.key !== 'Enter') return; const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }} />
+                        <button type="button" className="btn btn-sm btn-primary" title="Add embed" disabled={ytChannelLoading} onClick={async () => { const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }}>{ytChannelLoading ? '…' : 'Add'}</button>
                         {(pasteLinkError || ytChannelError) ? <div className="text-xs text-error">{pasteLinkError || ytChannelError}</div> : null}
                       </div>
                     </div>
@@ -2758,7 +3052,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       const label = item.type === 'group'
                         ? item.streamers.map((s) => s.nickname || 'Unnamed').join(', ')
                         : (firstEmbed?.id ?? firstKey)
-                      const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId)
+                      const streamersForAccent = item.type === 'group' ? item.streamers : findStreamersForKey(firstKey, bookmarkedStreamers, youtubeVideoToStreamerId)
                       const streamerColor = streamersForAccent[0]?.color && /^#[0-9A-Fa-f]{6}$/.test(streamersForAccent[0].color) ? streamersForAccent[0].color : undefined
                       const accent = streamerColor ?? (streamersForAccent.length > 0 ? COLOR_BOOKMARKED_DEFAULT : omniColorForKey(firstKey, { displayName: firstEmbed?.mediaItem?.metadata?.displayName }))
                       const active = videoOn || chatOn
@@ -2848,10 +3142,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             if (r?.error) {
                               if (r.error.includes('not currently live')) {
                                 const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'
-                                setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
+                                setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
                                 if (el) el.value = ''
                                 setYtChannelError(null)
-                                setPinnedPollRefreshTrigger((t) => t + 1)
+                                setBookmarkedPollRefreshTrigger((t) => t + 1)
                                 return
                               }
                               setYtChannelError(r.error ?? 'Failed')
@@ -2859,10 +3153,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             }
                             if (!r?.isLive) {
                               const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'
-                              setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
+                              setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
                               if (el) el.value = ''
                               setYtChannelError(null)
-                              setPinnedPollRefreshTrigger((t) => t + 1)
+                              setBookmarkedPollRefreshTrigger((t) => t + 1)
                               return
                             }
                             if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''
@@ -2894,10 +3188,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             if (r?.error) {
                               if (r.error.includes('not currently live')) {
                                 const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'
-                                setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
+                                setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
                                 if (el) el.value = ''
                                 setYtChannelError(null)
-                                setPinnedPollRefreshTrigger((t) => t + 1)
+                                setBookmarkedPollRefreshTrigger((t) => t + 1)
                                 return
                               }
                               setYtChannelError(r.error ?? 'Failed')
@@ -2905,10 +3199,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             }
                             if (!r?.isLive) {
                               const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'
-                              setPinnedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
+                              setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }])
                               if (el) el.value = ''
                               setYtChannelError(null)
-                              setPinnedPollRefreshTrigger((t) => t + 1)
+                              setBookmarkedPollRefreshTrigger((t) => t + 1)
                               return
                             }
                             if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''
@@ -3105,7 +3399,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             const parsed = parseEmbedKey(firstKey)
             const platform = parsed?.platform ?? firstEmbed?.platform ?? ''
             const id = parsed?.id ?? firstEmbed?.id ?? ''
-            const isBookmarked = findStreamersForKey(firstKey, pinnedStreamers, youtubeVideoToStreamerId).length > 0
+            const isBookmarked = findStreamersForKey(firstKey, bookmarkedStreamers, youtubeVideoToStreamerId).length > 0
             const isPinned = isPinnedEmbedKey(firstKey)
             const isWatching = watchedEmbedKey != null && keys.includes(watchedEmbedKey)
             const menuW = 220
@@ -3150,8 +3444,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center gap-2"
                     onClick={() => {
                       const link = `#${platform}/${id}`
-                      dggChatActionsRef.current?.appendToInput(link)
-                      dggInputRef.current?.focus()
+                      primaryChatActionsRef.current?.appendToInput(link)
+                      primaryChatInputRef.current?.focus()
                       closeDockItemContextMenu()
                     }}
                   >
@@ -3184,15 +3478,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     onClick={() => {
                       const displayName = firstEmbed?.mediaItem?.metadata?.displayName ?? firstEmbed?.id ?? id
                       const p = (firstEmbed?.platform ?? platform ?? '').toLowerCase()
-                      const newStreamer: PinnedStreamer = {
+                      const newStreamer: BookmarkedStreamer = {
                         id: `streamer-${Date.now()}`,
                         nickname: displayName || id || firstKey,
                         ...(p === 'kick' && { kickSlug: id }),
                         ...(p === 'twitch' && { twitchLogin: id }),
                         ...(p === 'youtube' && { youtubeChannelId: buildEmbedUrl('youtube', id) }),
                       }
-                      setPinnedStreamers((prev) => [...prev, newStreamer])
-                      setPinnedPollRefreshTrigger((t) => t + 1)
+                      setBookmarkedStreamers((prev) => [...prev, newStreamer])
+                      setBookmarkedPollRefreshTrigger((t) => t + 1)
                       closeDockItemContextMenu()
                     }}
                   >
@@ -3207,7 +3501,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           {dockHoverItemId && hoveredDockItem && dockHoverRect ? (() => {
             const popupW = 260
             const preferredLeft = dockHoverRect.left + dockHoverRect.width / 2 - popupW / 2
-            // Keep popup in embed area so it doesn't render under the Destiny chat (BrowserView layer).
+            // Keep popup in embed area so it doesn't render under the chat pane (BrowserView layer).
             const margin = 8
             let minLeft = margin
             let maxLeft = window.innerWidth - popupW - margin
@@ -3255,19 +3549,19 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         </span>
                         <span className="text-base-content/50 shrink-0">{keys.length} platform{keys.length !== 1 ? 's' : ''}</span>
                       </div>
-                      <span className="flex items-center gap-0.5 shrink-0" title={keys.map((k) => embedSourceIcons(embedSourcesByKey.get(k) ?? { pinned: false, dgg: false, pinnedToList: false }).map((x) => x.title).join(', ')).join('; ')}>
+                      <span className="flex items-center gap-0.5 shrink-0" title={keys.map((k) => embedSourceIcons(embedSourcesByKey.get(k) ?? { bookmarked: false, fromLiveEmbed: false, pinnedToList: false }).map((x) => x.title).join(', ')).join('; ')}>
                         {(() => {
-                          const src = keys.reduce<{ pinned: boolean; dgg: boolean; pinnedToList: boolean }>(
+                          const src = keys.reduce<{ bookmarked: boolean; fromLiveEmbed: boolean; pinnedToList: boolean }>(
                             (acc, k) => {
                               const s = embedSourcesByKey.get(k)
                               if (s) {
-                                acc.pinned = acc.pinned || s.pinned
-                                acc.dgg = acc.dgg || s.dgg
+                                acc.bookmarked = acc.bookmarked || s.bookmarked
+                                acc.fromLiveEmbed = acc.fromLiveEmbed || s.fromLiveEmbed
                                 acc.pinnedToList = acc.pinnedToList || s.pinnedToList
                               }
                               return acc
                             },
-                            { pinned: false, dgg: false, pinnedToList: false },
+                            { bookmarked: false, fromLiveEmbed: false, pinnedToList: false },
                           )
                           return embedSourceIcons(src).map(({ icon, title }) => (
                             <span key={icon} title={title} aria-hidden>{icon}</span>
@@ -3354,8 +3648,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               {banned ? ` • banned` : null}
                             </div>
                           </div>
-                          <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, pinnedToList: false }).map((x) => x.title).join(', ')}>
-                            {embedSourceIcons(embedSourcesByKey.get(key) ?? { pinned: false, dgg: false, pinnedToList: false }).map(({ icon, title: t }) => (
+                          <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { bookmarked: false, fromLiveEmbed: false, pinnedToList: false }).map((x) => x.title).join(', ')}>
+                            {embedSourceIcons(embedSourcesByKey.get(key) ?? { bookmarked: false, fromLiveEmbed: false, pinnedToList: false }).map(({ icon, title: t }) => (
                               <span key={icon} title={t} aria-hidden>{icon}</span>
                             ))}
                           </span>
@@ -3518,7 +3812,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                     {combinedHeaderText}
                   </div>
                   <div className="text-xs text-base-content/60 whitespace-nowrap flex items-center gap-1">
-                    {combinedMsgCount} msgs · {combinedDggUserCount} users
+                    {combinedMsgCount} msgs ·{' '}
+                    <CombinedUserCountButton
+                      displayedCount={combinedDisplayedUserCount}
+                      cycleLabel={combinedUserCountCycleLabel}
+                      onCycle={cycleCombinedUserCount}
+                      counts={combinedUserCounts}
+                      primaryLabel={primaryChatSourceLabelText ?? ''}
+                      enabledKickSlugs={enabledKickSlugs}
+                    />
                     <button
                       type="button"
                       className="btn btn-xs btn-ghost"
@@ -3554,8 +3856,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
             <div className="tabs tabs-bordered mb-3 flex-shrink-0">
               <button
                 type="button"
-                className={`tab ${settingsTab === 'pinned' ? 'tab-active' : ''}`}
-                onClick={() => setSettingsTab('pinned')}
+                className={`tab ${settingsTab === 'bookmarks' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('bookmarks')}
               >
                 Bookmarked streamers
               </button>
@@ -3575,6 +3877,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
+                className={`tab ${settingsTab === 'extensions' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('extensions')}
+              >
+                Extensions
+              </button>
+              <button
+                type="button"
                 className={`tab ${settingsTab === 'keybinds' ? 'tab-active' : ''}`}
                 onClick={() => setSettingsTab('keybinds')}
               >
@@ -3585,7 +3894,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               ref={settingsTabContentRef}
               className="flex-1 min-h-0 overflow-y-auto"
             >
-              {settingsTab === 'pinned' && (
+              {settingsTab === 'bookmarks' && (
                 <div className="space-y-4">
                   <div className="border-b border-base-300 pb-4">
                     <div className="text-sm font-semibold text-base-content/70 mb-2">Dock bar position</div>
@@ -3651,7 +3960,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       Drag to reorder (order on the bar). Color sets the dock button. Each can link YouTube, Kick, and Twitch.
                     </p>
                   <div className="flex flex-col gap-2">
-                    {pinnedStreamers.map((s, index) => (
+                    {bookmarkedStreamers.map((s, index) => (
                       <div
                         key={s.id}
                         onDragOver={(e) => {
@@ -3662,7 +3971,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           e.preventDefault()
                           const from = Number(e.dataTransfer.getData('text/plain'))
                           if (!Number.isFinite(from) || from === index) return
-                          setPinnedStreamers((prev) => {
+                          setBookmarkedStreamers((prev) => {
                             const next = [...prev]
                             const [removed] = next.splice(from, 1)
                             next.splice(index, 0, removed)
@@ -3690,7 +3999,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               value={s.color && /^#[0-9A-Fa-f]{6}$/.test(s.color) ? s.color : '#888888'}
                               onChange={(e) => {
                                 const hex = e.target.value
-                                setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, color: hex } : x)))
+                                setBookmarkedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, color: hex } : x)))
                               }}
                             />
                           </label>
@@ -3702,7 +4011,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               type="checkbox"
                               className="toggle toggle-xs"
                               checked={s.openWhenLive === true}
-                              onChange={(e) => setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, openWhenLive: e.target.checked } : x)))}
+                              onChange={(e) => setBookmarkedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, openWhenLive: e.target.checked } : x)))}
                             />
                             <span className="text-xs text-base-content/60">Auto-open</span>
                           </label>
@@ -3755,7 +4064,36 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                                 </span>
                               ))}
                           </div>
-                          <div className="flex gap-1 shrink-0">
+                          <div className="flex gap-1 shrink-0 items-center">
+                            <div className="dropdown dropdown-end">
+                              <button type="button" className="btn btn-xs btn-ghost" tabIndex={0} title="Share bookmark link">
+                                Share
+                              </button>
+                              <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow bg-base-100 rounded-box border border-base-300 w-52">
+                                <li>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const url = buildAddStreamerUrl(s, true)
+                                      navigator.clipboard.writeText(url).then(() => {}, () => {})
+                                    }}
+                                  >
+                                    Copy link (with colors)
+                                  </button>
+                                </li>
+                                <li>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const url = buildAddStreamerUrl(s, false)
+                                      navigator.clipboard.writeText(url).then(() => {}, () => {})
+                                    }}
+                                  >
+                                    Copy link (without colors)
+                                  </button>
+                                </li>
+                              </ul>
+                            </div>
                             <button
                               type="button"
                               className="btn btn-xs btn-ghost"
@@ -3767,7 +4105,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                               type="button"
                               className="btn btn-xs btn-ghost text-error"
                               onClick={() => {
-                                setPinnedStreamers((prev) => prev.filter((x) => x.id !== s.id))
+                                setBookmarkedStreamers((prev) => prev.filter((x) => x.id !== s.id))
                                 if (editingStreamerId === s.id) setEditingStreamerId(null)
                               }}
                             >
@@ -3776,10 +4114,10 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           </div>
                         </div>
                         {editingStreamerId === s.id && (
-                          <PinnedStreamerForm
+                          <BookmarkedStreamerForm
                             streamer={s}
                             onSave={(next) => {
-                              setPinnedStreamers((prev) => prev.map((x) => (x.id === s.id ? next : x)))
+                              setBookmarkedStreamers((prev) => prev.map((x) => (x.id === s.id ? next : x)))
                               setEditingStreamerId(null)
                             }}
                             onCancel={() => setEditingStreamerId(null)}
@@ -3791,7 +4129,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   {editingStreamerId === '__new__' ? (
                     <div className="border border-base-300 rounded-lg p-3">
                       <div className="text-sm font-medium mb-2">New streamer</div>
-                      <PinnedStreamerForm
+                      <BookmarkedStreamerForm
                         streamer={{
                           id: '__new__',
                           nickname: '',
@@ -3802,7 +4140,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           openWhenLive: false,
                         }}
                         onSave={(next) => {
-                          setPinnedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
+                          setBookmarkedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
                           setEditingStreamerId(null)
                         }}
                         onCancel={() => setEditingStreamerId(null)}
@@ -3829,12 +4167,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         type="number"
                         step={0.25}
                         className="input input-sm w-20"
-                        value={pinnedYoutubeCheckMultiplier}
+                        value={bookmarkedYoutubeCheckMultiplier}
                         min={0.25}
                         max={5}
                         onChange={(e) => {
                           const v = Number(e.target.value)
-                          if (Number.isFinite(v)) setPinnedYoutubeCheckMultiplier(Math.max(0.25, Math.min(5, v)))
+                          if (Number.isFinite(v)) setBookmarkedYoutubeCheckMultiplier(Math.max(0.25, Math.min(5, v)))
                         }}
                       />
                     </label>
@@ -3843,7 +4181,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       type="button"
                       className="btn btn-sm btn-ghost btn-outline mt-2"
                       title="Check bookmarked streamers for live now"
-                      onClick={() => setPinnedPollRefreshTrigger((n) => n + 1)}
+                      onClick={() => setBookmarkedPollRefreshTrigger((n) => n + 1)}
                     >
                       Check now
                     </button>
@@ -3969,82 +4307,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             onChange={(e) => setCombinedShowPlatformIcons(e.target.checked)}
                           />
                         </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Show chat input</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={showChatInput}
+                            onChange={(e) => setShowChatInput(e.target.checked)}
+                          />
+                        </label>
+                        <span className="label-text-alt text-base-content/60 block">When on, the combined chat input is shown when you have at least one chat source (e.g. extension chat or Kick).</span>
                       </div>
                     </div>
 
-                    {/* DGG */}
-                    <div className="mb-4">
-                      <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">DGG</div>
-                      <div className="space-y-2 pl-0">
-                        <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>Include DGG</span>
-                          <input
-                            type="checkbox"
-                            className="toggle toggle-sm"
-                            checked={combinedIncludeDgg}
-                            onChange={(e) => setCombinedIncludeDgg(e.target.checked)}
-                          />
-                        </label>
-                        {combinedIncludeDgg && (
-                          <label className="flex items-center justify-between gap-2 text-sm">
-                            <span>Show DGG chat input</span>
-                            <input
-                              type="checkbox"
-                              className="toggle toggle-sm"
-                              checked={showDggInput}
-                              onChange={(e) => setShowDggInput(e.target.checked)}
-                            />
-                          </label>
-                        )}
-                        <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>DGG flairs and colors</span>
-                          <input
-                            type="checkbox"
-                            className="toggle toggle-sm"
-                            checked={!combinedDisableDggFlairsAndColors}
-                            onChange={(e) => setCombinedDisableDggFlairsAndColors(!e.target.checked)}
-                          />
-                        </label>
-                        <span className="label-text-alt text-base-content/60 block">When off, DGG nicks use a single color and no flair icons.</span>
-                        <label className="flex flex-col gap-0.5 text-sm" title="Badge/label color in combined chat. Clear = theme default.">
-                          <span>DGG label color</span>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="color"
-                              className="w-7 h-7 rounded border border-base-300 cursor-pointer"
-                              value={dggLabelColorOverride && /^#[0-9A-Fa-f]{6}$/.test(dggLabelColorOverride) ? dggLabelColorOverride : '#ffffff'}
-                              onChange={(e) => setDggLabelColorOverride(e.target.value)}
-                            />
-                            <input
-                              type="text"
-                              className="input input-sm input-bordered w-20 font-mono"
-                              placeholder="#ffffff"
-                              value={dggLabelColorOverride}
-                              onChange={(e) => setDggLabelColorOverride(e.target.value)}
-                            />
-                            <button type="button" className="btn btn-ghost btn-xs" title="Clear (theme default)" onClick={() => setDggLabelColorOverride('')}>✕</button>
-                          </div>
-                        </label>
-                        <label className="flex flex-col gap-0.5 text-sm">
-                          <span>DGG label text</span>
-                          <input
-                            type="text"
-                            className="input input-sm input-bordered w-32"
-                            placeholder="dgg"
-                            value={dggLabelText}
-                            onChange={(e) => setDggLabelText(e.target.value)}
-                            onBlur={() => {
-                              try {
-                                localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
-                              } catch {
-                                // ignore
-                              }
-                            }}
-                          />
-                          <span className="label-text-alt text-base-content/60">Text shown in the source badge for DGG messages.</span>
-                        </label>
-                      </div>
-                    </div>
+                    {!primaryChatSourceAvailable && (
+                      <p className="text-sm text-base-content/70 mb-4">Install a chat source extension to enable it in combined chat. Configure under Settings → Extensions.</p>
+                    )}
 
                     {/* Filter */}
                     <div className="mb-4">
@@ -4114,7 +4392,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           onChange={(e) => setCombinedPauseEmoteAnimationsOffScreen(e.target.checked)}
                         />
                       </label>
-                      <span className="label-text-alt text-base-content/60 block">Reduces DGG emote animation restarts when scrolling.</span>
+                      <span className="label-text-alt text-base-content/60 block">Reduces chat emote animation restarts when scrolling.</span>
                     </div>
 
                     {/* Links */}
@@ -4132,7 +4410,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           <option value="browser">Open in default browser</option>
                           <option value="viewer">Open in Viewer window</option>
                         </select>
-                        <span className="label-text-alt text-base-content/60">Applies to links in Destiny embed chat and combined chat.</span>
+                        <span className="label-text-alt text-base-content/60">Applies to links in embed chat and combined chat.</span>
                       </label>
                     </div>
 
@@ -4179,7 +4457,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 <div className="space-y-4">
                   <div className="text-sm font-semibold text-base-content/80 mb-2">Lite link scroller</div>
                   <p className="text-xs text-base-content/60 mb-3">
-                    Saves messages that contain links from combined chat (DGG, YouTube, Kick, Twitch) and shows them in a scrollable panel. Open with the 📜 button in the embed dock. Autoplay and mute are toggled in the panel&apos;s top bar.
+                    Saves messages that contain links from combined chat (primary chat, YouTube, Kick, Twitch) and shows them in a scrollable panel. Open with the 📜 button in the embed dock. Autoplay and mute are toggled in the panel&apos;s top bar.
                   </p>
                   <label className="flex items-center justify-between gap-2 text-sm">
                     <span>Max messages to save</span>
@@ -4223,23 +4501,118 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   <span className="label-text-alt text-base-content/60 block">For embeds that don&apos;t fire an end event (YouTube, TikTok, etc.), advance to the next card after this many seconds.</span>
                 </div>
               )}
+              {settingsTab === 'extensions' && (
+                <div className="space-y-6">
+                  <p className="text-sm text-base-content/60">
+                    Installed extensions can add chat sources and options. Configure them below.
+                  </p>
+                  {installedExtensions.length === 0 ? (
+                    <p className="text-sm text-base-content/70">No extensions installed. Use the extension install URL (e.g. from the app menu) to add one.</p>
+                  ) : (
+                    <div className="space-y-6">
+                      {installedExtensions.map((ext) => {
+                        const sections = extensionSettingsSchemas[ext.id]?.filter((s) => s.placement === 'omni_screen') ?? []
+                        const extValues = extensionSettings[ext.id] ?? {}
+                        return (
+                          <div key={ext.id} className="border border-base-300 rounded-lg p-4 space-y-4">
+                            <div className="font-medium text-base-content">
+                              {ext.name}
+                              <span className="text-sm font-normal text-base-content/60 ml-2">v{ext.version}</span>
+                            </div>
+                            {sections.length === 0 ? (
+                              <p className="text-sm text-base-content/60">No settings for this extension.</p>
+                            ) : (
+                              sections.map((sec) => (
+                                <div key={sec.id} className="space-y-3">
+                                  <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide">{sec.label}</div>
+                                  <div className="space-y-2 pl-0">
+                                    {sec.fields.map((field) => {
+                                      const value = extValues[field.key] ?? field.default
+                                      return (
+                                        <div key={field.key}>
+                                          <label className="flex items-center justify-between gap-2 text-sm">
+                                            <span>{field.label}</span>
+                                            {field.type === 'boolean' && (
+                                              <input
+                                                type="checkbox"
+                                                className="toggle toggle-sm"
+                                                checked={value === true}
+                                                onChange={(e) => setExtensionSetting(ext.id, field.key, e.target.checked)}
+                                              />
+                                            )}
+                                            {field.type === 'string' && (
+                                              <input
+                                                type="text"
+                                                className="input input-sm input-bordered w-40"
+                                                placeholder={field.placeholder}
+                                                value={String(value)}
+                                                onChange={(e) => setExtensionSetting(ext.id, field.key, e.target.value)}
+                                              />
+                                            )}
+                                            {field.type === 'number' && (
+                                              <input
+                                                type="number"
+                                                className="input input-sm input-bordered w-24"
+                                                value={Number(value)}
+                                                onChange={(e) => {
+                                                  const n = Number(e.target.value)
+                                                  if (Number.isFinite(n)) setExtensionSetting(ext.id, field.key, n)
+                                                }}
+                                              />
+                                            )}
+                                          </label>
+                                          {field.description && (
+                                            <span className="label-text-alt text-base-content/60 block">{field.description}</span>
+                                          )}
+                                          {field.type === 'string' && field.key === 'labelColor' && (
+                                            <div className="flex items-center gap-1 mt-1">
+                                              <input
+                                                type="color"
+                                                className="w-7 h-7 rounded border border-base-300 cursor-pointer"
+                                                value={/^#[0-9A-Fa-f]{6}$/.test(String(value)) ? String(value) : '#ffffff'}
+                                                onChange={(e) => setExtensionSetting(ext.id, field.key, e.target.value)}
+                                              />
+                                              <button
+                                                type="button"
+                                                className="btn btn-ghost btn-xs"
+                                                title="Clear (theme default)"
+                                                onClick={() => setExtensionSetting(ext.id, field.key, '')}
+                                              >
+                                                ✕
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
               {settingsTab === 'keybinds' && (
                 <div className="space-y-4">
                   <p className="text-sm text-base-content/60 mb-4">
-                    Focus DGG chat input when the chat pane is open.
+                    Focus primary chat input when the chat pane is open.
                   </p>
                   <div className="flex items-center gap-4">
-                    <label className="text-sm font-medium shrink-0">Focus DGG chat input</label>
+                    <label className="text-sm font-medium shrink-0">Focus primary chat input</label>
                     <input
                       type="text"
                       readOnly
                       className="input input-bordered input-sm w-40 font-mono"
-                      value={formatDggFocusKeybind(dggFocusKeybind)}
+                      value={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
                       title="Click then press the keys you want"
                       onKeyDown={(e) => {
                         e.preventDefault()
                         const key = e.key === ' ' ? ' ' : e.key
-                        setDggFocusKeybind({
+                        setPrimaryChatFocusKeybind({
                           key,
                           ctrl: e.ctrlKey,
                           shift: e.shiftKey,
@@ -4267,14 +4640,14 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   )
 }
 
-/** Inline form for add/edit pinned streamer (nickname + YT/Kick/Twitch + color). */
-function PinnedStreamerForm({
+/** Inline form for add/edit bookmarked streamer (nickname + YT/Kick/Twitch + color). */
+function BookmarkedStreamerForm({
   streamer,
   onSave,
   onCancel,
 }: {
-  streamer: PinnedStreamer
-  onSave: (next: PinnedStreamer) => void
+  streamer: BookmarkedStreamer
+  onSave: (next: BookmarkedStreamer) => void
   onCancel: () => void
 }) {
   const [nickname, setNickname] = useState(streamer.nickname)
@@ -4333,7 +4706,7 @@ function PinnedStreamerForm({
           <input
             type="text"
             className="input input-sm input-bordered"
-            placeholder="e.g. Destiny"
+            placeholder="e.g. Streamer"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
           />
@@ -4379,7 +4752,7 @@ function PinnedStreamerForm({
       <div className="flex items-center gap-2 flex-wrap">
         <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[140px]">
           <span>Kick slug</span>
-          <input type="text" className="input input-sm input-bordered" placeholder="e.g. destiny" value={kickSlug} onChange={(e) => setKickSlug(e.target.value)} />
+          <input type="text" className="input input-sm input-bordered" placeholder="e.g. streamer" value={kickSlug} onChange={(e) => setKickSlug(e.target.value)} />
         </label>
         <div className="flex items-center gap-1 shrink-0">
           <input type="color" className="w-6 h-6 rounded border border-base-300 cursor-pointer" value={kickColor || '#888888'} onChange={(e) => setKickColor(e.target.value)} title="Chat color" />
@@ -4389,7 +4762,7 @@ function PinnedStreamerForm({
       <div className="flex items-center gap-2 flex-wrap">
         <label className="flex flex-col gap-0.5 text-xs flex-1 min-w-[140px]">
           <span>Twitch handle</span>
-          <input type="text" className="input input-sm input-bordered" placeholder="e.g. destiny" value={twitchLogin} onChange={(e) => setTwitchLogin(e.target.value)} />
+          <input type="text" className="input input-sm input-bordered" placeholder="e.g. streamer" value={twitchLogin} onChange={(e) => setTwitchLogin(e.target.value)} />
         </label>
         <div className="flex items-center gap-1 shrink-0">
           <input type="color" className="w-6 h-6 rounded border border-base-300 cursor-pointer" value={twitchColor || '#888888'} onChange={(e) => setTwitchColor(e.target.value)} title="Chat color" />

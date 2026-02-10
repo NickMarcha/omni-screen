@@ -1,8 +1,11 @@
 /**
  * Check if a given embed URL points to a currently live stream (YouTube video, Kick channel, Twitch channel).
  * Used so "+ Link" only accepts live content (Kick/Twitch). YouTube uses the same isVideoLive as the resolver.
+ * Kick: uses app session (persist:main) so cookies (e.g. Cloudflare) are sent; supports both
+ * kick.com/api/v2 response shapes (livestream vs stream.is_live).
  */
 
+import { session, net } from 'electron'
 import { isVideoLive as isYouTubeVideoLive } from './youtubeLiveOrLatest'
 
 function isLikelyYouTubeId(id: string): boolean {
@@ -48,22 +51,67 @@ async function fetchText(url: string): Promise<string> {
   return res.text()
 }
 
-/** Check if a Kick channel slug is currently live (channel API returns livestream). */
+/** Fetch URL with app session (cookies) so Kick/Cloudflare accept the request. */
+async function fetchWithSession(
+  url: string,
+  opts: { accept: string; origin: string; referer: string }
+): Promise<{ ok: boolean; status: number; bodyText: string }> {
+  const ses = session.fromPartition('persist:main')
+  return new Promise((resolve) => {
+    const req = net.request({
+      method: 'GET',
+      url,
+      session: ses,
+      redirect: 'follow',
+      useSessionCookies: true,
+      headers: {
+        Accept: opts.accept,
+        Origin: opts.origin,
+        Referer: opts.referer,
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+      },
+    })
+    const chunks: Buffer[] = []
+    req.on('response', (res) => {
+      res.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      res.on('end', () => {
+        const bodyText = Buffer.concat(chunks).toString('utf-8')
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode ?? 0, bodyText })
+      })
+      res.on('error', () => resolve({ ok: false, status: 0, bodyText: '' }))
+    })
+    req.on('error', () => resolve({ ok: false, status: 0, bodyText: '' }))
+    req.end()
+  })
+}
+
+/**
+ * Check if a Kick channel slug is currently live.
+ * Uses app session so Kick/Cloudflare cookies are sent (same as Kick chat).
+ * Supports both response shapes: livestream (v2 legacy) and stream.is_live (official-style).
+ */
 async function isKickChannelLive(slug: string): Promise<boolean> {
   const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-      Origin: 'https://kick.com',
-      Referer: `https://kick.com/${encodeURIComponent(slug)}`,
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
+  const { ok, bodyText } = await fetchWithSession(url, {
+    accept: 'application/json',
+    origin: 'https://kick.com',
+    referer: `https://kick.com/${encodeURIComponent(slug)}`,
   })
-  if (!res.ok) return false
-  const data = (await res.json()) as any
+  if (!ok) return false
+  let data: any
+  try {
+    data = JSON.parse(bodyText || '{}')
+  } catch {
+    return false
+  }
+  // Legacy v2: livestream object with id/slug/channel_id
   const livestream = data?.livestream ?? data?.data?.livestream
-  return Boolean(livestream && (livestream.id ?? livestream.slug ?? livestream.channel_id))
+  if (livestream && (livestream.id ?? livestream.slug ?? livestream.channel_id)) return true
+  // Official API shape: stream with is_live
+  const stream = data?.stream ?? data?.data?.stream
+  if (stream && stream.is_live === true) return true
+  return false
 }
 
 /** Check if a Twitch channel (login) is currently live. Scrapes channel page for isLive in embedded data. */

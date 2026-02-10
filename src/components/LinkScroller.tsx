@@ -54,8 +54,8 @@ interface MentionData {
   matchedTerms: string[] // Terms from filter that matched this mention
   searchAfter?: number // For rustlesearch API pagination
   isStreaming?: boolean // true for new incoming WebSocket messages, false for history/API
-  platform?: string // e.g. 'dgg', 'kick'
-  channel?: string // e.g. 'Destinygg', 'destiny'
+  platform?: string // e.g. primary chat source id, 'kick'
+  channel?: string // e.g. mentions channel label
   kickEmotes?: KickEmote[] // Kick emote positions/ids for rendering
 }
 
@@ -107,8 +107,8 @@ export interface LinkCard {
   isLSF?: boolean
   isTrusted?: boolean
   isStreaming?: boolean // true for new incoming WebSocket messages
-  platform?: string // e.g. 'dgg', 'kick'
-  channel?: string // e.g. 'Destinygg', 'destiny'
+  platform?: string // e.g. primary chat source id, 'kick'
+  channel?: string // e.g. mentions channel label
   kickEmotes?: KickEmote[] // Kick emote data for rendering
 }
 
@@ -189,7 +189,7 @@ function filterTermMatchesAsWord(haystack: string, term: string): boolean {
   }
 }
 
-// Banned/trusted users are stored as "platform:nick" (e.g. "dgg:mrMouton", "kick:countrycaptain")
+// Banned/trusted users are stored as "platform:nick" (e.g. "primaryId:nick", "kick:countrycaptain")
 function parsePlatformUser(entry: string): { platform: string; nick: string } | null {
   const idx = entry.indexOf(':')
   if (idx <= 0) return null
@@ -314,11 +314,8 @@ interface Settings {
   mutedUsers?: MutedUser[]
   keybinds: Keybind[]
   theme: ThemeSettings
-  // Channels: where to fetch incoming messages
-  channels?: {
-    dgg?: { enabled: boolean }
-    kick?: { enabled: boolean; channelSlug?: string }
-  }
+  // Channels: where to fetch incoming messages (key = primary chat source id or 'kick')
+  channels?: Record<string, { enabled: boolean; channelSlug?: string }>
   // Footer display: platform label, color, and date/time
   footerDisplay?: {
     showPlatformLabel?: boolean
@@ -401,18 +398,14 @@ function loadSettings(): Settings {
         showNSFL: parsed.showNSFL ?? false,
         showNonLinks: parsed.showNonLinks ?? false,
         bannedTerms: Array.isArray(parsed.bannedTerms) ? parsed.bannedTerms : [],
-        bannedUsers: Array.isArray(parsed.bannedUsers)
-          ? parsed.bannedUsers.map((u: string) => (String(u).includes(':') ? String(u) : `dgg:${String(u).trim()}`))
-          : [],
+        bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
         bannedLinks: Array.isArray(parsed.bannedLinks) ? parsed.bannedLinks : [],
         bannedMessages: Array.isArray(parsed.bannedMessages) ? parsed.bannedMessages : [],
         platformSettings: platformSettings,
         linkOpenAction: (parsed.linkOpenAction === 'none' || parsed.linkOpenAction === 'clipboard' || parsed.linkOpenAction === 'browser' || parsed.linkOpenAction === 'viewer')
           ? parsed.linkOpenAction
           : 'browser',
-        trustedUsers: Array.isArray(parsed.trustedUsers)
-          ? parsed.trustedUsers.map((u: string) => (String(u).includes(':') ? String(u) : `dgg:${String(u).trim()}`))
-          : [],
+        trustedUsers: Array.isArray(parsed.trustedUsers) ? parsed.trustedUsers : [],
         mutedUsers: mutedUsers,
         keybinds: Array.isArray(parsed.keybinds) ? parsed.keybinds : defaultKeybinds,
         theme: parsed.theme && typeof parsed.theme === 'object' ? {
@@ -421,10 +414,14 @@ function loadSettings(): Settings {
           darkTheme: parsed.theme.darkTheme || 'business',
           embedTheme: parsed.theme.embedTheme || 'follow'
         } : { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
-        channels: parsed.channels && typeof parsed.channels === 'object' ? {
-          dgg: parsed.channels.dgg !== undefined ? { enabled: !!parsed.channels.dgg?.enabled } : { enabled: true },
-          kick: parsed.channels.kick !== undefined ? { enabled: !!parsed.channels.kick?.enabled, channelSlug: String(parsed.channels.kick?.channelSlug || '').trim() || undefined } : { enabled: false, channelSlug: undefined }
-        } : { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+        channels: parsed.channels && typeof parsed.channels === 'object' ? (() => {
+          const out: Record<string, { enabled: boolean; channelSlug?: string }> = { ...parsed.channels } as any
+          delete out.dgg
+          out.kick = parsed.channels.kick != null
+            ? { enabled: !!parsed.channels.kick.enabled, channelSlug: String(parsed.channels.kick.channelSlug || '').trim() || undefined }
+            : { enabled: false, channelSlug: undefined }
+          return out
+        })() : { kick: { enabled: false, channelSlug: undefined } },
         footerDisplay: parsed.footerDisplay && typeof parsed.footerDisplay === 'object' ? {
           showPlatformLabel: parsed.footerDisplay.showPlatformLabel !== false,
           platformColorStyle: (parsed.footerDisplay.platformColorStyle === 'tint' || parsed.footerDisplay.platformColorStyle === 'subtle' || parsed.footerDisplay.platformColorStyle === 'none') ? parsed.footerDisplay.platformColorStyle : 'tint',
@@ -476,7 +473,7 @@ function loadSettings(): Settings {
     mutedUsers: [],
     keybinds: defaultKeybinds,
     theme: { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
-    channels: { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+    channels: { kick: { enabled: false, channelSlug: undefined } },
     footerDisplay: { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
   }
     logger.settings('Using default settings')
@@ -901,16 +898,24 @@ function getYouTubeEmbedUrl(url: string): string | null {
 }
 
 // Helpers for card footer platform label and color (exported for DebugPage and shared card components)
-export function getPlatformLabel(card: LinkCard): string {
+export function getPlatformLabel(
+  card: LinkCard,
+  primaryChatSourceId?: string | null,
+  primaryChatSourceDisplayLabel?: string | null
+): string {
   if (card.platform === 'kick') return `Kick • ${card.channel || '?'}`
-  if (card.platform === 'dgg') return 'd.gg'
+  if (primaryChatSourceId && card.platform === primaryChatSourceId) return primaryChatSourceDisplayLabel ?? card.platform ?? ''
   if (card.channel) return `${card.platform || 'Chat'} • ${card.channel}`
   return card.platform || ''
 }
 
-export function getPlatformFooterColor(platform: string | undefined, style: 'tint' | 'subtle' | 'none' | undefined): string {
+export function getPlatformFooterColor(
+  platform: string | undefined,
+  style: 'tint' | 'subtle' | 'none' | undefined,
+  primaryChatSourceId?: string | null
+): string {
   if (!style || style === 'none' || !platform) return ''
-  if (platform === 'dgg') return style === 'tint' ? 'border-l-4 border-l-primary bg-primary/5' : 'border-l-4 border-l-primary/40 bg-primary/5'
+  if (primaryChatSourceId && platform === primaryChatSourceId) return style === 'tint' ? 'border-l-4 border-l-primary bg-primary/5' : 'border-l-4 border-l-primary/40 bg-primary/5'
   if (platform === 'kick') return style === 'tint' ? 'border-l-4 border-l-success bg-success/5' : 'border-l-4 border-l-success/40 bg-success/5'
   return style === 'tint' ? 'border-l-4 border-l-secondary bg-secondary/5' : 'border-l-4 border-l-secondary/40 bg-secondary/5'
 }
@@ -1035,7 +1040,10 @@ function renderLinkCardOverviewContent(
   footerDisplay: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' } | undefined,
   embedReloadKey: number,
   /** When provided (e.g. LiteLinkScroller), override autoplay/mute for this card and optionally listen for video end. */
-  cardEmbedOverrides?: { autoplay?: boolean; muted?: boolean; onEnded?: () => void }
+  cardEmbedOverrides?: { autoplay?: boolean; muted?: boolean; onEnded?: () => void },
+  primaryChatSourceId?: string | null,
+  primaryChatSourceDisplayLabel?: string | null,
+  primaryChatSourceMentionsChannel?: string | null
 ) {
   const embedAutoplay = cardEmbedOverrides?.autoplay ?? false
   const embedMuted = cardEmbedOverrides?.muted ?? true
@@ -1127,22 +1135,22 @@ function renderLinkCardOverviewContent(
             </p>
           </div>
           <div
-            className={`flex items-center justify-between pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(card.platform, footerDisplay?.platformColorStyle ?? 'tint')}`}
+            className={`flex items-center justify-between pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(card.platform, footerDisplay?.platformColorStyle ?? 'tint', primaryChatSourceId)}`}
             onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
           >
             <div className="flex items-center gap-4 flex-wrap">
               <div>
-                {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(card) && (
-                  <span className="text-xs text-base-content/50 mr-2" data-platform={card.platform}>{getPlatformLabel(card)}</span>
+                {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(card, primaryChatSourceId, primaryChatSourceDisplayLabel) && (
+                  <span className="text-xs text-base-content/50 mr-2" data-platform={card.platform}>{getPlatformLabel(card, primaryChatSourceId, primaryChatSourceDisplayLabel)}</span>
                 )}
                 <span className="text-xs text-base-content/70">Posted by</span>
                 <a
-                  href={card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : '#')}
+                  href={card.platform === primaryChatSourceId ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || primaryChatSourceMentionsChannel || primaryChatSourceId || '')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : '#')}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="ml-2 text-sm font-bold text-primary hover:underline"
                   onClick={(e) => {
-                    const url = card.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || 'Destinygg')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : card.url || '#')
+                    const url = card.platform === primaryChatSourceId ? `https://rustlesearch.dev/?username=${encodeURIComponent(card.nick)}&channel=${encodeURIComponent(card.channel || primaryChatSourceMentionsChannel || primaryChatSourceId || '')}` : (card.platform === 'kick' ? `https://kick.com/${encodeURIComponent(card.channel || '')}` : card.url || '#')
                     handleAnchorClick(e, url)
                   }}
                 >
@@ -1187,8 +1195,11 @@ export function LinkCardOverviewCard(props: {
   embedReloadKey?: number
   /** Override autoplay/mute/onEnded for this card (e.g. LiteLinkScroller active card). */
   cardEmbedOverrides?: { autoplay?: boolean; muted?: boolean; onEnded?: () => void }
+  primaryChatSourceId?: string | null
+  primaryChatSourceDisplayLabel?: string | null
+  primaryChatSourceMentionsChannel?: string | null
 }) {
-  return renderLinkCardOverviewContent(props.card, props.onCardClick, props.onOpenLink, props.onContextMenu, props.getEmbedTheme, props.platformSettings, props.emotesMap, props.footerDisplay, props.embedReloadKey ?? 0, props.cardEmbedOverrides)
+  return renderLinkCardOverviewContent(props.card, props.onCardClick, props.onOpenLink, props.onContextMenu, props.getEmbedTheme, props.platformSettings, props.emotesMap, props.footerDisplay, props.embedReloadKey ?? 0, props.cardEmbedOverrides, props.primaryChatSourceId, props.primaryChatSourceDisplayLabel, props.primaryChatSourceMentionsChannel)
 }
 
 /** Expanded modal content (left panel + embed area). Used by LinkScroller modal and DebugPage. */
@@ -1293,7 +1304,7 @@ export function LinkCardExpandedContent(props: {
 }
 
 // Masonry Grid Component - distributes cards into columns based on estimated height
-function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down', footerDisplay }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down', footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' } }) {
+function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSettings, emotesMap, embedReloadKeys, onContextMenu, stackDirection = 'down', footerDisplay, primaryChatSourceId, primaryChatSourceDisplayLabel, primaryChatSourceMentionsChannel }: { cards: LinkCard[], onCardClick: (cardId: string) => void, onOpenLink?: (url: string) => void, getEmbedTheme: () => 'light' | 'dark', platformSettings: Record<string, PlatformDisplayMode>, emotesMap: Map<string, string>, embedReloadKeys?: Map<string, number>, onContextMenu?: (e: React.MouseEvent, card: LinkCard) => void, stackDirection?: 'up' | 'down', footerDisplay?: { showPlatformLabel?: boolean; platformColorStyle?: 'tint' | 'subtle' | 'none'; timestampDisplay?: 'timestamp' | 'datetimestamp' | 'none' }, primaryChatSourceId?: string | null, primaryChatSourceDisplayLabel?: string | null, primaryChatSourceMentionsChannel?: string | null }) {
   const [columns, setColumns] = useState<LinkCard[][]>([])
   
   // Responsive column count based on screen size
@@ -1451,7 +1462,7 @@ function MasonryGrid({ cards, onCardClick, onOpenLink, getEmbedTheme, platformSe
               className={`card shadow-xl flex flex-col border-2 transition-all duration-200 ease-out p-0 ${card.isTrusted ? 'bg-base-200 border-yellow-500' : 'bg-base-200 border-base-content/20'}`}
               onContextMenu={onContextMenu ? (e) => onContextMenu(e, card) : undefined}
             >
-              {renderLinkCardOverviewContent(card, onCardClick, onOpenLink, onContextMenu, getEmbedTheme, platformSettings, emotesMap, footerDisplay, embedReloadKeys?.get(card.id) || 0)}
+              {renderLinkCardOverviewContent(card, onCardClick, onOpenLink, onContextMenu, getEmbedTheme, platformSettings, emotesMap, footerDisplay, embedReloadKeys?.get(card.id) || 0, undefined, primaryChatSourceId, primaryChatSourceDisplayLabel, primaryChatSourceMentionsChannel)}
             </div>
           ))}
         </div>
@@ -2016,6 +2027,26 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
 }
 
 function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
+  // Primary chat source from extension config (for channel label and rustlesearch)
+  const [primaryChatSourceId, setPrimaryChatSourceId] = useState<string | null>(null)
+  const [primaryChatSourceMentionsChannel, setPrimaryChatSourceMentionsChannel] = useState<string | null>(null)
+  const [primaryChatSourceDisplayLabel, setPrimaryChatSourceDisplayLabel] = useState<string | null>(null)
+  useEffect(() => {
+    window.ipcRenderer.invoke('get-app-config').then((config: { chatSources?: Record<string, { mentionsChannelLabel?: string }>; connectionPlatforms?: Array<{ id: string; label: string }> }) => {
+      const chatSources = config?.chatSources ?? {}
+      const id = Object.keys(chatSources)[0] ?? null
+      setPrimaryChatSourceId(id)
+      if (id) {
+        setPrimaryChatSourceMentionsChannel(chatSources[id]?.mentionsChannelLabel ?? null)
+        const label = config?.connectionPlatforms?.find((p: { id: string; label: string }) => p.id === id)?.label ?? id
+        setPrimaryChatSourceDisplayLabel(label)
+      } else {
+        setPrimaryChatSourceMentionsChannel(null)
+        setPrimaryChatSourceDisplayLabel(null)
+      }
+    }).catch(() => {})
+  }, [])
+
   // Load settings on mount
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -2049,7 +2080,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     mutedUsers: Array.isArray(settings.mutedUsers) ? cleanupExpiredMutes(settings.mutedUsers) : [],
     keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
     theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
-    channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+    channels: settings.channels ?? { kick: { enabled: false, channelSlug: undefined } },
     footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
   }))
   
@@ -2057,7 +2088,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
   const [settingsTab, setSettingsTab] = useState<'filtering' | 'banned' | 'channels' | 'footer' | 'keybinds'>('filtering')
   
   const { filter, showNSFW, showNSFL, showNonLinks, bannedTerms, bannedUsers, bannedLinks, bannedMessages, platformSettings, linkOpenAction, trustedUsers, mutedUsers, footerDisplay } = settings
-  const dggEnabled = settings.channels?.dgg?.enabled !== false
+  const primaryChatEnabled = primaryChatSourceId != null && (settings.channels?.[primaryChatSourceId]?.enabled !== false)
 
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -2139,7 +2170,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         mutedUsers: Array.isArray(settings.mutedUsers) ? settings.mutedUsers : [],
         keybinds: Array.isArray(settings.keybinds) ? settings.keybinds : settings.keybinds || [],
         theme: settings.theme || { mode: 'system', lightTheme: 'retro', darkTheme: 'business', embedTheme: 'follow' },
-        channels: settings.channels ?? { dgg: { enabled: true }, kick: { enabled: false, channelSlug: undefined } },
+        channels: settings.channels ?? { kick: { enabled: false, channelSlug: undefined } },
         footerDisplay: settings.footerDisplay ?? { showPlatformLabel: true, platformColorStyle: 'tint', timestampDisplay: 'datetimestamp' },
       })
     }
@@ -2359,14 +2390,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     const fetchEmotes = async () => {
       try {
         const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
-        const dgg = config?.dgg ?? {
-          emotesCssUrl: 'https://cdn.destiny.gg/emotes/emotes.css',
-          emotesJsonUrl: 'https://cdn.destiny.gg/emotes/emotes.json',
-        }
+        const chatSources = config?.chatSources ?? {}
+        const primaryId = Object.keys(chatSources)[0]
+        const primary = primaryId ? chatSources[primaryId] : undefined
+        if (!primary?.emotesJsonUrl || !primary?.emotesCssUrl) return
         const cacheKey = Date.now()
-        const cssUrl = `${dgg.emotesCssUrl}?_=${cacheKey}`
-        await loadCSSOnce(cssUrl, 'destiny-emotes-css')
-        const response = await fetch(`${dgg.emotesJsonUrl}?_=${cacheKey}`, { cache: 'no-store' })
+        const cssUrl = `${primary.emotesCssUrl}?_=${cacheKey}`
+        await loadCSSOnce(cssUrl, 'primary-chat-emotes-css')
+        const response = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, { cache: 'no-store' })
         if (!response.ok) {
           throw new Error(`Failed to fetch emotes: ${response.status}`)
         }
@@ -2394,12 +2425,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
   const SIZE = 150
 
-  const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false, dggEnabledFlag: boolean = true) => {
+  const fetchMentions = useCallback(async (filterTerms: string[], currentOffset: number, append: boolean = false, primaryChatEnabledFlag: boolean = true) => {
     if (fetchInProgressRef.current) {
       logger.api('fetchMentions: Another fetch already in progress, skipping duplicate call')
       return
     }
-    if (!dggEnabledFlag) {
+    if (!primaryChatEnabledFlag) {
       setLoading(false)
       setLoadingMore(false)
       if (!append) setMentions([])
@@ -2434,8 +2465,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         const rustleResult = await window.ipcRenderer.invoke('fetch-rustlesearch', [], append ? rustlesearchSearchAfter : undefined, SIZE)
         if (rustleResult.success && Array.isArray(rustleResult.data)) {
           const rustleData = rustleResult.data as MentionData[]
-          const platform = 'dgg'
-          const channel = 'Destinygg'
+          const platform = primaryChatSourceId ?? ''
+          const channel = primaryChatSourceMentionsChannel ?? primaryChatSourceId ?? ''
           const mergedData = rustleData.map(m => ({
             ...m,
             id: messageId(platform, channel, m.date, m.nick),
@@ -2547,8 +2578,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             logger.api(`  Date range for "${term}": ${new Date(oldest.date).toISOString()} (oldest) to ${new Date(newest.date).toISOString()} (newest)`)
           }
           
-          const platform = 'dgg'
-          const channel = 'Destinygg'
+          const platform = primaryChatSourceId ?? ''
+          const channel = primaryChatSourceMentionsChannel ?? primaryChatSourceId ?? ''
           termData.forEach(mention => {
             const matchesAsWord = filterTermMatchesAsWord(mention.text, term)
             if (!matchesAsWord) return
@@ -2599,8 +2630,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               logger.api(`First rustlesearch message: date=${new Date(rustleData[0].date).toISOString()}, nick=${rustleData[0].nick}, text=${rustleData[0].text.substring(0, 50)}...`)
             }
             
-            const platform = 'dgg'
-            const channel = 'Destinygg'
+            const platform = primaryChatSourceId ?? ''
+            const channel = primaryChatSourceMentionsChannel ?? primaryChatSourceId ?? ''
             mergedData = rustleData.map(m => ({
               ...m,
               id: messageId(platform, channel, m.date, m.nick),
@@ -2844,17 +2875,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
 
   // Fetch: with filter terms wait for WebSocket history then use mentions API; with no terms use Rustlesearch only
   useEffect(() => {
-    if (!dggEnabled) return
+    if (!primaryChatEnabled) return
     const hasTerms = filter && filter.length > 0
     if (hasTerms && !websocketHistoryReceived) return
     if (hasTerms) logger.api('WebSocket history received, now fetching mentions API')
     else logger.api('No filter terms, fetching channel history via Rustlesearch')
-    fetchMentions(filter || [], 0, false, dggEnabled)
-  }, [filter, fetchMentions, websocketHistoryReceived, dggEnabled])
+    fetchMentions(filter || [], 0, false, primaryChatEnabled)
+  }, [filter, fetchMentions, websocketHistoryReceived, primaryChatEnabled])
 
   // WebSocket connection for streaming messages
   useEffect(() => {
-    if (!dggEnabled) {
+    if (!primaryChatEnabled) {
       setWebsocketHistoryReceived(true)
       return
     }
@@ -2880,12 +2911,12 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
     })
 
-    // Listen for WebSocket messages (d.gg)
+    // Listen for WebSocket messages (primary chat source)
     const handleMessage = (_event: any, data: { type: 'MSG'; message: any }) => {
       if (data.type === 'MSG' && data.message) {
         const chatMsg = data.message
-        const platform = 'dgg'
-        const channel = 'Destinygg'
+        const platform = primaryChatSourceId ?? ''
+        const channel = primaryChatSourceMentionsChannel ?? primaryChatSourceId ?? ''
         const date = chatMsg.timestamp
         const nick = chatMsg.nick
         const mention: MentionData = {
@@ -2933,8 +2964,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         // Convert and filter history messages
         const filteredMentions: MentionData[] = []
         
-        const platform = 'dgg'
-        const channel = 'Destinygg'
+        const platform = primaryChatSourceId ?? ''
+        const channel = primaryChatSourceMentionsChannel ?? primaryChatSourceId ?? ''
         history.messages.forEach(chatMsg => {
           const date = chatMsg.timestamp
           const nick = chatMsg.nick
@@ -3046,7 +3077,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         websocketHistoryTimeoutRef.current = null
       }
     }
-  }, [filter, websocketHistoryReceived, dggEnabled])
+  }, [filter, websocketHistoryReceived, primaryChatEnabled])
 
   // Kick channel: set targets and listen for messages when Kick is enabled
   const kickEnabled = !!settings.channels?.kick?.enabled
@@ -3105,24 +3136,24 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [kickEnabled, kickSlug, filter])
 
-  // Handle load more button click (only when d.gg enabled; Kick has no long history)
+  // Handle load more button click (only when primary chat enabled; Kick has no long history)
   const handleLoadMore = useCallback(() => {
-    if (!dggEnabled || loadingMore || !hasMore || loading) return
-    fetchMentions(filter, offset, true, dggEnabled)
-  }, [dggEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
+    if (!primaryChatEnabled || loadingMore || !hasMore || loading) return
+    fetchMentions(filter, offset, true, primaryChatEnabled)
+  }, [primaryChatEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
   // Dedicated scroll container for overview mode (so scrolling keeps working even if <body> is locked)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
   const handleScroll = useCallback(() => {
-    if (!dggEnabled || loadingMore || !hasMore || loading) return
+    if (!primaryChatEnabled || loadingMore || !hasMore || loading) return
     const el = scrollContainerRef.current
     if (!el) return
     const { scrollTop, scrollHeight, clientHeight } = el
     if (scrollHeight - scrollTop - clientHeight < 200) {
-      fetchMentions(filter, offset, true, dggEnabled)
+      fetchMentions(filter, offset, true, primaryChatEnabled)
     }
-  }, [dggEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
+  }, [primaryChatEnabled, filter, offset, loadingMore, hasMore, loading, fetchMentions])
 
   useEffect(() => {
     const el = scrollContainerRef.current
@@ -3163,7 +3194,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
 
       // Filter out banned users
-      if (isBannedUser(mention.nick, mention.platform ?? 'dgg', bannedUsers)) {
+      if (isBannedUser(mention.nick, mention.platform ?? primaryChatSourceId ?? '', bannedUsers)) {
         return
       }
 
@@ -3228,7 +3259,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           const uniqueId = `${mention.id}-${urlIndex}-${urlHash}-${url.slice(-20)}`
           
           // Check if user is trusted
-          const isTrusted = isTrustedUser(mention.nick, mention.platform ?? 'dgg', trustedUsers)
+          const isTrusted = isTrustedUser(mention.nick, mention.platform ?? primaryChatSourceId ?? '', trustedUsers)
           
           // Check if we have a cached card with the same data
           const cachedCard = cardCacheRef.current.get(uniqueId)
@@ -3283,7 +3314,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         // If no URLs and showNonLinks is enabled, create a card for the message
         // Use mention.id (date-nick) for stable ID
         const uniqueId = `${mention.id}-no-link`
-        const isTrusted = isTrustedUser(mention.nick, mention.platform ?? 'dgg', trustedUsers)
+        const isTrusted = isTrustedUser(mention.nick, mention.platform ?? primaryChatSourceId ?? '', trustedUsers)
         
         const cardData = {
           id: uniqueId,
@@ -3418,10 +3449,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     if (direction === 'next') {
       // If we're at the end, try to load more
       if (highlightedIndex === linkCards.length - 1) {
-        if (hasMore && dggEnabled && !loadingMore && !loading) {
+        if (hasMore && primaryChatEnabled && !loadingMore && !loading) {
           logger.api('At end of list, loading more mentions...')
           waitingForMoreRef.current = true
-          await fetchMentions(filter, offset, true, dggEnabled)
+          await fetchMentions(filter, offset, true, primaryChatEnabled)
           // The useEffect below will handle advancing to the next card after loading
         } else {
           // No more to load or already loading, loop around to beginning
@@ -3446,14 +3477,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         setHasMore(true)
         setLoading(true)
         setError(null)
-        await fetchMentions(filter, 0, false, dggEnabled)
+        await fetchMentions(filter, 0, false, primaryChatEnabled)
         // The useEffect below will handle highlighting the first card after refresh
       } else {
         // Not at beginning, just move to previous
         setHighlightedCardId(linkCards[highlightedIndex - 1].id)
       }
     }
-  }, [highlightedIndex, linkCards, hasMore, dggEnabled, loadingMore, loading, filter, offset, fetchMentions])
+  }, [highlightedIndex, linkCards, hasMore, primaryChatEnabled, loadingMore, loading, filter, offset, fetchMentions])
 
   // Auto-advance to next card after loading more content when at the end
   useEffect(() => {
@@ -3533,7 +3564,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
     
     logger.api(`State reset, calling fetchMentions with filter="${filter}", offset=0`)
-    fetchMentions(filter, 0, false, dggEnabled)
+    fetchMentions(filter, 0, false, primaryChatEnabled)
   }, [filter, fetchMentions, mentions.length, offset, hasMore, highlightedCardId, settings])
 
   // Helper function to navigate in overview modal
@@ -3765,14 +3796,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 <label className="label">
                   <span className="label-text font-semibold">Banned Users</span>
                 </label>
-                <p className="text-xs text-base-content/70 mb-2">Messages from these users will be filtered out. Bans are per platform (d.gg vs Kick).</p>
+                <p className="text-xs text-base-content/70 mb-2">Messages from these users will be filtered out. Bans are per platform (e.g. primary chat, Kick).</p>
                 <div className="flex gap-2 mb-2 flex-wrap">
                   <select
                     className="select select-bordered select-sm w-24"
                     id="banned-user-platform"
-                    defaultValue="dgg"
+                    defaultValue={primaryChatSourceId ?? 'kick'}
                   >
-                    <option value="dgg">d.gg</option>
+                    {primaryChatSourceId != null && <option value={primaryChatSourceId}>{primaryChatSourceDisplayLabel ?? primaryChatSourceId}</option>}
                     <option value="kick">Kick</option>
                   </select>
                   <input
@@ -3784,7 +3815,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       if (e.key === 'Enter') {
                         e.preventDefault()
                         const nick = (e.target as HTMLInputElement).value.trim()
-                        const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                        const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || (primaryChatSourceId ?? 'kick')
                         if (nick) {
                           const entry = formatPlatformUser(platform, nick)
                           const current = tempSettings.bannedUsers || []
@@ -3801,7 +3832,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     className="btn btn-sm btn-primary"
                     onClick={() => {
                       const nick = (document.getElementById('banned-user-nick') as HTMLInputElement)?.value?.trim()
-                      const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                      const platform = (document.getElementById('banned-user-platform') as HTMLSelectElement)?.value || (primaryChatSourceId ?? 'kick')
                       if (nick) {
                         const entry = formatPlatformUser(platform, nick)
                         const current = tempSettings.bannedUsers || []
@@ -3838,10 +3869,10 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     <img src={bennyLovePng} alt="" className="w-12 h-12 object-contain" />
                   </span>
                 </label>
-                <p className="text-xs text-base-content/70 mb-2">Cards from these users will have a golden outline. Trust is per platform (d.gg vs Kick).</p>
+                <p className="text-xs text-base-content/70 mb-2">Cards from these users will have a golden outline. Trust is per platform (e.g. primary chat, Kick).</p>
                 <div className="flex gap-2 mb-2 flex-wrap">
-                  <select className="select select-bordered select-sm w-24" id="trusted-user-platform" defaultValue="dgg">
-                    <option value="dgg">d.gg</option>
+                  <select className="select select-bordered select-sm w-24" id="trusted-user-platform" defaultValue={primaryChatSourceId ?? 'kick'}>
+                    {primaryChatSourceId != null && <option value={primaryChatSourceId}>{primaryChatSourceDisplayLabel ?? primaryChatSourceId}</option>}
                     <option value="kick">Kick</option>
                   </select>
                   <input
@@ -3853,7 +3884,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       if (e.key === 'Enter') {
                         e.preventDefault()
                         const nick = (e.target as HTMLInputElement).value.trim()
-                        const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                        const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || (primaryChatSourceId ?? 'kick')
                         if (nick) {
                           const entry = formatPlatformUser(platform, nick)
                           const current = tempSettings.trustedUsers || []
@@ -3870,7 +3901,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                     className="btn btn-sm btn-primary"
                     onClick={() => {
                       const nick = (document.getElementById('trusted-user-nick') as HTMLInputElement)?.value?.trim()
-                      const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || 'dgg'
+                      const platform = (document.getElementById('trusted-user-platform') as HTMLSelectElement)?.value || (primaryChatSourceId ?? 'kick')
                       if (nick) {
                         const entry = formatPlatformUser(platform, nick)
                         const current = tempSettings.trustedUsers || []
@@ -4053,7 +4084,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       footerDisplay: { ...tempSettings.footerDisplay, showPlatformLabel: e.target.checked, platformColorStyle: tempSettings.footerDisplay?.platformColorStyle ?? 'tint' },
                     })}
                   />
-                  <span className="label-text">Show platform label (e.g. d.gg, Kick • channel)</span>
+                  <span className="label-text">Show platform label (e.g. primary chat, Kick • channel)</span>
                 </label>
                 <div className="form-control gap-1 mt-2">
                   <span className="label-text">Platform color</span>
@@ -4131,26 +4162,28 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           {/* Channels tab: where to fetch incoming messages */}
           {settingsTab === 'channels' && (
             <div className="space-y-4">
+              {primaryChatSourceId != null && (
               <div className="border border-base-300 rounded-lg p-4">
-                <div className="font-semibold mb-2">Destiny.gg (d.gg)</div>
+                <div className="font-semibold mb-2">{primaryChatSourceDisplayLabel ?? 'Primary chat'}</div>
                 <label className="label cursor-pointer justify-start gap-2">
                   <input
                     type="checkbox"
                     className="checkbox checkbox-primary"
-                    checked={tempSettings.channels?.dgg?.enabled !== false}
+                    checked={tempSettings.channels?.[primaryChatSourceId]?.enabled !== false}
                     onChange={(e) => setTempSettings({
                       ...tempSettings,
                       channels: {
                         ...tempSettings.channels,
-                        dgg: { enabled: e.target.checked },
+                        [primaryChatSourceId]: { enabled: e.target.checked },
                         kick: tempSettings.channels?.kick ?? { enabled: false, channelSlug: undefined },
                       },
                     })}
                   />
-                  <span className="label-text">Enable d.gg (polecat, rustlesearch, chat history)</span>
+                  <span className="label-text">Enable {primaryChatSourceDisplayLabel ?? primaryChatSourceId} (mentions, rustlesearch, chat history)</span>
                 </label>
-                <p className="text-xs text-base-content/60 mt-1">Filter terms apply to all enabled channels (d.gg, Kick, etc.).</p>
+                <p className="text-xs text-base-content/60 mt-1">Filter terms apply to all enabled channels.</p>
               </div>
+              )}
               <div className="border border-base-300 rounded-lg p-4">
                 <div className="font-semibold mb-2">Kick</div>
                 <label className="label cursor-pointer justify-start gap-2">
@@ -4162,7 +4195,7 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                       ...tempSettings,
                       channels: {
                         ...tempSettings.channels,
-                        dgg: tempSettings.channels?.dgg ?? { enabled: true },
+                        ...(primaryChatSourceId ? { [primaryChatSourceId]: tempSettings.channels?.[primaryChatSourceId] ?? { enabled: true } } : {}),
                         kick: { enabled: e.target.checked, channelSlug: tempSettings.channels?.kick?.channelSlug ?? '' },
                       },
                     })}
@@ -4174,18 +4207,18 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   <input
                     type="text"
                     className="input input-bordered input-sm w-full max-w-xs"
-                    placeholder="e.g. destiny"
+                    placeholder="e.g. streamer"
                     value={tempSettings.channels?.kick?.channelSlug ?? ''}
                     onChange={(e) => setTempSettings({
                       ...tempSettings,
                       channels: {
                         ...tempSettings.channels,
-                        dgg: tempSettings.channels?.dgg ?? { enabled: true },
+                        ...(primaryChatSourceId ? { [primaryChatSourceId]: tempSettings.channels?.[primaryChatSourceId] ?? { enabled: true } } : {}),
                         kick: { enabled: !!tempSettings.channels?.kick?.enabled, channelSlug: e.target.value.trim() || undefined },
                       },
                     })}
                   />
-                  <span className="label-text-alt">Kick channel URL slug (e.g. destiny for kick.com/destiny)</span>
+                  <span className="label-text-alt">Kick channel URL slug (e.g. streamer for kick.com/streamer)</span>
                 </div>
               </div>
             </div>
@@ -4524,21 +4557,21 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   }
                 </p>
               </div>
-              <div className={`flex items-center gap-4 pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(highlightedCard.platform, footerDisplay?.platformColorStyle)}`}>
+              <div className={`flex items-center gap-4 pt-1 px-3 pb-3 -mx-3 -mb-3 border-t border-base-content/20 rounded-b-lg ${getPlatformFooterColor(highlightedCard.platform, footerDisplay?.platformColorStyle, primaryChatSourceId)}`}>
                 <div>
-                  {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(highlightedCard) && (
-                    <span className="text-xs text-base-content/50 mr-2">{getPlatformLabel(highlightedCard)}</span>
+                  {footerDisplay?.showPlatformLabel !== false && getPlatformLabel(highlightedCard, primaryChatSourceId, primaryChatSourceDisplayLabel) && (
+                    <span className="text-xs text-base-content/50 mr-2">{getPlatformLabel(highlightedCard, primaryChatSourceId, primaryChatSourceDisplayLabel)}</span>
                   )}
                   <span className="text-xs text-base-content/70">Posted by</span>
                   <a
-                    href={highlightedCard.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || 'Destinygg')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : '#')}
+                    href={highlightedCard.platform === primaryChatSourceId ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || primaryChatSourceMentionsChannel || primaryChatSourceId || '')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : '#')}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="ml-2 text-sm font-bold text-primary hover:underline"
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      const url = highlightedCard.platform === 'dgg' ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || 'Destinygg')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : highlightedCard.url || '#')
+                      const url = highlightedCard.platform === primaryChatSourceId ? `https://rustlesearch.dev/?username=${encodeURIComponent(highlightedCard.nick)}&channel=${encodeURIComponent(highlightedCard.channel || primaryChatSourceMentionsChannel || primaryChatSourceId || '')}` : (highlightedCard.platform === 'kick' ? `https://kick.com/${encodeURIComponent(highlightedCard.channel || '')}` : highlightedCard.url || '#')
                       handleOpenLink(url)
                     }}
                   >
@@ -4607,8 +4640,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
               ))}
             </div>
             
-            {/* Load More button in sidebar (only when d.gg is enabled; Kick has no long history) */}
-            {hasMore && dggEnabled && (
+            {/* Load More button in sidebar (only when primary chat is enabled; Kick has no long history) */}
+            {hasMore && primaryChatEnabled && (
               <div className="mt-4 flex justify-center">
                 <button
                   onClick={handleLoadMore}
@@ -4630,14 +4663,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 </button>
               </div>
             )}
-            {(!hasMore || !dggEnabled) && linkCards.length > 0 && (
+            {(!hasMore || !primaryChatEnabled) && linkCards.length > 0 && (
               <div className="mt-4 text-center">
                 <img 
                   src={manHoldsCatPng} 
                   alt="No more links" 
                   className="mx-auto max-w-xs mb-2"
                 />
-                <p className="text-xs text-base-content/50">{dggEnabled ? 'No more links to load' : 'Load more only available with d.gg enabled'}</p>
+                <p className="text-xs text-base-content/50">{primaryChatEnabled ? 'No more links to load' : 'Load more only available with primary chat enabled'}</p>
               </div>
             )}
           </div>
@@ -4718,25 +4751,25 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Username
             </button>
-            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', bannedUsers) && (
+            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? primaryChatSourceId ?? '', bannedUsers) && (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Ban User
               </button>
             )}
-            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', trustedUsers) ? (
+            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? primaryChatSourceId ?? '', trustedUsers) ? (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Trust User
               </button>
             ) : (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Untrust User
               </button>
@@ -4935,6 +4968,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 onContextMenu={handleContextMenu}
                 stackDirection="up"
                 footerDisplay={footerDisplay}
+                primaryChatSourceId={primaryChatSourceId}
+                primaryChatSourceDisplayLabel={primaryChatSourceDisplayLabel}
+                primaryChatSourceMentionsChannel={primaryChatSourceMentionsChannel}
               />
             </div>
           )}
@@ -4965,14 +5001,17 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                 onContextMenu={handleContextMenu}
                 stackDirection="down"
                 footerDisplay={footerDisplay}
+                primaryChatSourceId={primaryChatSourceId}
+                primaryChatSourceDisplayLabel={primaryChatSourceDisplayLabel}
+                primaryChatSourceMentionsChannel={primaryChatSourceMentionsChannel}
               />
             </div>
             )}
         </>
       )}
       
-      {/* Load More button (only when d.gg is enabled; Kick has no long history) */}
-      {!loading && hasMore && dggEnabled && (
+      {/* Load More button (only when primary chat is enabled; Kick has no long history) */}
+      {!loading && hasMore && primaryChatEnabled && (
         <div className="flex justify-center py-8">
           <button
             onClick={handleLoadMore}
@@ -4994,14 +5033,14 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
           </button>
         </div>
       )}
-      {!loading && (!hasMore || !dggEnabled) && linkCards.length > 0 && (
+      {!loading && (!hasMore || !primaryChatEnabled) && linkCards.length > 0 && (
         <div className="text-center py-8">
           <img 
             src={manHoldsCatPng} 
             alt="No more links" 
             className="mx-auto max-w-xs mb-4"
           />
-          <p className="text-base-content/70">{dggEnabled ? 'No more links to load' : 'Load more only available with d.gg enabled'}</p>
+          <p className="text-base-content/70">{primaryChatEnabled ? 'No more links to load' : 'Load more only available with primary chat enabled'}</p>
         </div>
       )}
 
@@ -5230,25 +5269,25 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
             >
               Copy Username
             </button>
-            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', bannedUsers) && (
+            {!isBannedUser(contextMenu.card.nick, contextMenu.card.platform ?? primaryChatSourceId ?? '', bannedUsers) && (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleBanUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Ban User
               </button>
             )}
-            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? 'dgg', trustedUsers) ? (
+            {!isTrustedUser(contextMenu.card.nick, contextMenu.card.platform ?? primaryChatSourceId ?? '', trustedUsers) ? (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleTrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Trust User
               </button>
             ) : (
               <button
                 className="w-full text-left px-3 py-2 hover:bg-base-300 rounded text-sm"
-                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? 'dgg')}
+                onClick={() => handleUntrustUser(contextMenu.card!.nick, contextMenu.card!.platform ?? primaryChatSourceId ?? '')}
               >
                 Untrust User
               </button>

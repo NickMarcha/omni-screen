@@ -271,8 +271,8 @@ export type ChatWebSocketEvent =
   | ChatBroadcastEvent
   | { type: 'MSG'; message: ChatMessage }
 
-/** Default origin when not provided (e.g. from env config). */
-const DEFAULT_ORIGIN = 'https://www.destiny.gg'
+/** Default origin when not provided (e.g. from env config). Redacted; actual origin comes from chat source extension. */
+const DEFAULT_ORIGIN = 'https://redacted'
 
 /** Optional collect for HISTORY: handlers for MSG/BROADCAST push into these arrays when provided. */
 export type ChatMessageHandler = (
@@ -630,7 +630,7 @@ export class ChatWebSocket extends EventEmitter {
   private connectionHeaders: Record<string, string> | null = null
 
   constructor(
-    url: string = 'wss://chat.destiny.gg/ws',
+    url: string = 'wss://redacted/ws',
     private readonly origin: string = DEFAULT_ORIGIN
   ) {
     super()

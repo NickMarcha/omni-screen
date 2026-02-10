@@ -3,6 +3,9 @@
   "appId": "com.nickmarcha.omni-screen",
   "asar": true,
   "productName": "Omni Screen",
+  "protocols": [
+    { "name": "Omni Chat", "schemes": ["omnichat"] }
+  ],
   "directories": {
     "output": "release/${version}",
     "buildResources": "build"

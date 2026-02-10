@@ -48,7 +48,7 @@ function buildHandleUrl(input: string): string {
 }
 
 /**
- * Whether the input is a YouTube channel page URL we can resolve by fetching (e.g. /destiny, /c/foo, /user/foo).
+ * Whether the input is a YouTube channel page URL we can resolve by fetching (e.g. /channel-slug, /c/foo, /user/foo).
  * Excludes /watch (video) and paths that are already handled by extractChannelIdFromUrl or isHandleUrl.
  */
 function isYouTubeChannelPageUrl(input: string): boolean {
@@ -73,7 +73,7 @@ function isYouTubeChannelPageUrl(input: string): boolean {
   }
 }
 
-/** Build full URL for a YouTube channel page (custom /destiny, /c/foo, /user/foo, or bare "destiny"). */
+/** Build full URL for a YouTube channel page (custom /slug, /c/foo, /user/foo, or bare slug). */
 function buildChannelPageUrl(input: string): string {
   const s = input.trim()
   if (s.startsWith('http://') || s.startsWith('https://')) return s
@@ -81,7 +81,7 @@ function buildChannelPageUrl(input: string): string {
   return `https://www.youtube.com/${path}`
 }
 
-/** Bare slug (e.g. "destiny") that we can turn into youtube.com/destiny. */
+/** Bare slug (e.g. channel name) that we can turn into youtube.com/slug. */
 function isBareChannelSlug(input: string): boolean {
   const s = input.trim()
   if (!s || s.length > 80) return false
@@ -306,7 +306,7 @@ export interface YouTubeLiveOrLatestError {
 
 /**
  * Normalize input so we never resolve the wrong channel.
- * - youtube.com/destiny (custom URL) can point to a different channel than @destiny (handle).
+ * - youtube.com/slug (custom URL) can point to a different channel than @handle (handle).
  * - Rewrite any single-segment path to @handle so we always get the handle's channel.
  * No shortcuts: we do not fall back to the custom URL.
  * Exported so main process can normalize at IPC boundary.
@@ -331,7 +331,7 @@ export function normalizeYouTubeChannelInput(input: string): string {
 
 /**
  * Exact flow (your manual steps, no shortcuts):
- * 1. Normalize input so /destiny -> @destiny (we never use custom URL for resolution).
+ * 1. Normalize input so /slug -> @slug (we never use custom URL for resolution).
  * 2. Resolve to channel ID by fetching the channel page and getting channel_id from the page.
  * 3. Build general RSS URL from that: feeds/videos.xml?channel_id=UC...
  * 4. Build live playlist URL from that: feeds/videos.xml?playlist_id=UULV... (extracted from above).

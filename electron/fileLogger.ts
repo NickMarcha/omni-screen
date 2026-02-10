@@ -64,6 +64,32 @@ class FileLogger {
   }
 
   /**
+   * Write session header (platform/env info, same as title bar "Copy system info") at start of main log.
+   */
+  private writeSessionHeader(iso: string) {
+    if (!this.logStream) return
+    try {
+      const execPath = process.execPath || app.getPath('exe')
+      const lines = [
+        '=== Session (equivalent to title bar Copy system info) ===',
+        `App: Omni Screen ${app.getVersion()}`,
+        `Packaged: ${app.isPackaged}`,
+        `Platform: ${process.platform}`,
+        `Arch: ${process.arch}`,
+        `Exec path: ${execPath}`,
+        `Electron: ${process.versions.electron}`,
+        `Chrome: ${process.versions.chrome}`,
+        `Node: ${process.versions.node}`,
+      ]
+      for (const line of lines) {
+        this.logStream.write(`[${iso}] [INFO] [MAIN] [Session] ${line}\n`)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
    * Initialize log files for this session.
    * Creates only the general log file. Errors-only file is created on first error (like ws-discrepancies).
    */
@@ -80,6 +106,7 @@ class FileLogger {
       this.logStream = fs.createWriteStream(this.logFilePath, { flags: 'a' })
       this.logStream.write(`[${iso}] [INFO] [MAIN] === Application Session Started ===\n`)
       this.logStream.write(`[${iso}] [INFO] [MAIN] [FileLogger] Log file: ${filename} (errors file created only if an error is logged)\n`)
+      this.writeSessionHeader(iso)
 
       return this.logFilePath
     } catch (error) {
@@ -209,7 +236,7 @@ class FileLogger {
   }
 
   /**
-   * Write a log entry to file(s).
+   * Write a log entry to file(s). One line per entry for easy searching (args serialized as single-line JSON).
    * - info, warn, debug → general log only (app-*.log)
    * - error → both general log and errors-only log (app-*-errors.log)
    */
@@ -223,9 +250,11 @@ class FileLogger {
       if (args.length > 0) {
         try {
           const argsStr = args.map(arg =>
-            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
           ).join(' ')
-          logLine += ` ${argsStr}`
+          // Keep one line per entry: collapse newlines (do not collapse spaces inside JSON)
+          const oneLine = argsStr.replace(/\n+/g, ' ').trim()
+          if (oneLine) logLine += ` ${oneLine}`
         } catch {
           logLine += ` [Error serializing args]`
         }
