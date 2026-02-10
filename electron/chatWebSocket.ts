@@ -274,6 +274,340 @@ export type ChatWebSocketEvent =
 /** Default origin when not provided (e.g. from env config). */
 const DEFAULT_ORIGIN = 'https://www.destiny.gg'
 
+/** Optional collect for HISTORY: handlers for MSG/BROADCAST push into these arrays when provided. */
+export type ChatMessageHandler = (
+  ws: ChatWebSocket,
+  message: string,
+  collect?: { messages: ChatMessage[]; items: ChatHistoryItem[] }
+) => void
+
+/** Map of chat message type token (first word) to handler. Single source of truth: if type is in map we run it, else we log discrepancy. */
+function createChatHandlers(): Record<string, ChatMessageHandler> {
+  const h: Record<string, ChatMessageHandler> = {}
+
+  h.MSG = (ws, message, collect) => {
+    try {
+      const msgData = JSON.parse(message.substring(4)) as ChatMessage
+      ws.emit('message', { type: 'MSG', message: msgData })
+      if (collect) {
+        collect.messages.push(msgData)
+        collect.items.push({ type: 'MSG', message: msgData })
+      }
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse MSG:', e, 'Message:', message.substring(0, 100))
+      fileLogger.writeWsDiscrepancy('chat', 'msg_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.PRIVMSG = (ws, message) => {
+    try {
+      const privmsgData = JSON.parse(message.substring(8)) as ChatPrivMsg
+      ws.emit('privmsg', { type: 'PRIVMSG', privmsg: privmsgData } as ChatPrivMsgEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse PRIVMSG:', e, 'Message:', message.substring(0, 100))
+      fileLogger.writeWsDiscrepancy('chat', 'privmsg_parse_error', { preview: message.substring(0, 500), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.JOIN = (ws, message) => {
+    try {
+      const userData = JSON.parse(message.substring(5)) as ChatMessage
+      ws.emit('userEvent', { type: 'JOIN', user: userData } as ChatUserEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse JOIN:', e, 'Message:', message.substring(0, 100))
+      fileLogger.writeWsDiscrepancy('chat', 'join_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.QUIT = (ws, message) => {
+    try {
+      const userData = JSON.parse(message.substring(5)) as ChatMessage
+      ws.emit('userEvent', { type: 'QUIT', user: userData } as ChatUserEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse QUIT:', e, 'Message:', message.substring(0, 100))
+      fileLogger.writeWsDiscrepancy('chat', 'quit_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.UPDATEUSER = (ws, message) => {
+    try {
+      const jsonPart = message.substring(11).trim()
+      if (!jsonPart || jsonPart.length === 0) {
+        console.error('[ChatWebSocket] UPDATEUSER has empty JSON part. Full message length:', message.length)
+        return
+      }
+      const userData = JSON.parse(jsonPart) as ChatMessage
+      ws.emit('userEvent', { type: 'UPDATEUSER', user: userData } as ChatUserEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse UPDATEUSER:', e)
+      fileLogger.writeWsDiscrepancy('chat', 'updateuser_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.PAIDEVENTS = (ws, message) => {
+    try {
+      let eventsData: any[] = []
+      const jsonPart = message.startsWith('PAIDEVENTS ') ? message.substring(11).trim() : message.substring(10).trim()
+      if (jsonPart && jsonPart.length > 0) eventsData = JSON.parse(jsonPart) as any[]
+      ws.emit('paidEvents', { type: 'PAIDEVENTS', events: eventsData } as ChatPaidEvents)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse PAIDEVENTS:', e)
+    }
+  }
+
+  h.PIN = (ws, message) => {
+    try {
+      const pinData = JSON.parse(message.substring(4)) as ChatPinMessage
+      ws.emit('pin', { type: 'PIN', pin: pinData } as ChatPin)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse PIN:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.NAMES = (ws, message) => {
+    try {
+      const namesData = JSON.parse(message.substring(6))
+      ws.emit('names', { type: 'NAMES', names: namesData } as ChatNames)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse NAMES:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.MUTE = (ws, message) => {
+    try {
+      const muteData = JSON.parse(message.substring(5))
+      ws.emit('mute', { type: 'MUTE', mute: muteData } as ChatMute)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse MUTE:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.UNMUTE = (ws, message) => {
+    try {
+      const unmuteData = JSON.parse(message.substring(7)) as ChatMessage
+      ws.emit('unmute', { type: 'UNMUTE', unmute: unmuteData } as ChatUnmute)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse UNMUTE:', e, 'Message:', message.substring(0, 100))
+      fileLogger.writeWsDiscrepancy('chat', 'unmute_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.ME = (ws, message) => {
+    try {
+      const meData = message.substring(3).trim()
+      const parsedData = meData === 'null' ? null : JSON.parse(meData)
+      ws.emit('me', { type: 'ME', data: parsedData } as ChatMe)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse ME:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.POLLSTART = (ws, message) => {
+    try {
+      const pollData = JSON.parse(message.substring(10))
+      ws.emit('pollStart', { type: 'POLLSTART', poll: pollData } as ChatPollStart)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse POLLSTART:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.VOTECAST = (ws, message) => {
+    try {
+      const voteData = JSON.parse(message.substring(9))
+      ws.emit('voteCast', { type: 'VOTECAST', vote: voteData } as ChatVoteCast)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse VOTECAST:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.POLLSTOP = (ws, message) => {
+    try {
+      const pollData = JSON.parse(message.substring(9))
+      ws.emit('pollStop', { type: 'POLLSTOP', poll: pollData } as ChatPollStop)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse POLLSTOP:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.VOTECOUNTED = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(12)) as { vote?: string }
+      ws.emit('voteCounted', { vote: data?.vote ?? '' })
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse VOTECOUNTED:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.ERR = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(4)) as { description?: string }
+      if (data?.description === 'alreadyvoted' || data?.description) ws.emit('pollVoteError', { description: data.description })
+      if (data?.description) ws.emit('chatErr', { description: data.description })
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse ERR:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.DEATH = (ws, message) => {
+    try {
+      const deathData = JSON.parse(message.substring(6)) as ChatDeathMessage
+      ws.emit('death', { type: 'DEATH', death: deathData } as ChatDeathEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse DEATH:', e, 'Message:', message.substring(0, 120))
+      fileLogger.writeWsDiscrepancy('chat', 'death_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.UNBAN = (ws, message) => {
+    try {
+      const unbanData = JSON.parse(message.substring(6)) as ChatMessage
+      ws.emit('unban', { type: 'UNBAN', unban: unbanData } as ChatUnbanEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse UNBAN:', e, 'Message:', message.substring(0, 120))
+      fileLogger.writeWsDiscrepancy('chat', 'unban_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.SUBSCRIPTION = (ws, message) => {
+    try {
+      const subData = JSON.parse(message.substring(13)) as ChatSubscriptionEvent['subscription']
+      ws.emit('subscription', { type: 'SUBSCRIPTION', subscription: subData } as ChatSubscriptionEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse SUBSCRIPTION:', e, 'Message:', message.substring(0, 120))
+      fileLogger.writeWsDiscrepancy('chat', 'subscription_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.BROADCAST = (ws, message, collect) => {
+    try {
+      const broadcastData = JSON.parse(message.substring(10)) as ChatBroadcastEvent['broadcast']
+      if (collect) collect.items.push({ type: 'BROADCAST', broadcast: broadcastData })
+      ws.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse BROADCAST:', e, 'Message:', message.substring(0, 120))
+      fileLogger.writeWsDiscrepancy('chat', 'broadcast_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  h.BAN = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(4)) as { data?: string; nick?: string; timestamp?: number }
+      ws.emit('ban', { type: 'BAN', ban: data } as ChatBanEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse BAN:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.SUBONLY = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(8)) as { data?: string; nick?: string; timestamp?: number }
+      ws.emit('subonly', { type: 'SUBONLY', subonly: data } as ChatSubOnlyEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse SUBONLY:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.RELOAD = (ws) => {
+    ws.emit('reload', { type: 'RELOAD' } as ChatReloadEvent)
+  }
+
+  h.PRIVMSGSENT = (ws) => {
+    ws.emit('privmsgsent', { type: 'PRIVMSGSENT' } as ChatPrivMsgSentEvent)
+  }
+
+  h.ADDPHRASE = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(10)) as { data?: string; timestamp?: number }
+      ws.emit('addphrase', { type: 'ADDPHRASE', phrase: data } as ChatPhraseEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse ADDPHRASE:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.REMOVEPHRASE = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(12)) as { data?: string; timestamp?: number }
+      ws.emit('removephrase', { type: 'REMOVEPHRASE', phrase: data } as ChatPhraseEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse REMOVEPHRASE:', e, 'Message:', message.substring(0, 100))
+    }
+  }
+
+  h.GIFTSUB = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(8)) as ChatGiftSubEvent['giftSub']
+      ws.emit('giftsub', { type: 'GIFTSUB', giftSub: data } as ChatGiftSubEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse GIFTSUB:', e, 'Message:', message.substring(0, 120))
+    }
+  }
+
+  h.MASSGIFT = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(9)) as ChatMassGiftEvent['massGift']
+      ws.emit('massgift', { type: 'MASSGIFT', massGift: data } as ChatMassGiftEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse MASSGIFT:', e, 'Message:', message.substring(0, 120))
+    }
+  }
+
+  h.DONATION = (ws, message) => {
+    try {
+      const data = JSON.parse(message.substring(9)) as ChatDonationEvent['donation']
+      ws.emit('donation', { type: 'DONATION', donation: data } as ChatDonationEvent)
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse DONATION:', e, 'Message:', message.substring(0, 120))
+    }
+  }
+
+  // HISTORY must be last: it dispatches to other handlers with collect for MSG/BROADCAST
+  h.HISTORY = (ws, message) => {
+    console.log('[ChatWebSocket] Received HISTORY message, length:', message.length)
+    const historyMatch = message.match(/^HISTORY\s+(.+)$/)
+    if (!historyMatch) return
+    try {
+      const messagesArray = JSON.parse(historyMatch[1]) as string[]
+      console.log(`[ChatWebSocket] Parsed HISTORY array with ${messagesArray.length} items`)
+      const parsedMessages: ChatMessage[] = []
+      const parsedItems: ChatHistoryItem[] = []
+      const collect = { messages: parsedMessages, items: parsedItems }
+
+      for (const msgStr of messagesArray) {
+        try {
+          const typeToken = msgStr.split(' ', 1)[0]
+          const handler = h[typeToken]
+          if (handler) {
+            handler(ws, msgStr, collect)
+          } else {
+            console.log('[ChatWebSocket] Unsupported message type in HISTORY:', msgStr.substring(0, 50))
+            fileLogger.writeWsDiscrepancy('chat', 'unsupported_history_item', { preview: msgStr.substring(0, 400) })
+          }
+        } catch (e) {
+          console.error('[ChatWebSocket] Unexpected error processing HISTORY item:', e, 'Message:', msgStr?.substring(0, 100) || 'unknown')
+        }
+      }
+
+      if (parsedMessages.length > 0 || parsedItems.length > 0) {
+        console.log(`[ChatWebSocket] Emitting history event with ${parsedMessages.length} messages, ${parsedItems.length} items`)
+        ws.emit('history', {
+          type: 'HISTORY',
+          messages: parsedMessages,
+          items: parsedItems.length > 0 ? parsedItems : undefined,
+        } as ChatHistoryMessage)
+      } else {
+        console.log('[ChatWebSocket] No messages parsed from HISTORY, skipping history event')
+      }
+    } catch (e) {
+      console.error('[ChatWebSocket] Failed to parse HISTORY:', e, 'Raw message:', message.substring(0, 200))
+      fileLogger.writeWsDiscrepancy('chat', 'history_parse_error', { preview: message.substring(0, 2000), error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return h
+}
+
+const CHAT_HANDLERS = createChatHandlers()
+
 export interface ChatWebSocketConnectOptions {
   /** Request headers (Cookie, Origin) for authenticated connection. Uses persist:main session. */
   headers?: Record<string, string>
@@ -416,15 +750,13 @@ export class ChatWebSocket extends EventEmitter {
       // If we remove all listeners and then terminate/close, the ws library can emit an 'error'
       // event (e.g. "WebSocket was closed before the connection was established"). With no
       // listeners attached, Node treats it as unhandled and can crash the app.
-      // Keep a no-op error handler during intentional shutdown.
-      try {
-        this.ws.on('error', () => {
-          // Swallow errors during intentional shutdown
-        })
-      } catch {
-        // ignore
-      }
-      
+      // Remove the existing error handler first so we don't log/emit during shutdown, then
+      // attach a no-op so the library doesn't see an unhandled error.
+      this.ws.removeAllListeners('error')
+      this.ws.on('error', () => {
+        // Swallow errors during intentional shutdown
+      })
+
       // Remove other event listeners to prevent callbacks during close
       this.ws.removeAllListeners('open')
       this.ws.removeAllListeners('message')
@@ -494,583 +826,54 @@ export class ChatWebSocket extends EventEmitter {
       return // Exit early if we can't even convert to string
     }
 
-    // Track raw message types by first token (e.g. MSG, HISTORY, JOIN, DEATH, SUBSCRIPTION, ...)
+    // Track raw message types by first token (e.g. MSG, HISTORY, JOIN, ...)
     const typeToken = message.split(' ', 1)[0] || 'UNKNOWN'
     const nextCount = (this.typeCounts.get(typeToken) || 0) + 1
     this.typeCounts.set(typeToken, nextCount)
-    const knownChatTypes = new Set(['MSG', 'HISTORY', 'JOIN', 'QUIT', 'NAMES', 'PIN', 'PAIDEVENTS', 'ME', 'UPDATEUSER', 'POLLSTART', 'POLLSTOP', 'VOTECOUNTED', 'POLLVOTEERROR', 'ERR', 'PRIVMSG', 'DEATH', 'UNBAN', 'SUBSCRIPTION', 'BROADCAST', 'BAN', 'SUBONLY', 'RELOAD', 'PRIVMSGSENT', 'ADDPHRASE', 'REMOVEPHRASE', 'GIFTSUB', 'MASSGIFT', 'DONATION', 'MUTE', 'UNMUTE'])
-    if (!this.seenTypes.has(typeToken)) {
-      this.seenTypes.add(typeToken)
-      if (!knownChatTypes.has(typeToken)) {
-        if (typeToken === 'HISTORY') {
-          fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
-            type: typeToken,
-            length: message.length,
-          })
-        } else {
-          fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
-            type: typeToken,
-            length: message.length,
-            preview: message.substring(0, 400),
-          })
-        }
+
+    const handler = CHAT_HANDLERS[typeToken]
+    if (handler) {
+      try {
+        handler(this, message)
+        return
+      } catch (error) {
+        console.error('[ChatWebSocket] Unexpected error handling message:', error)
+        fileLogger.writeWsDiscrepancy('chat', 'handler_exception', {
+          preview: message?.substring(0, 2000) || 'unknown',
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return
       }
     }
-    
+
+    // Type not in CHAT_HANDLERS: log first occurrence and run fallback (unsupported message)
+    if (!this.seenTypes.has(typeToken)) {
+      this.seenTypes.add(typeToken)
+      fileLogger.writeWsDiscrepancy('chat', 'new_type_observed', {
+        type: typeToken,
+        length: message.length,
+        preview: typeToken === 'HISTORY' ? undefined : message.substring(0, 400),
+      })
+    }
+    this.handleMessageFallback(message)
+  }
+
+  /** Only used when message type has no handler in CHAT_HANDLERS (unknown type). */
+  private handleMessageFallback(message: string): void {
     try {
-      // Parse the message type
-      if (message.startsWith('HISTORY')) {
-        console.log('[ChatWebSocket] Received HISTORY message, length:', message.length)
-        // HISTORY ["MSG {...}", "MSG {...}", "PAIDEVENTS []", "PIN {...}", "NAMES {...}", ...]
-        const historyMatch = message.match(/^HISTORY\s+(.+)$/)
-        if (historyMatch) {
-          console.log('[ChatWebSocket] HISTORY match found, parsing JSON array...')
-          try {
-            const messagesArray = JSON.parse(historyMatch[1]) as string[]
-            console.log(`[ChatWebSocket] Parsed HISTORY array with ${messagesArray.length} items`)
-            const parsedMessages: ChatMessage[] = []
-            const parsedItems: ChatHistoryItem[] = []
-
-            messagesArray.forEach(msgStr => {
-              try {
-                if (msgStr.startsWith('MSG ')) {
-                  try {
-                    const msgData = JSON.parse(msgStr.substring(4)) as ChatMessage
-                    parsedMessages.push(msgData)
-                    parsedItems.push({ type: 'MSG', message: msgData })
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse MSG in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('PRIVMSG ')) {
-                  try {
-                    const privmsgData = JSON.parse(msgStr.substring(8)) as ChatPrivMsg
-                    this.emit('privmsg', { type: 'PRIVMSG', privmsg: privmsgData } as ChatPrivMsgEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse PRIVMSG in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('PAIDEVENTS')) {
-                try {
-                  // PAIDEVENTS can be "PAIDEVENTS []" or "PAIDEVENTS[]"
-                  let eventsData: any[] = []
-                  let jsonPart: string
-                  if (msgStr.startsWith('PAIDEVENTS ')) {
-                    // "PAIDEVENTS []" - extract everything after the space
-                    jsonPart = msgStr.substring(11).trim()
-                  } else {
-                    // "PAIDEVENTS[]" - extract everything after "PAIDEVENTS"
-                    jsonPart = msgStr.substring(10).trim()
-                  }
-                  
-                  if (jsonPart && jsonPart.length > 0) {
-                    eventsData = JSON.parse(jsonPart) as any[]
-                  }
-                  
-                  this.emit('paidEvents', { type: 'PAIDEVENTS', events: eventsData } as ChatPaidEvents)
-                } catch (e) {
-                  console.error('[ChatWebSocket] Failed to parse PAIDEVENTS in HISTORY:', e)
-                  console.error('[ChatWebSocket] Full message:', msgStr)
-                  console.error('[ChatWebSocket] Extracted JSON part:', msgStr.startsWith('PAIDEVENTS ') ? msgStr.substring(11) : msgStr.substring(10))
-                }
-                } else if (msgStr.startsWith('PIN ')) {
-                  try {
-                    const pinData = JSON.parse(msgStr.substring(4)) as ChatPinMessage
-                    this.emit('pin', { type: 'PIN', pin: pinData } as ChatPin)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse PIN in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('NAMES ')) {
-                  try {
-                    const namesData = JSON.parse(msgStr.substring(6))
-                    this.emit('names', { type: 'NAMES', names: namesData } as ChatNames)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse NAMES in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('MUTE ')) {
-                  try {
-                    const muteData = JSON.parse(msgStr.substring(5))
-                    this.emit('mute', { type: 'MUTE', mute: muteData } as ChatMute)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse MUTE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('UNMUTE ')) {
-                  try {
-                    const unmuteData = JSON.parse(msgStr.substring(7)) as ChatMessage
-                    this.emit('unmute', { type: 'UNMUTE', unmute: unmuteData } as ChatUnmute)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse UNMUTE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('ME ')) {
-                  try {
-                    const meData = msgStr.substring(3).trim()
-                    // ME can be "ME null" or "ME {...}"
-                    const parsedData = meData === 'null' ? null : JSON.parse(meData)
-                    this.emit('me', { type: 'ME', data: parsedData } as ChatMe)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse ME in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('POLLSTART ')) {
-                  try {
-                    const pollData = JSON.parse(msgStr.substring(10))
-                    this.emit('pollStart', { type: 'POLLSTART', poll: pollData } as ChatPollStart)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse POLLSTART in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('VOTECAST ')) {
-                  try {
-                    const voteData = JSON.parse(msgStr.substring(9))
-                    this.emit('voteCast', { type: 'VOTECAST', vote: voteData } as ChatVoteCast)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse VOTECAST in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('POLLSTOP ')) {
-                  try {
-                    const pollData = JSON.parse(msgStr.substring(9))
-                    this.emit('pollStop', { type: 'POLLSTOP', poll: pollData } as ChatPollStop)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse POLLSTOP in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('DEATH ')) {
-                  try {
-                    const deathData = JSON.parse(msgStr.substring('DEATH '.length)) as ChatDeathMessage
-                    this.emit('death', { type: 'DEATH', death: deathData } as ChatDeathEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse DEATH in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                    fileLogger.writeWsDiscrepancy('chat', 'death_parse_error', {
-                      preview: msgStr.substring(0, 2000),
-                      error: e instanceof Error ? e.message : String(e),
-                    })
-                  }
-                } else if (msgStr.startsWith('UNBAN ')) {
-                  try {
-                    const unbanData = JSON.parse(msgStr.substring('UNBAN '.length)) as ChatMessage
-                    this.emit('unban', { type: 'UNBAN', unban: unbanData } as ChatUnbanEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse UNBAN in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                    fileLogger.writeWsDiscrepancy('chat', 'unban_parse_error', {
-                      preview: msgStr.substring(0, 2000),
-                      error: e instanceof Error ? e.message : String(e),
-                    })
-                  }
-                } else if (msgStr.startsWith('SUBSCRIPTION ')) {
-                  try {
-                    const subData = JSON.parse(msgStr.substring('SUBSCRIPTION '.length)) as ChatSubscriptionEvent['subscription']
-                    this.emit('subscription', { type: 'SUBSCRIPTION', subscription: subData } as ChatSubscriptionEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse SUBSCRIPTION in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                    fileLogger.writeWsDiscrepancy('chat', 'subscription_parse_error', {
-                      preview: msgStr.substring(0, 2000),
-                      error: e instanceof Error ? e.message : String(e),
-                    })
-                  }
-                } else if (msgStr.startsWith('BROADCAST ')) {
-                  try {
-                    const broadcastData = JSON.parse(msgStr.substring('BROADCAST '.length)) as ChatBroadcastEvent['broadcast']
-                    parsedItems.push({ type: 'BROADCAST', broadcast: broadcastData })
-                    this.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse BROADCAST in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                    fileLogger.writeWsDiscrepancy('chat', 'broadcast_parse_error', {
-                      preview: msgStr.substring(0, 2000),
-                      error: e instanceof Error ? e.message : String(e),
-                    })
-                  }
-                } else if (msgStr.startsWith('BAN ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(4)) as { data?: string; nick?: string; timestamp?: number }
-                    this.emit('ban', { type: 'BAN', ban: data } as ChatBanEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse BAN in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('SUBONLY ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(8)) as { data?: string; nick?: string; timestamp?: number }
-                    this.emit('subonly', { type: 'SUBONLY', subonly: data } as ChatSubOnlyEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse SUBONLY in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('ADDPHRASE ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(10)) as { data?: string; timestamp?: number }
-                    this.emit('addphrase', { type: 'ADDPHRASE', phrase: data } as ChatPhraseEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse ADDPHRASE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('REMOVEPHRASE ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(12)) as { data?: string; timestamp?: number }
-                    this.emit('removephrase', { type: 'REMOVEPHRASE', phrase: data } as ChatPhraseEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse REMOVEPHRASE in HISTORY:', e, 'Message:', msgStr.substring(0, 100))
-                  }
-                } else if (msgStr.startsWith('GIFTSUB ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(8)) as ChatGiftSubEvent['giftSub']
-                    this.emit('giftsub', { type: 'GIFTSUB', giftSub: data } as ChatGiftSubEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse GIFTSUB in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                  }
-                } else if (msgStr.startsWith('MASSGIFT ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(9)) as ChatMassGiftEvent['massGift']
-                    this.emit('massgift', { type: 'MASSGIFT', massGift: data } as ChatMassGiftEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse MASSGIFT in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                  }
-                } else if (msgStr.startsWith('DONATION ')) {
-                  try {
-                    const data = JSON.parse(msgStr.substring(9)) as ChatDonationEvent['donation']
-                    this.emit('donation', { type: 'DONATION', donation: data } as ChatDonationEvent)
-                  } catch (e) {
-                    console.error('[ChatWebSocket] Failed to parse DONATION in HISTORY:', e, 'Message:', msgStr.substring(0, 120))
-                  }
-                } else {
-                  console.log('[ChatWebSocket] Unsupported message type in HISTORY:', msgStr.substring(0, 50))
-                  fileLogger.writeWsDiscrepancy('chat', 'unsupported_history_item', {
-                    preview: msgStr.substring(0, 400),
-                  })
-                }
-              } catch (e) {
-                // Catch any unexpected errors in processing individual history items
-                console.error('[ChatWebSocket] Unexpected error processing HISTORY item:', e, 'Message:', msgStr?.substring(0, 100) || 'unknown')
-              }
-            })
-
-            if (parsedMessages.length > 0 || parsedItems.length > 0) {
-              console.log(`[ChatWebSocket] Emitting history event with ${parsedMessages.length} messages, ${parsedItems.length} items`)
-              this.emit('history', {
-                type: 'HISTORY',
-                messages: parsedMessages,
-                items: parsedItems.length > 0 ? parsedItems : undefined,
-              } as ChatHistoryMessage)
-            } else {
-              console.log('[ChatWebSocket] No messages parsed from HISTORY, skipping history event')
-            }
-          } catch (e) {
-            console.error('[ChatWebSocket] Failed to parse HISTORY:', e, 'Raw message:', message.substring(0, 200))
-            fileLogger.writeWsDiscrepancy('chat', 'history_parse_error', {
-              preview: message.substring(0, 2000),
-              error: e instanceof Error ? e.message : String(e),
-            })
-            // Don't rethrow - just log and continue
-          }
-        }
-      } else if (message.startsWith('MSG ')) {
-        // MSG {...}
-        try {
-          const msgData = JSON.parse(message.substring(4)) as ChatMessage
-          this.emit('message', { type: 'MSG', message: msgData })
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse MSG:', e, 'Message:', message.substring(0, 100))
-          fileLogger.writeWsDiscrepancy('chat', 'msg_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('PRIVMSG ')) {
-        // PRIVMSG { messageid, timestamp, nick, data }
-        try {
-          const privmsgData = JSON.parse(message.substring(8)) as ChatPrivMsg
-          this.emit('privmsg', { type: 'PRIVMSG', privmsg: privmsgData } as ChatPrivMsgEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse PRIVMSG:', e, 'Message:', message.substring(0, 100))
-          fileLogger.writeWsDiscrepancy('chat', 'privmsg_parse_error', {
-            preview: message.substring(0, 500),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('JOIN ')) {
-        // JOIN {...}
-        try {
-          const userData = JSON.parse(message.substring(5)) as ChatMessage
-          this.emit('userEvent', { type: 'JOIN', user: userData } as ChatUserEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse JOIN:', e, 'Message:', message.substring(0, 100))
-          fileLogger.writeWsDiscrepancy('chat', 'join_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('QUIT ')) {
-        // QUIT {...}
-        try {
-          const userData = JSON.parse(message.substring(5)) as ChatMessage
-          this.emit('userEvent', { type: 'QUIT', user: userData } as ChatUserEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse QUIT:', e, 'Message:', message.substring(0, 100))
-          fileLogger.writeWsDiscrepancy('chat', 'quit_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('UPDATEUSER ')) {
-        // UPDATEUSER {...}
-        try {
-          // 'UPDATEUSER ' is 11 chars; substring(11) preserves the opening '{'
-          const jsonPart = message.substring(11).trim()
-          
-          // Check if JSON looks complete (basic validation)
-          if (!jsonPart || jsonPart.length === 0) {
-            console.error('[ChatWebSocket] UPDATEUSER has empty JSON part. Full message length:', message.length)
-            console.error('[ChatWebSocket] Full message:', message)
-            return
-          }
-          
-          // Try to parse directly - JSON.parse will throw if invalid
-          // The brace counting was too strict and incorrectly flagged valid JSON
-          const userData = JSON.parse(jsonPart) as ChatMessage
-          this.emit('userEvent', { type: 'UPDATEUSER', user: userData } as ChatUserEvent)
-        } catch (e) {
-          // Only log if it's actually a parse error, not a validation error
-          console.error('[ChatWebSocket] Failed to parse UPDATEUSER:', e)
-          console.error('[ChatWebSocket] Message length:', message.length)
-          console.error('[ChatWebSocket] Full message:', message)
-          console.error('[ChatWebSocket] JSON part (first 200 chars):', message.substring(11, 211))
-          fileLogger.writeWsDiscrepancy('chat', 'updateuser_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('PAIDEVENTS')) {
-        // PAIDEVENTS [...] or PAIDEVENTS []
-        try {
-          let eventsData: any[] = []
-          let jsonPart: string
-          if (message.startsWith('PAIDEVENTS ')) {
-            // "PAIDEVENTS []" - extract everything after the space
-            jsonPart = message.substring(11).trim()
-          } else {
-            // "PAIDEVENTS[]" - extract everything after "PAIDEVENTS"
-            jsonPart = message.substring(10).trim()
-          }
-          
-          if (jsonPart && jsonPart.length > 0) {
-            eventsData = JSON.parse(jsonPart) as any[]
-          }
-          
-          this.emit('paidEvents', { type: 'PAIDEVENTS', events: eventsData } as ChatPaidEvents)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse PAIDEVENTS:', e)
-          console.error('[ChatWebSocket] Full message:', message)
-          console.error('[ChatWebSocket] Extracted JSON part:', message.startsWith('PAIDEVENTS ') ? message.substring(11) : message.substring(10))
-        }
-      } else if (message.startsWith('PIN ')) {
-        // PIN {...}
-        try {
-          const pinData = JSON.parse(message.substring(4)) as ChatPinMessage
-          this.emit('pin', { type: 'PIN', pin: pinData } as ChatPin)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse PIN:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('NAMES ')) {
-        // NAMES {...}
-        try {
-          const namesData = JSON.parse(message.substring(6))
-          this.emit('names', { type: 'NAMES', names: namesData } as ChatNames)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse NAMES:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('MUTE ')) {
-        // MUTE {...}
-        try {
-          const muteData = JSON.parse(message.substring(5))
-          this.emit('mute', { type: 'MUTE', mute: muteData } as ChatMute)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse MUTE:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('UNMUTE ')) {
-        // UNMUTE {...} — user was unmuted (semantically: unbanned from chat)
-        try {
-          const unmuteData = JSON.parse(message.substring(7)) as ChatMessage
-          this.emit('unmute', { type: 'UNMUTE', unmute: unmuteData } as ChatUnmute)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse UNMUTE:', e, 'Message:', message.substring(0, 100))
-          fileLogger.writeWsDiscrepancy('chat', 'unmute_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('ME ')) {
-        // ME null or ME {...}
-        try {
-          const meData = message.substring(3).trim()
-          const parsedData = meData === 'null' ? null : JSON.parse(meData)
-          this.emit('me', { type: 'ME', data: parsedData } as ChatMe)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse ME:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('POLLSTART ')) {
-        // POLLSTART {...}
-        try {
-          const pollData = JSON.parse(message.substring(10))
-          this.emit('pollStart', { type: 'POLLSTART', poll: pollData } as ChatPollStart)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse POLLSTART:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('VOTECAST ')) {
-        // VOTECAST {...}
-        try {
-          const voteData = JSON.parse(message.substring(9))
-          this.emit('voteCast', { type: 'VOTECAST', vote: voteData } as ChatVoteCast)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse VOTECAST:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('POLLSTOP ')) {
-        // POLLSTOP {...}
-        try {
-          const pollData = JSON.parse(message.substring(9))
-          this.emit('pollStop', { type: 'POLLSTOP', poll: pollData } as ChatPollStop)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse POLLSTOP:', e, 'Message:', message.substring(0, 100))
-          // Continue processing - don't crash
-        }
-      } else if (message.startsWith('VOTECOUNTED ')) {
-        try {
-          const data = JSON.parse(message.substring(12)) as { vote?: string }
-          this.emit('voteCounted', { vote: data?.vote ?? '' })
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse VOTECOUNTED:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message.startsWith('ERR ')) {
-        try {
-          const data = JSON.parse(message.substring(4)) as { description?: string }
-          if (data?.description === 'alreadyvoted' || data?.description) {
-            this.emit('pollVoteError', { description: data.description })
-          }
-          if (data?.description) {
-            this.emit('chatErr', { description: data.description })
-          }
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse ERR:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message.startsWith('DEATH ')) {
-        // DEATH {...}
-        try {
-          const deathData = JSON.parse(message.substring('DEATH '.length)) as ChatDeathMessage
-          this.emit('death', { type: 'DEATH', death: deathData } as ChatDeathEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse DEATH:', e, 'Message:', message.substring(0, 120))
-          fileLogger.writeWsDiscrepancy('chat', 'death_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('UNBAN ')) {
-        // UNBAN {...}
-        try {
-          const unbanData = JSON.parse(message.substring('UNBAN '.length)) as ChatMessage
-          this.emit('unban', { type: 'UNBAN', unban: unbanData } as ChatUnbanEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse UNBAN:', e, 'Message:', message.substring(0, 120))
-          fileLogger.writeWsDiscrepancy('chat', 'unban_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('SUBSCRIPTION ')) {
-        // SUBSCRIPTION {...}
-        try {
-          const subData = JSON.parse(message.substring('SUBSCRIPTION '.length)) as ChatSubscriptionEvent['subscription']
-          this.emit('subscription', { type: 'SUBSCRIPTION', subscription: subData } as ChatSubscriptionEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse SUBSCRIPTION:', e, 'Message:', message.substring(0, 120))
-          fileLogger.writeWsDiscrepancy('chat', 'subscription_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('BROADCAST ')) {
-        // BROADCAST {...}
-        try {
-          const broadcastData = JSON.parse(message.substring('BROADCAST '.length)) as ChatBroadcastEvent['broadcast']
-          this.emit('broadcast', { type: 'BROADCAST', broadcast: broadcastData } as ChatBroadcastEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse BROADCAST:', e, 'Message:', message.substring(0, 120))
-          fileLogger.writeWsDiscrepancy('chat', 'broadcast_parse_error', {
-            preview: message.substring(0, 2000),
-            error: e instanceof Error ? e.message : String(e),
-          })
-        }
-      } else if (message.startsWith('BAN ')) {
-        try {
-          const data = JSON.parse(message.substring(4)) as { data?: string; nick?: string; timestamp?: number }
-          this.emit('ban', { type: 'BAN', ban: data } as ChatBanEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse BAN:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message.startsWith('SUBONLY ')) {
-        try {
-          const data = JSON.parse(message.substring(8)) as { data?: string; nick?: string; timestamp?: number }
-          this.emit('subonly', { type: 'SUBONLY', subonly: data } as ChatSubOnlyEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse SUBONLY:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message === 'RELOAD' || message.startsWith('RELOAD ')) {
-        this.emit('reload', { type: 'RELOAD' } as ChatReloadEvent)
-      } else if (message === 'PRIVMSGSENT' || message.startsWith('PRIVMSGSENT ')) {
-        this.emit('privmsgsent', { type: 'PRIVMSGSENT' } as ChatPrivMsgSentEvent)
-      } else if (message.startsWith('ADDPHRASE ')) {
-        try {
-          const data = JSON.parse(message.substring(10)) as { data?: string; timestamp?: number }
-          this.emit('addphrase', { type: 'ADDPHRASE', phrase: data } as ChatPhraseEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse ADDPHRASE:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message.startsWith('REMOVEPHRASE ')) {
-        try {
-          const data = JSON.parse(message.substring(12)) as { data?: string; timestamp?: number }
-          this.emit('removephrase', { type: 'REMOVEPHRASE', phrase: data } as ChatPhraseEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse REMOVEPHRASE:', e, 'Message:', message.substring(0, 100))
-        }
-      } else if (message.startsWith('GIFTSUB ')) {
-        try {
-          const data = JSON.parse(message.substring(8)) as ChatGiftSubEvent['giftSub']
-          this.emit('giftsub', { type: 'GIFTSUB', giftSub: data } as ChatGiftSubEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse GIFTSUB:', e, 'Message:', message.substring(0, 120))
-        }
-      } else if (message.startsWith('MASSGIFT ')) {
-        try {
-          const data = JSON.parse(message.substring(9)) as ChatMassGiftEvent['massGift']
-          this.emit('massgift', { type: 'MASSGIFT', massGift: data } as ChatMassGiftEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse MASSGIFT:', e, 'Message:', message.substring(0, 120))
-        }
-      } else if (message.startsWith('DONATION ')) {
-        try {
-          const data = JSON.parse(message.substring(9)) as ChatDonationEvent['donation']
-          this.emit('donation', { type: 'DONATION', donation: data } as ChatDonationEvent)
-        } catch (e) {
-          console.error('[ChatWebSocket] Failed to parse DONATION:', e, 'Message:', message.substring(0, 120))
-        }
-      } else {
-        console.log('[ChatWebSocket] Unsupported message type:', message.substring(0, 100))
-        console.log('[ChatWebSocket] Full unsupported message:', message)
-        fileLogger.writeWsDiscrepancy('chat', 'unsupported_message', {
-          preview: message.substring(0, 2000),
-          length: message.length,
-        })
-      }
+      console.log('[ChatWebSocket] Unsupported message type:', message.substring(0, 100))
+      console.log('[ChatWebSocket] Full unsupported message:', message)
+      fileLogger.writeWsDiscrepancy('chat', 'unsupported_message', {
+        preview: message.substring(0, 2000),
+        length: message.length,
+      })
     } catch (error) {
-      // Catch any unexpected errors in message handling
-      // This should never happen, but if it does, log it and continue
       console.error('[ChatWebSocket] Unexpected error handling message:', error)
       console.error('[ChatWebSocket] Message that caused error:', message?.substring(0, 200) || 'unknown')
       fileLogger.writeWsDiscrepancy('chat', 'handler_exception', {
         preview: message?.substring(0, 2000) || 'unknown',
         error: error instanceof Error ? error.message : String(error),
       })
-      // Don't rethrow - just log and continue processing
     }
   }
 
