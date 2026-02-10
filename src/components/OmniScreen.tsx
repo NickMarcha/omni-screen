@@ -95,6 +95,9 @@ function makeViewTransitionNameForKey(key: string) {
     .replace(/[^a-z0-9_-]+/g, '-')}`
 }
 
+/** Height of the overlay chat header bar (px) so pinned message and pin button can be offset below it. */
+const CHAT_OVERLAY_HEADER_HEIGHT = 48
+
 /** Memoized so overlay does not re-render when only embed/dock data (e.g. combinedAvailableEmbeds) updates — avoids flash timed with [OmniScreen:pinned] logs. */
 const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
   chatPaneOpen: boolean
@@ -141,7 +144,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
         p.setOverlayHeaderVisible(true)
       }}
       onPointerLeave={() => {
-        if (p.combinedChatOverlayMode && !p.overlayMessagesClickThrough) {
+        if (p.combinedChatOverlayMode) {
           p.overlayHeaderHideTimeoutRef.current = setTimeout(() => {
             p.setOverlayHeaderVisible(false)
             p.overlayHeaderHideTimeoutRef.current = null
@@ -157,8 +160,14 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
           aria-label="Resize chat width"
         />
       )}
+      {/* Chat messages fill full height behind the header; container has pointer-events-none in click-through so panel still receives enter/leave for header fade. */}
       <div
-        className={`p-2 border-b border-base-300 flex items-center gap-2 flex-wrap bg-base-200 pointer-events-auto shrink-0 transition-opacity duration-200 ${p.combinedChatOverlayMode && !p.overlayHeaderVisible ? 'opacity-0' : 'opacity-100'}`}
+        ref={p.setOverlayChatContainerRef}
+        className={`absolute inset-0 overflow-hidden flex flex-col ${p.combinedChatOverlayMode && p.overlayMessagesClickThrough ? 'pointer-events-none' : ''}`}
+      />
+      {/* Header overlays the top so when it fades out, messages already use full height. */}
+      <div
+        className={`absolute top-0 left-0 right-0 z-10 p-2 border-b border-base-300 flex items-center gap-2 flex-wrap bg-base-200 pointer-events-auto transition-opacity duration-200 ${p.combinedChatOverlayMode && !p.overlayHeaderVisible ? 'opacity-0' : 'opacity-100'}`}
         onContextMenu={(e) => {
           if (p.combinedChatContextMenuConfig) {
             e.preventDefault()
@@ -228,7 +237,6 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
           </button>
         </div>
       </div>
-      <div ref={p.setOverlayChatContainerRef} className="flex-1 min-h-0 overflow-hidden flex flex-col" />
     </div>
   )
 })
@@ -759,10 +767,11 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     }
     return ''
   })
-  /** DGG label text in combined chat badge. Default "dgg". */
+  /** DGG label text in combined chat badge. Default "dgg". Empty string is valid (user can leave blank for special behaviour). */
   const [dggLabelText, setDggLabelText] = useState<string>(() => {
-    const saved = localStorage.getItem('omni-screen:dgg-label-text')
-    return (saved != null && saved !== '') ? saved : 'dgg'
+    const key = 'omni-screen:dgg-label-text'
+    const saved = localStorage.getItem(key)
+    return saved !== null ? saved : 'dgg'
   })
   const dggInputRef = useRef<HTMLTextAreaElement | null>(null)
   const dggChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
@@ -870,6 +879,38 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   useEffect(() => {
     if (!combinedChatOverlayMode) setOverlayHeaderVisible(true)
   }, [combinedChatOverlayMode])
+
+  // When click-through is on, the panel has pointer-events-none so it never receives enter/leave. Track pointer over panel rect so the header can still fade in/out.
+  const wasInsideOverlayRef = useRef(false)
+  useEffect(() => {
+    if (!combinedChatOverlayMode || !overlayMessagesClickThrough) return
+    const onPointerMove = (e: PointerEvent) => {
+      const el = overlayPanelRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+      if (inside) {
+        if (!wasInsideOverlayRef.current) {
+          wasInsideOverlayRef.current = true
+          if (overlayHeaderHideTimeoutRef.current) {
+            clearTimeout(overlayHeaderHideTimeoutRef.current)
+            overlayHeaderHideTimeoutRef.current = null
+          }
+          setOverlayHeaderVisible(true)
+        }
+      } else {
+        if (wasInsideOverlayRef.current) {
+          wasInsideOverlayRef.current = false
+          overlayHeaderHideTimeoutRef.current = setTimeout(() => {
+            setOverlayHeaderVisible(false)
+            overlayHeaderHideTimeoutRef.current = null
+          }, 2500)
+        }
+      }
+    }
+    document.addEventListener('pointermove', onPointerMove, { passive: true })
+    return () => document.removeEventListener('pointermove', onPointerMove)
+  }, [combinedChatOverlayMode, overlayMessagesClickThrough])
 
   useEffect(() => {
     return () => {
@@ -1349,6 +1390,15 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     overlayMessagesClickThrough,
     liteLinkScrollerSettings,
   ])
+
+  // Persist DGG label text in its own effect so it always saves even if the big effect's try block fails partway.
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
+    } catch {
+      // ignore
+    }
+  }, [dggLabelText])
 
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
@@ -2434,6 +2484,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               overlayMode={combinedChatOverlayMode}
               overlayOpacity={combinedChatOverlayOpacity}
               messagesClickThrough={combinedChatOverlayMode ? overlayMessagesClickThrough : false}
+              overlayHeaderHeight={combinedChatOverlayMode ? CHAT_OVERLAY_HEADER_HEIGHT : undefined}
               inputContainerRef={combinedChatOverlayMode ? chatOverlayInputContainerRef : undefined}
               contextMenuRef={combinedChatContextMenuRef}
             />,
@@ -3982,6 +4033,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             placeholder="dgg"
                             value={dggLabelText}
                             onChange={(e) => setDggLabelText(e.target.value)}
+                            onBlur={() => {
+                              try {
+                                localStorage.setItem('omni-screen:dgg-label-text', dggLabelText)
+                              } catch {
+                                // ignore
+                              }
+                            }}
                           />
                           <span className="label-text-alt text-base-content/60">Text shown in the source badge for DGG messages.</span>
                         </label>

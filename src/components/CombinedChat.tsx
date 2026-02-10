@@ -465,12 +465,17 @@ interface DggInputBarProps {
   placeholder?: string
   /** Shown on the right of the input when set (e.g. "Ctrl + Space"). */
   shortcutLabel?: string
+  /** When true, render autocomplete dropdown in a portal with fixed position (avoids clipping in overlay mode; keeps dropdown on-screen). */
+  dropdownInPortal?: boolean
 }
 
 const HISTORY_MAX = 50
 
+const DROPDOWN_MAX_H = 192
+const DROPDOWN_MARGIN = 8
+
 const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function DggInputBar(
-  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder, shortcutLabel },
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, dggNicks, placeholder, shortcutLabel, dropdownInPortal = false },
   ref
 ) {
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -483,6 +488,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
   const [focused, setFocused] = useState(false)
   const savedCurrentRef = useRef('')
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const [portalPosition, setPortalPosition] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null)
   if (historyIndexRef.current !== historyIndex) historyIndexRef.current = historyIndex
   const mergedRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
@@ -646,6 +652,36 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
     resize(inputRef.current)
   }, [value, resize])
 
+  useLayoutEffect(() => {
+    if (!dropdownInPortal || !showDropdown || !inputRef.current) {
+      setPortalPosition(null)
+      return
+    }
+    const el = inputRef.current
+    const rect = el.getBoundingClientRect()
+    const margin = DROPDOWN_MARGIN
+    const spaceAbove = rect.top - margin
+    const spaceBelow = window.innerHeight - rect.bottom - margin
+    const preferAbove = spaceAbove >= Math.min(spaceBelow, 80)
+    let top: number
+    let maxHeight: number
+    if (preferAbove && spaceAbove >= margin) {
+      maxHeight = Math.min(DROPDOWN_MAX_H, spaceAbove - 4)
+      top = rect.top - 4 - maxHeight
+      if (top < margin) {
+        top = margin
+        maxHeight = rect.top - 4 - margin
+      }
+    } else {
+      top = rect.bottom + 4
+      maxHeight = Math.min(DROPDOWN_MAX_H, window.innerHeight - rect.bottom - 4 - margin)
+    }
+    const left = Math.max(margin, rect.left)
+    const right = Math.min(window.innerWidth - margin, rect.right)
+    const width = Math.max(0, right - left)
+    setPortalPosition({ top, left, width, maxHeight })
+  }, [dropdownInPortal, showDropdown, suggestions.length])
+
   const setRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       mergedRef(el)
@@ -696,7 +732,7 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
         ) : (
           inputContent
         )}
-        {showDropdown && (
+        {showDropdown && !dropdownInPortal && (
           <ul
             className="dgg-autocomplete-list absolute left-0 right-0 bottom-full mb-1 py-1 bg-base-300 border border-base-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"
             style={{ listStyle: 'none' }}
@@ -731,6 +767,50 @@ const DggInputBar = forwardRef<HTMLTextAreaElement, DggInputBarProps>(function D
               )
             })}
           </ul>
+        )}
+        {showDropdown && dropdownInPortal && portalPosition && createPortal(
+          <ul
+            className="dgg-autocomplete-list py-1 bg-base-300 border border-base-300 rounded-md shadow-lg overflow-y-auto z-[100]"
+            style={{
+              listStyle: 'none',
+              position: 'fixed',
+              top: portalPosition.top,
+              left: portalPosition.left,
+              width: portalPosition.width,
+              maxHeight: portalPosition.maxHeight,
+            }}
+          >
+            {suggestions.map((s, idx) => {
+              const isEmote = emotesMap.has(s)
+              return (
+                <li
+                  key={s}
+                  data-index={idx}
+                  className={`px-2 py-1 text-sm cursor-pointer flex items-center min-h-[28px] w-full ${isEmote ? 'justify-between gap-2' : ''} ${idx === highlightIndex ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    replaceWordWith(s, start, end)
+                    setHighlightIndex(-1)
+                  }}
+                >
+                  {isEmote ? (
+                    <>
+                      <span className="min-w-0 truncate">{s}</span>
+                      <div
+                        className={`emote ${s} shrink-0`}
+                        title={s}
+                        role="img"
+                        aria-label={s}
+                      />
+                    </>
+                  ) : (
+                    <span>{s}</span>
+                  )}
+                </li>
+              )
+            })}
+          </ul>,
+          document.body
         )}
       </div>
     </div>
@@ -1052,6 +1132,7 @@ export default function CombinedChat({
   overlayMode = false,
   overlayOpacity = 0.85,
   messagesClickThrough = false,
+  overlayHeaderHeight,
   inputContainerRef,
   contextMenuRef,
 }: {
@@ -1101,6 +1182,8 @@ export default function CombinedChat({
   overlayOpacity?: number
   /** When true in overlay mode, the messages area has pointer-events: none so clicks pass through to the video underneath. */
   messagesClickThrough?: boolean
+  /** When set (e.g. in overlay mode), top offset in px so pinned message and pin button sit below the overlay header. */
+  overlayHeaderHeight?: number
   /** When set (e.g. in overlay mode), the input bar is portaled into this container (e.g. next to dock). */
   inputContainerRef?: React.RefObject<HTMLDivElement | null>
   /** When set, parent can call .openContextMenu(e) to show the same context menu as the message area (e.g. on header). */
@@ -2602,6 +2685,7 @@ export default function CombinedChat({
                         : (dggConnected ? 'Message destiny.gg...' : 'Connecting...')
                 }
                 shortcutLabel={dggConnected ? focusShortcutLabel : undefined}
+                dropdownInPortal={overlayMode}
               />
             </div>
             <button
@@ -2642,9 +2726,12 @@ export default function CombinedChat({
         </div>,
         inputContainerRef.current
       )}
-      <div className="relative flex-1 min-h-0 flex flex-col">
+      <div className={`relative flex-1 min-h-0 flex flex-col ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}>
         {enableDgg && pinnedMessage && !pinnedHidden && (
-          <div className="absolute top-0 left-0 right-0 z-10 p-2 pointer-events-none">
+          <div
+            className="absolute left-0 right-0 z-10 p-2 pointer-events-none"
+            style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight } : { top: 0 }}
+          >
             <div
               id="chat-pinned-message"
               className="active bg-base-300 rounded-lg shadow-sm pointer-events-auto"
@@ -2698,7 +2785,8 @@ export default function CombinedChat({
         {enableDgg && pinnedMessage && pinnedHidden && (
           <div
             id="chat-pinned-show-btn"
-            className="active absolute top-2 right-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
+            className="active absolute right-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
+            style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight + 8 } : { top: 8 }}
             title="Show Pinned Message"
             onClick={() => setPinnedHidden(false)}
             role="button"
@@ -2710,7 +2798,10 @@ export default function CombinedChat({
           </div>
         )}
         {enableDgg && currentPoll && (
-          <div className="flex-shrink-0 p-2">
+          <div
+            className="flex-shrink-0 p-2 relative z-10"
+            style={overlayMode && overlayHeaderHeight != null ? { marginTop: overlayHeaderHeight } : undefined}
+          >
             {votePending && (
               <div className="text-xs text-base-content/70 mb-1">Sending vote…</div>
             )}
@@ -2732,8 +2823,15 @@ export default function CombinedChat({
         )}
         <div
           ref={scrollerRef}
-          className={`chat-messages-scroll flex-1 min-h-0 overflow-y-auto p-2 space-y-1 ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}
-          style={overlayMode ? { background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)` } : undefined}
+          className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}
+          style={
+            overlayMode
+              ? {
+                  background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)`,
+                  ...(overlayHeaderHeight != null ? { paddingTop: overlayHeaderHeight } : {}),
+                }
+              : undefined
+          }
           onWheel={() => {
             setScrollbarVisible(true)
             if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current)
