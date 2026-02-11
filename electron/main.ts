@@ -508,6 +508,15 @@ function createApplicationMenu() {
                 fileLogger.setLogLevel('verbose')
                 createApplicationMenu()
               }
+            },
+            {
+              label: 'Debug',
+              type: 'radio',
+              checked: fileLogger.getLogLevel() === 'debug',
+              click: () => {
+                fileLogger.setLogLevel('debug')
+                createApplicationMenu()
+              }
             }
           ]
         },
@@ -3738,7 +3747,7 @@ ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any
 })
 
 ipcMain.handle('get-log-level', () => fileLogger.getLogLevel())
-ipcMain.handle('set-log-level', (_event, level: 'normal' | 'verbose') => {
+ipcMain.handle('set-log-level', (_event, level: 'normal' | 'verbose' | 'debug') => {
   fileLogger.setLogLevel(level)
   createApplicationMenu()
 })

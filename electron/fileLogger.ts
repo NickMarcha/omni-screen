@@ -3,9 +3,9 @@ import path from 'path'
 import { app } from 'electron'
 import { fileURLToPath } from 'node:url'
 
-export type LogLevel = 'normal' | 'verbose'
+export type LogLevel = 'normal' | 'verbose' | 'debug'
 
-/** Message prefixes that are only logged when log level is 'verbose'. */
+/** Message prefixes that are only logged when log level is 'verbose' or higher. */
 const VERBOSE_MESSAGE_PREFIXES = [
   '[OmniScreen:bookmarked]',
   '[CombinedChat] POLL',
@@ -29,6 +29,44 @@ const VERBOSE_MESSAGE_PREFIXES = [
   'YT poll done',
   'Kick poll done',
   '[ChatWebSocket] Disconnected',
+]
+
+/** Message prefixes that are only logged when log level is 'debug'. High-volume embed/cookie logs. */
+const DEBUG_MESSAGE_PREFIXES = [
+  '[TwitterEmbed',
+  'Found 1 Twitter cookies',
+  'Found 1 cookies for',
+  'Sending cookies:',
+  'Height already set',
+  'TikTokEmbed:',
+  'Using computed height',
+  'Tweet embed detected in DOM',
+  'Preserving Twitter-set height',
+  '[RedditEmbed]',
+  '[Reddit Manager]',
+  '[LiteLinkScroller]',
+  '[Bluesky Manager]',
+  '[TikTok Manager]',
+  '✅ Tweet embed created',
+  '✅ [TwitterEmbed',
+  '✅ Message source matches',
+  'Received message from https://platform.twitter.com',
+  'Processing twttr.embed message',
+  'Resize message received',
+  'Processing resize message',
+  'Final check before update',
+  'Rendered message received',
+  '[TwitterEmbed] Component initialized',
+  'oEmbed HTML length',
+  'oEmbed HTML preview',
+  'oEmbed HTML includes script tag',
+  'Adding data-embed-theme',
+  'Got Reddit embed from oEmbed API',
+  'Fetching Reddit embed for URL',
+  'Set height from iframe content',
+  'Set height from attribute',
+  'No iframe found, ignoring message',
+  'Iframe not visible, ignoring message',
 ]
 
 class FileLogger {
@@ -69,7 +107,7 @@ class FileLogger {
       if (!p) return
       const raw = fs.readFileSync(p, 'utf8')
       const data = JSON.parse(raw) as { logLevel?: string }
-      if (data.logLevel === 'verbose' || data.logLevel === 'normal') {
+      if (data.logLevel === 'verbose' || data.logLevel === 'normal' || data.logLevel === 'debug') {
         this._logLevel = data.logLevel
       }
     } catch {
@@ -97,6 +135,12 @@ class FileLogger {
     if (level !== 'info' && level !== 'debug') return false
     const msg = String(message)
     return VERBOSE_MESSAGE_PREFIXES.some((prefix) => msg.includes(prefix))
+  }
+
+  private isDebugMessage(level: string, message: string): boolean {
+    if (level !== 'info' && level !== 'debug') return false
+    const msg = String(message)
+    return DEBUG_MESSAGE_PREFIXES.some((prefix) => msg.includes(prefix))
   }
 
   private getLogsDirectory(): string {
@@ -318,7 +362,8 @@ class FileLogger {
    */
   writeLog(level: string, process: 'main' | 'renderer', message: string, args: any[] = []) {
     this.loadLogLevel()
-    if (this._logLevel === 'normal' && this.isVerboseMessage(level, message)) return
+    if (this._logLevel === 'normal' && (this.isVerboseMessage(level, message) || this.isDebugMessage(level, message))) return
+    if (this._logLevel === 'verbose' && this.isDebugMessage(level, message)) return
 
     this.ensureSessionInitialized()
     if (!this.logStream) return
