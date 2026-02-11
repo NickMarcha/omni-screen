@@ -3,6 +3,34 @@ import path from 'path'
 import { app } from 'electron'
 import { fileURLToPath } from 'node:url'
 
+export type LogLevel = 'normal' | 'verbose'
+
+/** Message prefixes that are only logged when log level is 'verbose'. */
+const VERBOSE_MESSAGE_PREFIXES = [
+  '[OmniScreen:bookmarked]',
+  '[CombinedChat] POLL',
+  '[CombinedChat] Vote',
+  '[CombinedChat] Poll vote',
+  '[Chat WS] POLL',
+  '[Chat WS] Vote',
+  '[Main Process] Poll vote cast',
+  '[send-whisper] Attempt',
+  '[send-whisper] OK (WebSocket)',
+  '[protocol] second-instance',
+  '[protocol] launch URL',
+  '[protocol] result sent',
+  '[Kick] send_message attempt',
+  '[Kick] send_message response',
+  '[Extensions] Loaded',
+  'combinedAvailableEmbeds',
+  'dockItems',
+  'YT result',
+  'Kick result',
+  'YT poll done',
+  'Kick poll done',
+  '[ChatWebSocket] Disconnected',
+]
+
 class FileLogger {
   private logFilePath: string | null = null
   private errorLogFilePath: string | null = null
@@ -12,6 +40,8 @@ class FileLogger {
   private sessionTimestamp: string | null = null
   private extraStreams: Map<string, fs.WriteStream> = new Map()
   private __dirname = path.dirname(fileURLToPath(import.meta.url))
+  private _logLevel: LogLevel = 'normal'
+  private _logLevelLoaded = false
 
   constructor() {
     // Logs directory will be resolved lazily when initialize() is called
@@ -21,6 +51,52 @@ class FileLogger {
   /** Public path for "Open Log Directory" menu / IPC. */
   getLogsDirectoryPath(): string {
     return this.getLogsDirectory()
+  }
+
+  private getLogLevelPath(): string {
+    try {
+      return path.join(app.getPath('userData'), 'log-level.json')
+    } catch {
+      return ''
+    }
+  }
+
+  private loadLogLevel(): void {
+    if (this._logLevelLoaded) return
+    this._logLevelLoaded = true
+    try {
+      const p = this.getLogLevelPath()
+      if (!p) return
+      const raw = fs.readFileSync(p, 'utf8')
+      const data = JSON.parse(raw) as { logLevel?: string }
+      if (data.logLevel === 'verbose' || data.logLevel === 'normal') {
+        this._logLevel = data.logLevel
+      }
+    } catch {
+      // keep default 'normal'
+    }
+  }
+
+  getLogLevel(): LogLevel {
+    this.loadLogLevel()
+    return this._logLevel
+  }
+
+  setLogLevel(level: LogLevel): void {
+    this._logLevelLoaded = true
+    this._logLevel = level
+    try {
+      const p = this.getLogLevelPath()
+      if (p) fs.writeFileSync(p, JSON.stringify({ logLevel: level }), 'utf8')
+    } catch {
+      // ignore
+    }
+  }
+
+  private isVerboseMessage(level: string, message: string): boolean {
+    if (level !== 'info' && level !== 'debug') return false
+    const msg = String(message)
+    return VERBOSE_MESSAGE_PREFIXES.some((prefix) => msg.includes(prefix))
   }
 
   private getLogsDirectory(): string {
@@ -241,6 +317,9 @@ class FileLogger {
    * - error → both general log and errors-only log (app-*-errors.log)
    */
   writeLog(level: string, process: 'main' | 'renderer', message: string, args: any[] = []) {
+    this.loadLogLevel()
+    if (this._logLevel === 'normal' && this.isVerboseMessage(level, message)) return
+
     this.ensureSessionInitialized()
     if (!this.logStream) return
 

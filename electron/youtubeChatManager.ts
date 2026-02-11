@@ -220,6 +220,14 @@ function getYouTubeSession() {
   return session.fromPartition('persist:main')
 }
 
+/** Generate a short client message id (YouTube-style). */
+function generateClientMessageId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-'
+  let out = ''
+  for (let i = 0; i < 24; i++) out += chars[Math.floor(Math.random() * chars.length)]
+  return out
+}
+
 async function fetchText(url: string, headers: Record<string, string>): Promise<string> {
   const res = await getYouTubeSession().fetch(url, { headers })
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
@@ -506,6 +514,74 @@ export class YouTubeChatManager extends EventEmitter {
       } finally {
         state.abort = undefined
       }
+    }
+  }
+
+  /**
+   * Normalize a continuation/token string for send_message params (TYPE_BYTES = base64).
+   * YouTube may use base64url (- and _); the API expects standard base64. Strip non-base64 chars and add padding.
+   */
+  private static normalizeParamsBase64(raw: string): string {
+    let s = String(raw || '').trim().replace(/\s/g, '')
+    s = s.replace(/-/g, '+').replace(/_/g, '/')
+    s = s.replace(/[^A-Za-z0-9+/=]/g, '')
+    const pad = s.length % 4
+    if (pad !== 0) s += '='.repeat(4 - pad)
+    return s
+  }
+
+  /**
+   * Send a chat message to a live chat. Uses current context/continuation for that video.
+   * Returns { success, error }. Requires the video to already be polled (state exists).
+   */
+  async sendMessage(videoId: string, text: string): Promise<{ success: boolean; error?: string }> {
+    const state = this.states.get(videoId)
+    if (!state?.context || !state.continuation) {
+      return { success: false, error: 'Chat not loaded for this stream' }
+    }
+    const trimmed = String(text || '').trim()
+    if (!trimmed) return { success: false, error: 'Message is empty' }
+
+    const params = YouTubeChatManager.normalizeParamsBase64(state.continuation)
+    const url = 'https://www.youtube.com/youtubei/v1/live_chat/send_message?prettyPrint=false'
+    const body = {
+      context: state.context,
+      params,
+      clientMessageId: generateClientMessageId(),
+      richMessage: {
+        textSegments: [{ text: trimmed }],
+      },
+    }
+
+    try {
+      const res = await getYouTubeSession().fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: '*/*',
+          Origin: 'https://www.youtube.com',
+          Referer: `https://www.youtube.com/live_chat?v=${encodeURIComponent(videoId)}`,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        },
+        body: JSON.stringify(body),
+      } as RequestInit)
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '')
+        fileLogger.writeLog('warn', 'main', '[YouTube] send_message_http', [videoId, res.status, errText.slice(0, 200)])
+        return { success: false, error: `Send failed (${res.status})` }
+      }
+      const json = (await res.json().catch(() => null)) as any
+      const err = json?.errors?.[0]?.message || json?.error?.message
+      if (err) {
+        fileLogger.writeLog('warn', 'main', '[YouTube] send_message_api_error', [videoId, err])
+        return { success: false, error: String(err) }
+      }
+      return { success: true }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      fileLogger.writeLog('warn', 'main', '[YouTube] send_message_exception', [videoId, msg])
+      return { success: false, error: msg }
     }
   }
 }

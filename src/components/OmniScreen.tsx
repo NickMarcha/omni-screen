@@ -558,7 +558,7 @@ function platformChannelUrl(value: string, kind: 'yt' | 'kick' | 'twitch'): stri
   return `https://www.youtube.com/${v}`
 }
 
-function formatPrimaryChatFocusKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
+function formatKeybind(kb: { key: string; ctrl: boolean; shift: boolean; alt: boolean }): string {
   const parts: string[] = []
   if (kb.ctrl) parts.push('Ctrl')
   if (kb.alt) parts.push('Alt')
@@ -567,6 +567,7 @@ function formatPrimaryChatFocusKeybind(kb: { key: string; ctrl: boolean; shift: 
   parts.push(key)
   return parts.join(' + ')
 }
+const formatPrimaryChatFocusKeybind = formatKeybind
 
 function parseEmbedKey(key: string): { platform: string; id: string } | null {
   const k = String(key || '')
@@ -972,8 +973,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
     return 'browser'
   })
-  type PrimaryChatFocusKeybind = { key: string; ctrl: boolean; shift: boolean; alt: boolean }
-  const [primaryChatFocusKeybind, setPrimaryChatFocusKeybind] = useState<PrimaryChatFocusKeybind>(() => {
+  type KeybindModifiers = { key: string; ctrl: boolean; shift: boolean; alt: boolean }
+  const [primaryChatFocusKeybind, setPrimaryChatFocusKeybind] = useState<KeybindModifiers>(() => {
     try {
       const saved = localStorage.getItem('omni-screen:primary-chat-focus-keybind')
       if (!saved) return { key: ' ', ctrl: true, shift: false, alt: false }
@@ -988,6 +989,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       }
     } catch {}
     return { key: ' ', ctrl: true, shift: false, alt: false }
+  })
+  const [channelSwitchKeybind, setChannelSwitchKeybind] = useState<KeybindModifiers>(() => {
+    try {
+      const saved = localStorage.getItem('omni-screen:channel-switch-keybind')
+      if (!saved) return { key: 'Tab', ctrl: true, shift: false, alt: false }
+      const parsed = JSON.parse(saved)
+      if (parsed && typeof parsed.key === 'string') {
+        return {
+          key: parsed.key === ' ' ? ' ' : parsed.key,
+          ctrl: Boolean(parsed.ctrl),
+          shift: Boolean(parsed.shift),
+          alt: Boolean(parsed.alt),
+        }
+      }
+    } catch {}
+    return { key: 'Tab', ctrl: true, shift: false, alt: false }
   })
   const primaryChatInputRef = useRef<HTMLTextAreaElement | null>(null)
   const primaryChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
@@ -1608,6 +1625,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       localStorage.setItem('omni-screen:combined-pause-emote-offscreen', combinedPauseEmoteAnimationsOffScreen ? '1' : '0')
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
       localStorage.setItem('omni-screen:primary-chat-focus-keybind', JSON.stringify(primaryChatFocusKeybind))
+      localStorage.setItem('omni-screen:channel-switch-keybind', JSON.stringify(channelSwitchKeybind))
       localStorage.setItem('omni-screen:chat-pane-width', String(chatPaneWidth))
       localStorage.setItem('omni-screen:chat-pane-side', chatPaneSide)
       localStorage.setItem('omni-screen:combined-chat-overlay-mode', combinedChatOverlayMode ? '1' : '0')
@@ -1633,6 +1651,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     combinedPauseEmoteAnimationsOffScreen,
     chatLinkOpenAction,
     primaryChatFocusKeybind,
+    channelSwitchKeybind,
     chatPaneWidth,
     chatPaneSide,
     combinedChatOverlayMode,
@@ -2269,6 +2288,26 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return Array.from(new Set(slugs)).sort()
   }, [selectedEmbedChatKeys])
 
+  const enabledYoutubeVideoIds = useMemo(() => {
+    const ids: string[] = []
+    selectedEmbedChatKeys.forEach((k) => {
+      const parsed = parseEmbedKey(k)
+      if (parsed?.platform !== 'youtube') return
+      ids.push(parsed.id)
+    })
+    return Array.from(new Set(ids)).sort()
+  }, [selectedEmbedChatKeys])
+
+  const enabledTwitchChannels = useMemo(() => {
+    const chans: string[] = []
+    selectedEmbedChatKeys.forEach((k) => {
+      const parsed = parseEmbedKey(k)
+      if (parsed?.platform !== 'twitch') return
+      chans.push(parsed.id)
+    })
+    return Array.from(new Set(chans)).sort()
+  }, [selectedEmbedChatKeys])
+
   /** User count cycle: 0 = total, 1 = primary, 2..n = Kick slugs. */
   const combinedUserCountCycleSteps = 1 + 1 + enabledKickSlugs.length
   const combinedDisplayedUserCount = useMemo(() => {
@@ -2738,6 +2777,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               enablePrimaryChat={combinedIncludePrimaryChat && primaryChatSourceAvailable}
               showPrimaryChatInput={showChatInput}
               enabledKickSlugs={enabledKickSlugs}
+              enabledYoutubeVideoIds={enabledYoutubeVideoIds}
+              enabledTwitchChannels={enabledTwitchChannels}
               getEmbedDisplayName={getEmbedDisplayName}
               getEmbedColor={getEmbedColor}
               getEmbedLabelHidden={getEmbedLabelHidden}
@@ -2761,6 +2802,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               primaryChatInputRef={primaryChatInputRef}
               primaryChatActionsRef={primaryChatActionsRef}
               focusShortcutLabel={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
+              channelSwitchKeybind={channelSwitchKeybind}
+              channelSwitchShortcutLabel={formatKeybind(channelSwitchKeybind)}
               overlayMode={combinedChatOverlayMode}
               overlayOpacity={combinedChatOverlayOpacity}
               messagesClickThrough={combinedChatOverlayMode ? overlayMessagesClickThrough : false}
@@ -4599,28 +4642,51 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {settingsTab === 'keybinds' && (
                 <div className="space-y-4">
                   <p className="text-sm text-base-content/60 mb-4">
-                    Focus primary chat input when the chat pane is open.
+                    Focus primary chat input when the chat pane is open. Switch chat channel when the chat input is focused and multiple channels are enabled.
                   </p>
-                  <div className="flex items-center gap-4">
-                    <label className="text-sm font-medium shrink-0">Focus primary chat input</label>
-                    <input
-                      type="text"
-                      readOnly
-                      className="input input-bordered input-sm w-40 font-mono"
-                      value={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
-                      title="Click then press the keys you want"
-                      onKeyDown={(e) => {
-                        e.preventDefault()
-                        const key = e.key === ' ' ? ' ' : e.key
-                        setPrimaryChatFocusKeybind({
-                          key,
-                          ctrl: e.ctrlKey,
-                          shift: e.shiftKey,
-                          alt: e.altKey,
-                        })
-                      }}
-                      onClick={(e) => (e.currentTarget as HTMLInputElement).focus()}
-                    />
+                  <div className="flex flex-col gap-4">
+                    <div className="flex items-center gap-4">
+                      <label className="text-sm font-medium shrink-0">Focus primary chat input</label>
+                      <input
+                        type="text"
+                        readOnly
+                        className="input input-bordered input-sm w-40 font-mono"
+                        value={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
+                        title="Click then press the keys you want"
+                        onKeyDown={(e) => {
+                          e.preventDefault()
+                          const key = e.key === ' ' ? ' ' : e.key
+                          setPrimaryChatFocusKeybind({
+                            key,
+                            ctrl: e.ctrlKey,
+                            shift: e.shiftKey,
+                            alt: e.altKey,
+                          })
+                        }}
+                        onClick={(e) => (e.currentTarget as HTMLInputElement).focus()}
+                      />
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <label className="text-sm font-medium shrink-0">Switch chat channel</label>
+                      <input
+                        type="text"
+                        readOnly
+                        className="input input-bordered input-sm w-40 font-mono"
+                        value={formatKeybind(channelSwitchKeybind)}
+                        title="Click then press the keys you want (e.g. Ctrl+Tab). Shown only when chat input is focused."
+                        onKeyDown={(e) => {
+                          e.preventDefault()
+                          const key = e.key === ' ' ? ' ' : e.key
+                          setChannelSwitchKeybind({
+                            key,
+                            ctrl: e.ctrlKey,
+                            shift: e.shiftKey,
+                            alt: e.altKey,
+                          })
+                        }}
+                        onClick={(e) => (e.currentTarget as HTMLInputElement).focus()}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

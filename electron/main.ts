@@ -15,6 +15,7 @@ import { mentionCache } from './mentionCache'
 import { KickChatManager, fetchKickChannelMe, getKickChatUserCount, sendKickMessage } from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
+import { getChannelIdByLogin, sendChatMessage as sendTwitchChatMessageGql } from './twitchGqlSend'
 import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeLiveOrLatest'
 import { checkUrlIsLive } from './urlIsLive'
 import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
@@ -486,6 +487,30 @@ function createApplicationMenu() {
         { role: 'reload', label: 'Reload' },
         { role: 'forceReload', label: 'Force Reload' },
         { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        {
+          label: 'Log level',
+          submenu: [
+            {
+              label: 'Normal',
+              type: 'radio',
+              checked: fileLogger.getLogLevel() === 'normal',
+              click: () => {
+                fileLogger.setLogLevel('normal')
+                createApplicationMenu()
+              }
+            },
+            {
+              label: 'Verbose',
+              type: 'radio',
+              checked: fileLogger.getLogLevel() === 'verbose',
+              click: () => {
+                fileLogger.setLogLevel('verbose')
+                createApplicationMenu()
+              }
+            }
+          ]
+        },
         { type: 'separator' },
         { role: 'resetZoom', label: 'Actual Size' },
         { role: 'zoomIn', label: 'Zoom In' },
@@ -3512,6 +3537,19 @@ ipcMain.handle('kick-send-message', async (_event, payload: { slug: string; cont
   }
 })
 
+/** YouTube live chat send_message — send a chat message to a YouTube live stream. */
+ipcMain.handle('youtube-send-message', async (_event, payload: { videoId: string; content: string }) => {
+  try {
+    const videoId = typeof payload?.videoId === 'string' ? payload.videoId.trim() : ''
+    const content = typeof payload?.content === 'string' ? payload.content : ''
+    if (!videoId) return { success: false, error: 'Missing videoId' }
+    if (!youTubeChatManager) return { success: false, error: 'YouTube chat not initialized' }
+    return await youTubeChatManager.sendMessage(videoId, content)
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
 // YouTube chat IPC handlers (polls youtubei live_chat endpoint)
 ipcMain.handle(
   'youtube-chat-set-targets',
@@ -3599,6 +3637,30 @@ ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: st
   }
 })
 
+/** Twitch chat send via GQL (gql.twitch.tv). Uses auth-token cookie from persist:main; login in Connections to send. */
+ipcMain.handle('twitch-send-message', async (_event, payload: { channel: string; content: string }) => {
+  try {
+    const channel = typeof payload?.channel === 'string' ? payload.channel.trim() : ''
+    const content = typeof payload?.content === 'string' ? payload.content : ''
+    if (!channel) return { success: false, error: 'Missing channel' }
+
+    const ses = getDefaultSession()
+    const cookies = await ses.cookies.get({ url: 'https://www.twitch.tv/' })
+    const authCookie = cookies.find((c) => c.name === 'auth-token')
+    const oauthToken = authCookie?.value?.trim()
+    if (!oauthToken) {
+      return { success: false, error: 'Not logged in to Twitch (add cookies in Connections)' }
+    }
+
+    const channelResult = await getChannelIdByLogin(channel)
+    if ('error' in channelResult) return { success: false, error: channelResult.error }
+
+    return await sendTwitchChatMessageGql(oauthToken, channelResult.channelId, content)
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
 ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
   try {
     console.log('[Main Process] Fetching LSF video URL for:', lsfUrl)
@@ -3673,6 +3735,12 @@ console.debug = (...args: any[]) => {
 // IPC handler for renderer process to send logs
 ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any[] = []) => {
   fileLogger.writeLog(level, 'renderer', message, args)
+})
+
+ipcMain.handle('get-log-level', () => fileLogger.getLogLevel())
+ipcMain.handle('set-log-level', (_event, level: 'normal' | 'verbose') => {
+  fileLogger.setLogLevel(level)
+  createApplicationMenu()
 })
 
 // Copy config to clipboard (renderer sends JSON string from localStorage)

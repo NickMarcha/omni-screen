@@ -186,6 +186,19 @@ export class TwitchChatManager extends EventEmitter {
     this.joinedChannels.delete(ch)
   }
 
+  /**
+   * Send a chat message to a channel. Current connection is anonymous (justinfan) so Twitch
+   * will not accept PRIVMSG. Returns stub error until OAuth/login is implemented.
+   */
+  async sendMessage(channel: string, text: string): Promise<{ success: boolean; error?: string }> {
+    const ch = safeLower(String(channel || '').trim()).replace(/^#/, '')
+    const trimmed = String(text || '').trim()
+    if (!ch) return { success: false, error: 'Missing channel' }
+    if (!trimmed) return { success: false, error: 'Message is empty' }
+    // Stub: sending requires authenticated IRC (OAuth). When auth is added, send PRIVMSG here.
+    return { success: false, error: 'Twitch send requires login (not yet implemented)' }
+  }
+
   private handleLine(line: string): void {
     if (!line) return
 

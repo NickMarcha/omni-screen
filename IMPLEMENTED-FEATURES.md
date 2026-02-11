@@ -4,38 +4,38 @@ This document outlines all features that have been implemented in the Omni Scree
 
 ## OmniScreen Feature (main feature)
 
-OmniScreen is the main feature: a split-screen view with Destiny.gg chat (via combined chat), live stream embeds (YouTube, Kick, Twitch), and a unified combined chat feed from all platforms.
+OmniScreen is the main feature: a split-screen view with [Redacted].gg chat (via combined chat), live stream embeds (YouTube, Kick, Twitch), and a unified combined chat feed from all platforms.
 
 ### Core Functionality
 
 #### Split-screen layout
-- **Left/center**: Resizable chat pane (combined chat only; DGG is included in combined chat)
+- **Left/center**: Resizable chat pane (combined chat only; [Redacted] is included in combined chat)
 - **Center**: Embed grid + dock of live streams
 - **Resizable**: Drag the divider to resize chat vs content area
 
 #### Live embeds
-- **Sources**: Embeds come from the DGG live WebSocket (`dggApi:embeds`, `dggApi:streamInfo`) and/or manual paste (Add link)
+- **Sources**: Embeds come from the [Redacted] live WebSocket (`[Redacted]Api:embeds`, `[Redacted]Api:streamInfo`) and/or manual paste (Add link)
 - **Dock**: Bottom dock lists available streams; click to show in grid. Each dock button can represent a single stream or a grouped streamer (YouTube + Kick + Twitch)
 - **Add link**: Paste a YouTube/Kick/Twitch URL to add an embed (optional “live only” check via `url-is-live` IPC)
 - **Pinned streamers**: Configure streamers (nickname + YouTube channel ID, Kick slug, Twitch login). Embeds for that streamer are grouped under one dock button. Hover shows all platforms with video/chat toggles and embed stats (viewers, embed count)
 - **Pie chart (What’s being watched)**: Button in the embed dock opens a popup with a pie chart of who is watching what, using data from the embeds WebSocket only (sum of embed counts per stream; no “Not watching” slice). Tooltip floats above the chart; labels are not cut off (viewBox + width); chart centered in popup
 - **Polling**: Pinned streamers’ YouTube/Kick/Twitch channels can be polled for live status; when live, embeds are added automatically
-- **YouTube “live only”**: Add by YouTube channel URL only if the channel is currently live (uses `youtube-live-or-latest` + DGG embed list heuristic)
+- **YouTube “live only”**: Add by YouTube channel URL only if the channel is currently live (uses `youtube-live-or-latest` + [Redacted] embed list heuristic)
 
 #### Combined chat
-- **Unified feed**: Single scrollable list of messages from DGG, YouTube, Kick, and Twitch (for enabled chats)
+- **Unified feed**: Single scrollable list of messages from [Redacted], YouTube, Kick, and Twitch (for enabled chats)
 - **Per-embed chat toggles**: Enable/disable each platform’s chat in the combined view via dock hover or settings
 - **Settings**: Max messages, show timestamps, source labels, sort by timestamp or arrival, YouTube poll delay multiplier
 - **Highlight term**: Optional text filter; messages whose **text** contains the term (case-insensitive) get a light blue background (e.g. your username)
-- **Components**: `CombinedChat.tsx` consumes messages from main process (IPC events for DGG, YouTube, Kick, Twitch chat)
-- **DGG private messages (whispers)**: The list of users who have whispered you is **persisted in localStorage** (`omni-screen:dgg-whisper-usernames`). Users are added when: (1) the app fetches unread via `GET /api/messages/unread` on first load when DGG chat is authenticated, (2) a WebSocket PRIVMSG event is received, (3) you send a whisper from the list view **only if** the subsequent **inbox fetch** (`GET /api/messages/usr/:username/inbox`) succeeds—otherwise the fields are just cleared. Users are **removed only** when you hit **Clear**. The 📫/📬 button is **always clickable** and opens the whisper list. In the list view, at the bottom: **"Whisper To"** field (combobox: suggestions from whisper list + DGG nicks, or type any username) and message field (placeholder "whisper message..", disabled until a recipient is entered). After sending a whisper we fetch inbox for that recipient; **only if that fetch succeeds** do we add the user to the list and open the conversation. Click a user in the list to view the conversation (inbox via `GET /api/messages/usr/:username/inbox`). In the conversation view, a **sticky "← Back"** header stays visible. Whispers are sent via the **chat WebSocket** (`PRIVMSG {"nick","data"}`). Per-user unread count and total badge on 📫/📬; send error shown above the recipient field when relevant.
-- **Poll (DGG)**: POLLSTART/POLLSTOP/vote-counted/poll-vote-error handled. If POLLSTART is for an already-ended poll (e.g. from HISTORY), it is shown as ended and the 15s dismiss timer runs; when the countdown reaches 0, the poll is marked over so it dismisses even if POLLSTOP is never received. Time left uses server time with support for `poll.start` / `poll.now` as Unix seconds. Vote feedback: "Sending vote…" and disabled buttons while pending; errors (e.g. "Already voted") shown. Logging in main and renderer for poll events and vote attempts.
-- **Combo rendering**: Consecutive single-emote messages (DGG or Kick) are grouped into a "C-C-C-COMBO" row. DGG combo emotes use the same rendering as message emotes (no fixed size; `.msg-chat.msg-emote .emote { flex-shrink: 0 }` in App.css).
+- **Components**: `CombinedChat.tsx` consumes messages from main process (IPC events for [Redacted], YouTube, Kick, Twitch chat)
+- **[Redacted] private messages (whispers)**: The list of users who have whispered you is **persisted in localStorage** (`omni-screen:[Redacted]-whisper-usernames`). Users are added when: (1) the app fetches unread via `GET /api/messages/unread` on first load when [Redacted] chat is authenticated, (2) a WebSocket PRIVMSG event is received, (3) you send a whisper from the list view **only if** the subsequent **inbox fetch** (`GET /api/messages/usr/:username/inbox`) succeeds—otherwise the fields are just cleared. Users are **removed only** when you hit **Clear**. The 📫/📬 button is **always clickable** and opens the whisper list. In the list view, at the bottom: **"Whisper To"** field (combobox: suggestions from whisper list + [Redacted] nicks, or type any username) and message field (placeholder "whisper message..", disabled until a recipient is entered). After sending a whisper we fetch inbox for that recipient; **only if that fetch succeeds** do we add the user to the list and open the conversation. Click a user in the list to view the conversation (inbox via `GET /api/messages/usr/:username/inbox`). In the conversation view, a **sticky "← Back"** header stays visible. Whispers are sent via the **chat WebSocket** (`PRIVMSG {"nick","data"}`). Per-user unread count and total badge on 📫/📬; send error shown above the recipient field when relevant.
+- **Poll ([Redacted])**: POLLSTART/POLLSTOP/vote-counted/poll-vote-error handled. If POLLSTART is for an already-ended poll (e.g. from HISTORY), it is shown as ended and the 15s dismiss timer runs; when the countdown reaches 0, the poll is marked over so it dismisses even if POLLSTOP is never received. Time left uses server time with support for `poll.start` / `poll.now` as Unix seconds. Vote feedback: "Sending vote…" and disabled buttons while pending; errors (e.g. "Already voted") shown. Logging in main and renderer for poll events and vote attempts.
+- **Combo rendering**: Consecutive single-emote messages ([Redacted] or Kick) are grouped into a "C-C-C-COMBO" row. [Redacted] combo emotes use the same rendering as message emotes (no fixed size; `.msg-chat.msg-emote .emote { flex-shrink: 0 }` in App.css).
 
-#### DGG integration
-- **Chat WebSocket**: `electron/chatWebSocket.ts` — connects to `wss://chat.destiny.gg/ws`, parses MSG, JOIN, QUIT, HISTORY, PIN, MUTE, UNMUTE, PRIVMSG, POLLSTART, POLLSTOP, VOTECAST, VOTECOUNTED, ERR (poll vote error), etc. Forwards to renderer via IPC (`chat-websocket-message`, `chat-websocket-privmsg`, `chat-websocket-poll-start`, etc.). DGG chat is shown in the combined chat pane only.
-- **Live WebSocket**: `electron/liveWebSocket.ts` — connects to `wss://live.destiny.gg/`, receives `dggApi:embeds`, `dggApi:streamInfo`, `dggApi:bannedEmbeds`, etc. Drives the embed list and dock
-- **DGG messages API**: IPC handlers `dgg-send-whisper` (sends via chat WebSocket as `PRIVMSG {"nick","data"}` when connected), `dgg-messages-unread` (GET `/api/messages/unread`), `dgg-messages-inbox` (GET `/api/messages/usr/:username/inbox`); unread and inbox use session cookies from `persist:main`
+#### [Redacted] integration
+- **Chat WebSocket**: `electron/chatWebSocket.ts` — connects to `wss://chat.[Redacted].gg/ws`, parses MSG, JOIN, QUIT, HISTORY, PIN, MUTE, UNMUTE, PRIVMSG, POLLSTART, POLLSTOP, VOTECAST, VOTECOUNTED, ERR (poll vote error), etc. Forwards to renderer via IPC (`chat-websocket-message`, `chat-websocket-privmsg`, `chat-websocket-poll-start`, etc.). [Redacted] chat is shown in the combined chat pane only.
+- **Live WebSocket**: `electron/liveWebSocket.ts` — connects to `wss://live.[Redacted].gg/`, receives `[Redacted]Api:embeds`, `[Redacted]Api:streamInfo`, `[Redacted]Api:bannedEmbeds`, etc. Drives the embed list and dock
+- **[Redacted] messages API**: IPC handlers `[Redacted]-send-whisper` (sends via chat WebSocket as `PRIVMSG {"nick","data"}` when connected), `[Redacted]-messages-unread` (GET `/api/messages/unread`), `[Redacted]-messages-inbox` (GET `/api/messages/usr/:username/inbox`); unread and inbox use session cookies from `persist:main`
 
 ### OmniScreen technical notes
 
@@ -49,7 +49,7 @@ OmniScreen is the main feature: a split-screen view with Destiny.gg chat (via co
 
 ## Link Scroller Feature
 
-The Link Scroller allows users to browse through links shared in Destiny.gg chat mentions.
+The Link Scroller allows users to browse through links shared in [Redacted].gg chat mentions.
 
 ### Core Functionality
 
@@ -347,9 +347,9 @@ Accessible via floating cog button (bottom-right) with three tabs:
 - **`src/components/OmniScreen.tsx`**: Main OmniScreen UI
   - Split-screen layout (chat pane + embed grid), dock, pinned streamers modal
   - Combined chat settings (highlight term, timestamps, labels, sort, YT poll multiplier)
-  - Subscribes to DGG/YouTube/Kick/Twitch chat via IPC; passes messages to CombinedChat
+  - Subscribes to [Redacted]/YouTube/Kick/Twitch chat via IPC; passes messages to CombinedChat
 - **`src/components/CombinedChat.tsx`**: Combined chat feed
-  - Receives messages from OmniScreen (DGG, YouTube, Kick, Twitch)
+  - Receives messages from OmniScreen ([Redacted], YouTube, Kick, Twitch)
   - Renders unified list with platform badges, timestamps, optional highlight term (light blue background on matching message text)
 
 #### Link Scroller
@@ -471,8 +471,8 @@ omni-screen/
 │   ├── main.ts              # Main process, IPC handlers, chat/live WebSockets
 │   ├── preload.ts           # IPC bridge to renderer
 │   ├── update.ts            # Auto-update logic
-│   ├── chatWebSocket.ts     # DGG chat WebSocket (MSG, JOIN, UNMUTE, etc.)
-│   ├── liveWebSocket.ts     # DGG live WebSocket (embeds, streamInfo)
+│   ├── chatWebSocket.ts     # [Redacted] chat WebSocket (MSG, JOIN, UNMUTE, etc.)
+│   ├── liveWebSocket.ts     # [Redacted] live WebSocket (embeds, streamInfo)
 │   ├── youtubeChatManager.ts # YouTube live chat polling
 │   ├── kickChatManager.ts   # Kick chat (Pusher)
 │   ├── twitchChatManager.ts # Twitch IRC chat
@@ -483,7 +483,7 @@ omni-screen/
 ├── src/
 │   ├── components/
 │   │   ├── OmniScreen.tsx         # Main OmniScreen (split-screen, dock, combined chat)
-│   │   ├── CombinedChat.tsx       # Combined chat feed (DGG + YT + Kick + Twitch)
+│   │   ├── CombinedChat.tsx       # Combined chat feed ([Redacted] + YT + Kick + Twitch)
 │   │   ├── LinkScroller.tsx        # Link Scroller (mentions → link cards)
 │   │   ├── ListManager.tsx        # List management UI
 │   │   └── embeds/

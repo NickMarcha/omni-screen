@@ -463,8 +463,10 @@ interface PrimaryChatInputBarProps {
   emotesMap: Map<string, string>
   primaryChatNicks: string[]
   placeholder?: string
-  /** Shown on the right of the input when set (e.g. "Ctrl + Space"). */
+  /** Shown when input is not focused (e.g. "Ctrl + Space" to focus the input). */
   shortcutLabel?: string
+  /** Shown when input is focused and multiple channels (e.g. "Ctrl + Tab" to switch channel). Only shown when focused. */
+  channelSwitchShortcutLabel?: string
   /** When true, render autocomplete dropdown in a portal with fixed position (avoids clipping in overlay mode; keeps dropdown on-screen). */
   dropdownInPortal?: boolean
 }
@@ -475,7 +477,7 @@ const DROPDOWN_MAX_H = 192
 const DROPDOWN_MARGIN = 8
 
 const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarProps>(function PrimaryChatInputBar(
-  { value, onChange, onSend, onKeyDown, disabled, emotesMap, primaryChatNicks, placeholder, shortcutLabel, dropdownInPortal = false },
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, primaryChatNicks, placeholder, shortcutLabel, channelSwitchShortcutLabel, dropdownInPortal = false },
   ref
 ) {
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -690,11 +692,13 @@ const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarP
     [mergedRef, resize]
   )
 
+  const displayShortcutLabel = focused ? channelSwitchShortcutLabel : shortcutLabel
+  const hasAnyShortcutHint = Boolean(shortcutLabel || channelSwitchShortcutLabel)
   const inputContent = (
     <>
       <textarea
         ref={setRef}
-        className={`min-h-0 resize-none py-2 block break-words border-0 bg-transparent focus:outline-none focus:ring-0 ${shortcutLabel ? 'flex-1 min-w-0' : 'input input-sm input-bordered w-full flex-1 min-w-0'}`}
+        className={`min-h-0 resize-none py-2 block break-words border-0 bg-transparent focus:outline-none focus:ring-0 ${hasAnyShortcutHint ? 'flex-1 min-w-0' : 'input input-sm input-bordered w-full flex-1 min-w-0'}`}
         style={{
           maxHeight: MAX_H,
           overflowX: 'hidden',
@@ -714,9 +718,9 @@ const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarP
         rows={1}
         wrap="soft"
       />
-      {shortcutLabel && !focused ? (
+      {displayShortcutLabel ? (
         <span className="shrink-0 text-base-content/50 text-xs pr-1" aria-hidden>
-          ({shortcutLabel})
+          ({displayShortcutLabel})
         </span>
       ) : null}
     </>
@@ -725,7 +729,7 @@ const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarP
   return (
     <div className="chat-input-bar flex-none border-t border-base-300 bg-base-200 flex items-center gap-2 relative shrink-0">
       <div className="flex-1 min-w-0 relative flex flex-col">
-        {shortcutLabel ? (
+        {hasAnyShortcutHint ? (
           <div className="input input-sm input-bordered flex flex-1 min-w-0 items-center gap-2 overflow-hidden w-full">
             {inputContent}
           </div>
@@ -1135,7 +1139,11 @@ export default function CombinedChat({
   primaryChatInputRef: primaryChatInputRefProp,
   primaryChatActionsRef: primaryChatActionsRefProp,
   focusShortcutLabel,
+  channelSwitchKeybind,
+  channelSwitchShortcutLabel,
   enabledKickSlugs = [],
+  enabledYoutubeVideoIds = [],
+  enabledTwitchChannels = [],
   overlayMode = false,
   overlayOpacity = 0.85,
   messagesClickThrough = false,
@@ -1187,10 +1195,18 @@ export default function CombinedChat({
   primaryChatInputRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Optional ref from parent to get { appendToInput(text) } for pasting into primary chat input (e.g. from dock menu). */
   primaryChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
-  /** Shortcut label for placeholder, e.g. "Ctrl + Space". */
+  /** Shortcut label shown when input is not focused (e.g. "Ctrl + Space" to focus the input). */
   focusShortcutLabel?: string
-  /** Kick slugs that have chat enabled (for channel cycling and sending). Ctrl+Tab cycles primary chat + these. */
+  /** Keybind for switching chat channel (e.g. Ctrl+Tab). Only used when chat input is focused. */
+  channelSwitchKeybind?: { key: string; ctrl: boolean; shift: boolean; alt: boolean }
+  /** Formatted label for channel-switch keybind, shown when input is focused and multiple channels. */
+  channelSwitchShortcutLabel?: string
+  /** Kick slugs that have chat enabled (for channel cycling and sending). */
   enabledKickSlugs?: string[]
+  /** YouTube video IDs that have chat enabled (for channel cycling and sending). */
+  enabledYoutubeVideoIds?: string[]
+  /** Twitch channel names that have chat enabled (for channel cycling and sending). */
+  enabledTwitchChannels?: string[]
   /** When true, chat is overlaid on embed area; messages area uses semi-transparent background. */
   overlayMode?: boolean
   /** Opacity of the messages area background in overlay mode (0–1). Default 0.85. */
@@ -1219,16 +1235,29 @@ export default function CombinedChat({
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
   const [primaryChatInputValue, setPrimaryChatInputValue] = useState('')
-  /** Ordered list of chat channels: primary chat (if enabled) then each enabled Kick slug. Ctrl+Tab cycles. */
+  /** Ordered list of chat channels: primary, Kick, YouTube, Twitch. Ctrl+Tab cycles. */
   const chatChannels = useMemo(() => {
-    const list: Array<{ type: string } | { type: 'kick'; slug: string }> = []
+    const list: Array<
+      | { type: string }
+      | { type: 'kick'; slug: string }
+      | { type: 'youtube'; videoId: string }
+      | { type: 'twitch'; channel: string }
+    > = []
     if (enablePrimaryChat && primaryChatSourceId) list.push({ type: primaryChatSourceId })
     for (const slug of enabledKickSlugs) {
       const s = String(slug || '').trim()
       if (s) list.push({ type: 'kick', slug: s })
     }
+    for (const videoId of enabledYoutubeVideoIds) {
+      const v = String(videoId || '').trim()
+      if (v) list.push({ type: 'youtube', videoId: v })
+    }
+    for (const ch of enabledTwitchChannels) {
+      const c = String(ch || '').trim()
+      if (c) list.push({ type: 'twitch', channel: c })
+    }
     return list
-  }, [enablePrimaryChat, enabledKickSlugs])
+  }, [enablePrimaryChat, enabledKickSlugs, enabledYoutubeVideoIds, enabledTwitchChannels])
   const [activeChatChannelIndex, setActiveChatChannelIndex] = useState(0)
   const activeChatChannelIndexClamped = chatChannels.length > 0 ? Math.min(activeChatChannelIndex, chatChannels.length - 1) : 0
   const activeChannel = chatChannels[activeChatChannelIndexClamped] ?? null
@@ -2685,14 +2714,43 @@ export default function CombinedChat({
         .catch(() => setPrimaryChatPublicSendError('Kick send failed'))
       return
     }
+    if (activeChannel && 'videoId' in activeChannel && activeChannel.type === 'youtube') {
+      window.ipcRenderer
+        .invoke('youtube-send-message', { videoId: activeChannel.videoId, content: text })
+        .then((result: { success?: boolean; error?: string }) => {
+          if (result?.success) {
+            setPrimaryChatInputValue('')
+            setPrimaryChatPublicSendError(null)
+          } else {
+            setPrimaryChatPublicSendError(result?.error ?? 'YouTube send failed')
+          }
+        })
+        .catch(() => setPrimaryChatPublicSendError('YouTube send failed'))
+      return
+    }
+    if (activeChannel && 'channel' in activeChannel && activeChannel.type === 'twitch') {
+      window.ipcRenderer
+        .invoke('twitch-send-message', { channel: activeChannel.channel, content: text })
+        .then((result: { success?: boolean; error?: string }) => {
+          if (result?.success) {
+            setPrimaryChatInputValue('')
+            setPrimaryChatPublicSendError(null)
+          } else {
+            setPrimaryChatPublicSendError(result?.error ?? 'Twitch send failed')
+          }
+        })
+        .catch(() => setPrimaryChatPublicSendError('Twitch send failed'))
+      return
+    }
     sendPrimaryChatMessage()
   }, [primaryChatInputValue, activeChannel, sendPrimaryChatMessage])
 
   const onPrimaryChatInputKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.ctrlKey && e.key === 'Tab') {
+      const kb = channelSwitchKeybind
+      const keyMatch = kb && chatChannels.length > 1 && (kb.key === ' ' ? e.key === ' ' : e.key === kb.key) && e.ctrlKey === kb.ctrl && e.altKey === kb.alt
+      if (keyMatch) {
         e.preventDefault()
-        if (chatChannels.length <= 1) return
         setActiveChatChannelIndex((i) => (e.shiftKey ? (i - 1 + chatChannels.length) % chatChannels.length : (i + 1) % chatChannels.length))
         return
       }
@@ -2701,7 +2759,7 @@ export default function CombinedChat({
         sendToActiveChannel()
       }
     },
-    [sendToActiveChannel, chatChannels.length]
+    [sendToActiveChannel, chatChannels.length, channelSwitchKeybind]
   )
 
   const scrollToBottom = useCallback(() => {
@@ -2741,12 +2799,12 @@ export default function CombinedChat({
 
   const inputBlock = (
     <>
-      {enablePrimaryChat && showPrimaryChatInput && !primaryChatAuthenticated && enabledKickSlugs.length === 0 && (
+      {enablePrimaryChat && showPrimaryChatInput && !primaryChatAuthenticated && enabledKickSlugs.length === 0 && enabledYoutubeVideoIds.length === 0 && enabledTwitchChannels.length === 0 && (
         <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
           Login → Main menu → Connections
         </div>
       )}
-      {((enablePrimaryChat && showPrimaryChatInput && primaryChatAuthenticated) || enabledKickSlugs.length > 0) && (
+      {((enablePrimaryChat && showPrimaryChatInput && primaryChatAuthenticated) || enabledKickSlugs.length > 0 || enabledYoutubeVideoIds.length > 0 || enabledTwitchChannels.length > 0) && (
         <div className="flex flex-col gap-1 min-w-0 flex-none">
           {primaryChatSourceId && activeChannel?.type === primaryChatSourceId && privViewOpen && !activeWhisperUsername && (
             <>
@@ -2817,15 +2875,26 @@ export default function CombinedChat({
                 placeholder={
                   activeChannel && 'slug' in activeChannel
                     ? `Message Kick / ${activeChannel.slug}...`
-                    : activeWhisperUsername
-                      ? (primaryChatConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
-                      : privViewOpen
-                        ? (primaryChatConnected ? 'whisper message..' : 'Connecting...')
-                        : primaryChatPublicChatDisabled
-                          ? 'Sub only mode — subscribers can type'
-                          : (primaryChatConnected ? 'Message chat...' : 'Connecting...')
+                    : activeChannel && 'videoId' in activeChannel && activeChannel.type === 'youtube'
+                      ? (() => {
+                          const key = `youtube:${activeChannel.videoId}`
+                          const name = getEmbedDisplayName(key)?.trim() || activeChannel.videoId
+                          return `Message YouTube / ${name}...`
+                        })()
+                      : activeChannel && 'channel' in activeChannel && activeChannel.type === 'twitch'
+                        ? `Message Twitch / ${activeChannel.channel}...`
+                        : activeWhisperUsername
+                          ? (primaryChatConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
+                          : privViewOpen
+                            ? (primaryChatConnected ? 'whisper message..' : 'Connecting...')
+                            : primaryChatPublicChatDisabled
+                              ? 'Sub only mode — subscribers can type'
+                              : (primaryChatConnected
+                                ? `Message ${(primaryChatSourceLabelText ?? 'chat').trim() || 'chat'}...`
+                                : 'Connecting...')
                 }
-                shortcutLabel={chatChannels.length > 1 ? 'Ctrl+Tab' : primaryChatConnected ? focusShortcutLabel : undefined}
+                shortcutLabel={primaryChatConnected || chatChannels.length > 1 ? focusShortcutLabel : undefined}
+                channelSwitchShortcutLabel={chatChannels.length > 1 ? channelSwitchShortcutLabel : undefined}
                 dropdownInPortal={overlayMode}
               />
             </div>
