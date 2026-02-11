@@ -3352,7 +3352,7 @@ export default function CombinedChat({
           const comboStepClass = count >= 50 ? 'x50' : count >= 30 ? 'x30' : count >= 20 ? 'x20' : count >= 10 ? 'x10' : count >= 5 ? 'x5' : 'x2'
           return (
             <div
-              key={`combo-${source}-${emoteKey}-${tsMs}-${count}`}
+              key={`combo-${source}-${emoteKey}-${tsMs}-${count}-${entry.index}`}
               className={`msg-chat msg-emote text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass}`}
               data-combo={count}
               data-combo-group={comboStepClass}
