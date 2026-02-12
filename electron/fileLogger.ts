@@ -365,6 +365,10 @@ class FileLogger {
     if (this._logLevel === 'normal' && (this.isVerboseMessage(level, message) || this.isDebugMessage(level, message))) return
     if (this._logLevel === 'verbose' && this.isDebugMessage(level, message)) return
 
+    // Don't log Node.js deprecation warnings to files (noise, not actionable)
+    const msg = String(message)
+    if (msg.includes('DeprecationWarning') || msg.includes('DEP0180')) return
+
     this.ensureSessionInitialized()
     if (!this.logStream) return
 
@@ -411,7 +415,7 @@ class FileLogger {
       this.logStream = null
     }
     if (this.errorStream) {
-      this.errorStream.write(`[${iso}] [ERROR] [MAIN] === Application Session Ended ===\n`)
+      // Don't write session-end to error log; it's not an error
       this.errorStream.end()
       this.errorStream = null
       this.errorLogFilePath = null

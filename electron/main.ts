@@ -3715,6 +3715,11 @@ ipcMain.handle('fetch-lsf-video-url', async (_event, lsfUrl: string) => {
 // This ensures the logs directory is created in the correct location (project root/logs)
 fileLogger.initialize()
 
+// Suppress Node.js deprecation warnings (e.g. DEP0180 fs.Stats) - they come from dependencies and clutter logs
+process.on('warning', (warning) => {
+  if (warning.name === 'DeprecationWarning') return
+})
+
 // Intercept console methods in main process: write to log files; errors/warnings go to files only (no console)
 function stringifyArgs(args: any[]): string {
   return args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')
