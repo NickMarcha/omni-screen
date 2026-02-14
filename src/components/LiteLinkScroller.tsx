@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Icon } from './Icon'
 import { LinkCardOverviewCard, LinkCardExpandedContent } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
 import type { PlatformDisplayMode } from './LinkScroller'
@@ -320,7 +321,7 @@ export function LiteLinkScroller({
               title="Lite link scroller settings"
               onClick={onOpenSettings}
             >
-              ⚙️
+              <Icon name="settings" size={16} />
             </button>
           )}
         </div>
@@ -419,7 +420,7 @@ export function LiteLinkScroller({
             title="Mute"
             onClick={() => onSettingsChange?.({ mute: !settings.mute })}
           >
-            {settings.mute ? '🔇' : '🔉'}
+            <Icon name={settings.mute ? 'volume-x' : 'volume-2'} size={16} />
           </button>
           <button
             type="button"

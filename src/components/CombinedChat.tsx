@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Icon } from './Icon'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
 import PollView, { type PollData } from './PollView'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
@@ -1148,6 +1149,7 @@ export default function CombinedChat({
   overlayOpacity = 0.85,
   messagesClickThrough = false,
   overlayHeaderHeight,
+  overlayCinemaMode,
   inputContainerRef,
   contextMenuRef,
 }: {
@@ -1215,6 +1217,8 @@ export default function CombinedChat({
   messagesClickThrough?: boolean
   /** When set (e.g. in overlay mode), top offset in px so pinned message and pin button sit below the overlay header. */
   overlayHeaderHeight?: number
+  /** When true in overlay mode, use compact cinema styling (no rounded corners). When false, use relaxed styling with rounded corners. */
+  overlayCinemaMode?: boolean
   /** When set (e.g. in overlay mode), the input bar is portaled into this container (e.g. next to dock). */
   inputContainerRef?: React.RefObject<HTMLDivElement | null>
   /** When set, parent can call .openContextMenu(e) to show the same context menu as the message area (e.g. on header). */
@@ -2915,7 +2919,7 @@ export default function CombinedChat({
                 })
               }}
             >
-              {totalUnread > 0 ? '📬' : '📫'}
+              <Icon name="mail" size={20} />
               {totalUnread > 0 && (
                 <span className="absolute -top-0.5 -right-0.5 min-w-[1rem] h-4 px-1 flex items-center justify-center text-[10px] font-medium rounded-full bg-primary text-primary-content" aria-hidden>
                   {totalUnread > 99 ? '99+' : totalUnread}
@@ -2931,7 +2935,7 @@ export default function CombinedChat({
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {overlayMode && inputContainerRef?.current && createPortal(
-        <div className="chat-overlay-input-strip h-full min-h-0 flex flex-col w-full" style={{ backgroundColor: 'var(--color-base-200)' }}>
+        <div className="chat-overlay-input-strip h-full min-h-0 flex flex-col justify-end overflow-hidden w-full" style={{ backgroundColor: 'var(--color-base-200)' }}>
           {inputBlock}
         </div>,
         inputContainerRef.current
@@ -3033,7 +3037,7 @@ export default function CombinedChat({
         )}
         <div
           ref={scrollerRef}
-          className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}
+          className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''} ${overlayMode && overlayCinemaMode === false ? 'rounded-lg' : ''}`}
           style={
             overlayMode
               ? {
@@ -3139,7 +3143,7 @@ export default function CombinedChat({
                       <span className="flex-1 min-w-0 font-medium truncate inline-flex items-center gap-2">
                         {unreadUsernames.has(username) ? (
                           <span className="inline-flex items-center gap-1">
-                            <span aria-hidden>📬</span>
+                            <Icon name="mail" size={16} />
                             {username}
                           </span>
                         ) : (
@@ -3189,14 +3193,14 @@ export default function CombinedChat({
             if (m.source.endsWith('-system')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const kind = 'kind' in m ? m.kind : 'mute'
-              const icon = kind === 'ban' ? '🔨' : kind === 'unmute' ? '🔓' : '🔇'
+              const iconEl = kind === 'ban' ? <span aria-hidden>🔨</span> : kind === 'unmute' ? <Icon name="unlock" size={16} /> : <Icon name="volume-x" size={16} />
               return (
                 <div
                   key={`msg-primary-system-${(m as CombinedItemWithSeq).seq}-${kind}-${m.tsMs}`}
                   className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/70"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
-                  <span className="mr-1.5" aria-hidden>{icon}</span>
+                  <span className="mr-1.5 inline-flex items-center" aria-hidden>{iconEl}</span>
                   <span className="whitespace-pre-wrap break-words">{m.content}</span>
                 </div>
               )

@@ -11,6 +11,7 @@ import type { LinkCard } from './LinkScroller'
 import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
+import { Icon } from './Icon'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
 /** Log for bookmarked streamers (settings list: YT/Kick/Twitch poll and results). Not for pinned embeds. */
@@ -326,7 +327,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
             onClick={() => p.setCombinedChatOverlayMode((v) => !v)}
             aria-label="Toggle overlay mode"
           >
-            {p.combinedChatOverlayMode ? '📌' : '⊞'}
+            {p.combinedChatOverlayMode ? <Icon name="sidebar" size={14} /> : <Icon name="layers" size={14} />}
           </button>
           <div className="relative" ref={p.overlayOpacityDropdownRef as React.RefObject<HTMLDivElement>}>
             <button
@@ -337,7 +338,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
               aria-expanded={p.overlayOpacityDropdownOpen}
               onClick={() => p.setOverlayOpacityDropdownOpen((v) => !v)}
             >
-              ⬜
+              <Icon name="percent" size={14} />
             </button>
             {p.overlayOpacityDropdownOpen && (
               <div className="absolute top-full left-0 mt-1 py-1.5 px-1.5 rounded-lg border border-base-300 bg-base-200 shadow-lg z-[100] flex flex-col items-center gap-1 min-w-0 h-36">
@@ -365,7 +366,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
             aria-label={p.overlayMessagesClickThrough ? 'Disable click through' : 'Enable click through'}
             onClick={() => p.setOverlayMessagesClickThrough((v) => !v)}
           >
-            {p.overlayMessagesClickThrough ? '🔓' : '🔒'}
+            {p.overlayMessagesClickThrough ? <Icon name="unlock" size={16} /> : <Icon name="lock" size={16} />}
           </button>
           <button
             type="button"
@@ -374,7 +375,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
             onClick={() => p.setChatPaneOpen(false)}
             aria-label="Close chat"
           >
-            ×
+            <Icon name="x" size={14} />
           </button>
         </div>
       </div>
@@ -718,6 +719,10 @@ function parseEmbedUrl(url: string): { platform: string; id: string } | null {
   }
   return null
 }
+
+/** Shared classes for embed dock icon buttons. Uses DaisyUI btn-ghost/btn-primary for theme. */
+const EMBED_DOCK_ICON_BTN = 'btn btn-sm btn-square btn-ghost min-h-0 p-0'
+const EMBED_DOCK_ICON_BTN_CINEMA = 'rounded-none self-stretch h-full min-h-0'
 
 export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void }) {
   // ---- Live WS (embeds list) ----
@@ -1532,12 +1537,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     return out
   }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId, availableEmbeds, isPinnedEmbedKey])
 
-  /** Icons for embed source: 🔖 bookmarked, #️⃣ live embed, 📌 pinned. */
+  /** Icons for embed source: bookmark bookmarked, hash live embed, map-pin pinned. */
   function embedSourceIcons(s: { bookmarked: boolean; fromLiveEmbed: boolean; pinnedToList: boolean }): { icon: string; title: string }[] {
     const out: { icon: string; title: string }[] = []
-    if (s.pinnedToList) out.push({ icon: '📌', title: 'Pinned' })
-    if (s.bookmarked) out.push({ icon: '🔖', title: 'Bookmarked' })
-    if (s.fromLiveEmbed) out.push({ icon: '#️⃣', title: 'Live embed' })
+    if (s.pinnedToList) out.push({ icon: 'map-pin', title: 'Pinned' })
+    if (s.bookmarked) out.push({ icon: 'bookmark', title: 'Bookmarked' })
+    if (s.fromLiveEmbed) out.push({ icon: 'hash', title: 'Live embed' })
     return out
   }
 
@@ -2808,6 +2813,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               overlayOpacity={combinedChatOverlayOpacity}
               messagesClickThrough={combinedChatOverlayMode ? overlayMessagesClickThrough : false}
               overlayHeaderHeight={combinedChatOverlayMode ? CHAT_OVERLAY_HEADER_HEIGHT : undefined}
+              overlayCinemaMode={combinedChatOverlayMode ? cinemaMode : undefined}
               inputContainerRef={combinedChatOverlayMode ? chatOverlayInputContainerRef : undefined}
               contextMenuRef={combinedChatContextMenuRef}
             />,
@@ -2875,7 +2881,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         onClick={() => setCombinedChatOverlayMode(true)}
                         aria-label="Overlay chat on embeds"
                       >
-                        ⊞
+                        <Icon name="layers" size={14} />
                       </button>
                       <button
                         type="button"
@@ -2884,7 +2890,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         onClick={() => setChatPaneOpen(false)}
                         aria-label="Close chat"
                       >
-                        ×
+                        <Icon name="x" size={14} />
                       </button>
                     </div>
                   </div>
@@ -2903,7 +2909,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
         )}
 
         {/* Center column: embeds grid + dock (dock order switches by dockAtTop) */}
-        <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'} ${cinemaMode ? '' : 'gap-3'}`}>
           {/* 50% transparent background behind embeds */}
           <div
             className="absolute inset-0 opacity-50 pointer-events-none bg-center bg-no-repeat bg-cover"
@@ -2977,13 +2983,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
           {/* Embeds dock (when overlay + chat open: dock and chat input in one row; input side matches chat side). z-20 so it paints above the grid (z-10) and we don't see the background image through the input strip. */}
           {combinedChatOverlayMode && chatPaneOpen ? (
-            <div className={`relative z-20 flex flex-none items-stretch min-h-0 bg-base-200 ${dockAtTop ? 'order-0' : 'order-1'}`} style={{ minHeight: 'var(--embed-dock-height)' }}>
-              <div className={`flex-1 min-w-0 min-h-0 flex ${chatPaneSide === 'left' ? 'flex-row-reverse' : ''}`}>
+            <div
+              className={`relative z-20 flex flex-none items-center min-h-0 bg-base-200 overflow-hidden ${dockAtTop ? 'order-0' : 'order-1'} ${!cinemaMode ? 'rounded-lg' : ''}`}
+              style={{ height: cinemaMode ? 'var(--embed-dock-height)' : 'var(--embed-dock-bar-relaxed-height)' }}
+            >
+              <div className={`flex-1 min-w-0 min-h-0 flex items-center ${chatPaneSide === 'left' ? 'flex-row-reverse' : ''}`}>
                 <div
                   ref={dockBarRef}
                   className={[
-                    'embed-dock-bar relative z-20 flex items-center flex-1 min-w-0',
-                    cinemaMode ? `mt-0 bg-base-200 rounded-none gap-0 p-0 items-stretch ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}` : dockAtTop ? 'mb-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2' : 'mt-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
+                    'embed-dock-bar relative z-20 flex items-center flex-1 min-w-0 h-full',
+                    cinemaMode ? `mt-0 bg-base-200 rounded-none gap-0 p-0 items-stretch ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}` : 'mt-0 mb-0 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
                   ].join(' ')}
                   onContextMenu={onDockBarContextMenu}
                 >
@@ -3032,22 +3041,22 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   </div>
                   {/* Same fixed controls as non-overlay dock - reusing same refs (pieChartButtonRef etc.) */}
                   <div className={`embed-dock-controls flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1 self-stretch' : 'gap-2'}`}>
-                    <button type="button" ref={pieChartButtonRef} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="What's being watched (by platform)" aria-label="Show watch proportions" onMouseEnter={openPiePopup} onMouseLeave={scheduleClosePiePopup} onClick={() => setPieChartPinned((p) => !p)}>🥧</button>
+                    <button type="button" ref={pieChartButtonRef} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="What's being watched (by platform)" aria-label="Show watch proportions" onMouseEnter={openPiePopup} onMouseLeave={scheduleClosePiePopup} onClick={() => setPieChartPinned((p) => !p)}><Icon name="pie-chart" size={20} /></button>
                     <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
-                      <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">➕</label>
+                      <label tabIndex={0} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Add embed from link (YouTube, Kick, Twitch)"><Icon name="plus-square" size={20} /></label>
                       <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
                         <input type="text" placeholder="Paste link or YouTube channel" className="input input-sm input-bordered w-full" id="omni-add-embed-input" disabled={ytChannelLoading} autoComplete="off" onKeyDown={async (e) => { if (e.key !== 'Enter') return; const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }} />
                         <button type="button" className="btn btn-sm btn-primary" title="Add embed" disabled={ytChannelLoading} onClick={async () => { const el = document.getElementById('omni-add-embed-input') as HTMLInputElement | null; const raw = el?.value?.trim(); if (!raw) return; setPasteLinkError(null); setYtChannelError(null); const parsed = parseEmbedUrl(raw); if (parsed) { if ((await addEmbedFromUrl(raw)) && el) el.value = ''; return }; setYtChannelLoading(true); window.ipcRenderer.invoke('youtube-live-or-latest', raw).then(async (r: { error?: string; videoId?: string; isLive?: boolean }) => { if (r?.error) { if (r.error.includes('not currently live')) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; setYtChannelError(r.error ?? 'Failed'); return }; if (!r?.isLive) { const nickname = raw.replace(/^https?:\/\/(www\.)?youtube\.com\//i, '').replace(/^@/, '') || 'YouTube'; setBookmarkedStreamers((prev) => [...prev, { id: `streamer-${Date.now()}`, nickname, youtubeChannelId: raw }]); if (el) el.value = ''; setYtChannelError(null); setBookmarkedPollRefreshTrigger((t) => t + 1); return }; if (r?.videoId && (await addEmbedFromUrl(`https://www.youtube.com/watch?v=${r.videoId}`)) && el) el.value = ''; setYtChannelError(null); }).finally(() => setYtChannelLoading(false)) }}>{ytChannelLoading ? '…' : 'Add'}</button>
                         {(pasteLinkError || ytChannelError) ? <div className="text-xs text-error">{pasteLinkError || ytChannelError}</div> : null}
                       </div>
                     </div>
-                    {!chatPaneOpen && <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane">💬</button>}
-                    {!liteLinkScrollerOpen && <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller">📜</button>}
-                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><span className="inline-block bg-base-content w-[2.1rem] h-[2.1rem]" style={{ maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }} aria-hidden /></button>
-                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute">{mute ? '🔇' : '🔉'}</button>
-                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none self-stretch h-full min-h-0' : ''}`} title="Cinema mode" onClick={() => setCinemaMode((v) => !v)} aria-label="Toggle cinema mode">📽️</button>
-                    <button type="button" className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Settings" onClick={() => setSettingsModalOpen(true)} aria-label="Open settings">⚙️</button>
-                    <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} onClick={onBackToMenu}>Back</button>
+                    {!chatPaneOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane"><Icon name="message-circle" size={20} /></button>}
+                    {!liteLinkScrollerOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller"><Icon name="image" size={20} /></button>}
+                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><span className="inline-block bg-current w-5 h-5" style={{ maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }} aria-hidden /></button>
+                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${mute ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute"><Icon name={mute ? 'volume-x' : 'volume-2'} size={20} /></button>
+                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? `btn-primary ${EMBED_DOCK_ICON_BTN_CINEMA}` : ''}`} title="Cinema mode" onClick={() => setCinemaMode((v) => !v)} aria-label="Toggle cinema mode"><Icon name="film" size={20} /></button>
+                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Settings" onClick={() => setSettingsModalOpen(true)} aria-label="Open settings"><Icon name="settings" size={20} /></button>
+                    <button className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Back" onClick={onBackToMenu} aria-label="Back"><Icon name="log-out" size={20} /></button>
                   </div>
                 </div>
                 <div
@@ -3144,18 +3153,18 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               <button
                 type="button"
                 ref={pieChartButtonRef}
-                className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                 title="What's being watched (by platform)"
                 aria-label="Show watch proportions"
                 onMouseEnter={openPiePopup}
                 onMouseLeave={scheduleClosePiePopup}
                 onClick={() => setPieChartPinned((p) => !p)}
               >
-                🥧
+                <Icon name="pie-chart" size={20} />
               </button>
               <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
-                <label tabIndex={0} className={`btn btn-sm btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
-                  ➕
+                <label tabIndex={0} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
+                  <Icon name="plus-square" size={20} />
                 </label>
                 <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
                   <div className="flex flex-col gap-2">
@@ -3265,34 +3274,34 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               {!chatPaneOpen && (
                 <button
                   type="button"
-                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                  className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                   title="Chat pane"
                   onClick={() => setChatPaneOpen(true)}
                   aria-label="Show chat pane"
                 >
-                  💬
+                  <Icon name="message-circle" size={20} />
                 </button>
               )}
               {!liteLinkScrollerOpen && (
                 <button
                   type="button"
-                  className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                  className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                   title="Lite link scroller (links from chat)"
                   onClick={() => setLiteLinkScrollerOpen(true)}
                   aria-label="Open lite link scroller"
                 >
-                  📜
+                  <Icon name="image" size={20} />
                 </button>
               )}
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                 title="Autoplay"
                 onClick={() => setAutoplay((v) => !v)}
                 aria-label="Toggle autoplay"
               >
                 <span
-                  className="inline-block bg-base-content w-[2.1rem] h-[2.1rem]"
+                  className="inline-block bg-current w-5 h-5"
                   style={{
                     maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
                     WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
@@ -3308,34 +3317,34 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${mute ? 'btn-primary' : ''} ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                className={`${EMBED_DOCK_ICON_BTN} ${mute ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                 title="Mute"
                 onClick={() => setMute((v) => !v)}
                 aria-label="Toggle mute"
               >
-                {mute ? '🔇' : '🔉'}
+                <Icon name={mute ? 'volume-x' : 'volume-2'} size={20} />
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'btn-primary rounded-none self-stretch h-full min-h-0' : ''}`}
+                className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? `btn-primary ${EMBED_DOCK_ICON_BTN_CINEMA}` : ''}`}
                 title="Cinema mode"
                 onClick={() => setCinemaMode((v) => !v)}
                 aria-label="Toggle cinema mode"
               >
-                📽️
+                <Icon name="film" size={20} />
               </button>
               <button
                 type="button"
-                className={`btn btn-sm btn-square btn-ghost min-h-0 p-0 text-xl ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`}
+                className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
                 title="Settings"
                 onClick={() => setSettingsModalOpen(true)}
                 aria-label="Open settings"
               >
-                ⚙️
+                <Icon name="settings" size={20} />
               </button>
 
-              <button className={`btn btn-sm btn-primary ${cinemaMode ? 'rounded-none self-stretch h-full min-h-0' : ''}`} onClick={onBackToMenu}>
-                Back
+              <button className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Back" onClick={onBackToMenu} aria-label="Back">
+                <Icon name="log-out" size={20} />
               </button>
             </div>
           </div>
@@ -3607,7 +3616,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                             { bookmarked: false, fromLiveEmbed: false, pinnedToList: false },
                           )
                           return embedSourceIcons(src).map(({ icon, title }) => (
-                            <span key={icon} title={title} aria-hidden>{icon}</span>
+                            <span key={icon} title={title} aria-hidden>{icon === 'hash' ? <Icon name="hash" size={14} /> : icon === 'map-pin' ? <Icon name="map-pin" size={14} /> : icon === 'bookmark' ? <Icon name="bookmark" size={14} /> : icon}</span>
                           ))
                         })()}
                       </span>
@@ -3693,7 +3702,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                           </div>
                           <span className="flex items-center gap-0.5 shrink-0" title={embedSourceIcons(embedSourcesByKey.get(key) ?? { bookmarked: false, fromLiveEmbed: false, pinnedToList: false }).map((x) => x.title).join(', ')}>
                             {embedSourceIcons(embedSourcesByKey.get(key) ?? { bookmarked: false, fromLiveEmbed: false, pinnedToList: false }).map(({ icon, title: t }) => (
-                              <span key={icon} title={t} aria-hidden>{icon}</span>
+                              <span key={icon} title={t} aria-hidden>{icon === 'hash' ? <Icon name="hash" size={14} /> : icon === 'map-pin' ? <Icon name="map-pin" size={14} /> : icon === 'bookmark' ? <Icon name="bookmark" size={14} /> : icon}</span>
                             ))}
                           </span>
                         </div>
@@ -3871,7 +3880,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       onClick={() => setCombinedChatOverlayMode(true)}
                       aria-label="Overlay chat on embeds"
                     >
-                      ⊞
+                      <Icon name="layers" size={14} />
                     </button>
                     <button
                       type="button"
@@ -3880,7 +3889,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       onClick={() => setChatPaneOpen(false)}
                       aria-label="Close chat"
                     >
-                      ×
+                      <Icon name="x" size={14} />
                     </button>
                   </div>
                 </div>
@@ -3916,7 +3925,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 className={`tab ${settingsTab === 'liteLinkScroller' ? 'tab-active' : ''}`}
                 onClick={() => setSettingsTab('liteLinkScroller')}
               >
-                📜 Lite link scroller
+                <span className="inline-flex items-center gap-1.5"><Icon name="image" size={16} /> Lite link scroller</span>
               </button>
               <button
                 type="button"
@@ -4500,7 +4509,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 <div className="space-y-4">
                   <div className="text-sm font-semibold text-base-content/80 mb-2">Lite link scroller</div>
                   <p className="text-xs text-base-content/60 mb-3">
-                    Saves messages that contain links from combined chat (primary chat, YouTube, Kick, Twitch) and shows them in a scrollable panel. Open with the 📜 button in the embed dock. Autoplay and mute are toggled in the panel&apos;s top bar.
+                    Saves messages that contain links from combined chat (primary chat, YouTube, Kick, Twitch) and shows them in a scrollable panel. Open with the <Icon name="image" size={14} className="inline-block align-middle" /> button in the embed dock. Autoplay and mute are toggled in the panel&apos;s top bar.
                   </p>
                   <label className="flex items-center justify-between gap-2 text-sm">
                     <span>Max messages to save</span>

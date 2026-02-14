@@ -24,6 +24,7 @@ import streamableIcon from '../assets/icons/third-party/streamable.ico'
 import imgurIcon from '../assets/icons/third-party/imgur.png'
 import wikipediaIcon from '../assets/icons/third-party/wikipedia.png'
 import blueskyIcon from '../assets/icons/third-party/bluesky.svg'
+import { Icon } from './Icon'
 import jorkingitGif from '../assets/media/jorkingit.gif'
 import feelswierdmanPng from '../assets/media/feelswierdman.png'
 import pepeCharmGif from '../assets/media/PepeCharm.gif'
@@ -4610,8 +4611,8 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
                   <div className="card-body p-3 flex flex-row gap-3">
                     <div className="flex-shrink-0 flex items-center">
                       {card.isDirectMedia ? (
-                        <div className="text-2xl">
-                          {card.mediaType === 'image' ? '🖼️' : '🎥'}
+                        <div className="flex items-center">
+                          <Icon name={card.mediaType === 'image' ? 'image' : 'film'} size={20} />
                         </div>
                       ) : (
                         getLinkTypeIcon(card.linkType) ? (

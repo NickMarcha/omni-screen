@@ -56,6 +56,8 @@ body {
 /* Embed dock and combined chat input bar: same height */
 :root {
   --embed-dock-height: 36px;
+  /* Relaxed bar (py-2): min-height + vertical padding */
+  --embed-dock-bar-relaxed-height: calc(var(--embed-dock-height) + 1rem);
 }
 .chat-input-bar,
 .embed-dock-bar {
@@ -171,12 +173,9 @@ body {
   font-size: 1rem;
 }
 
-/* Dock: ~40% larger icons and text (right-side controls only, not embed buttons) */
+/* Dock: slightly larger icon buttons (right-side controls only, not embed labels) */
 .embed-dock-bar .embed-dock-controls .btn {
   font-size: 1.4rem;
-}
-.embed-dock-bar .embed-dock-controls .btn.text-xl {
-  font-size: 1.75rem; /* 1.25 * 1.4 */
 }
 
 /* Cinema mode: center emoji/symbol content vertically in full-height control buttons */
