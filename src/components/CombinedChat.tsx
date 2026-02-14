@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, forwardRef, Fragment, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, forwardRef, Fragment, memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './Icon'
 import { omniColorForKey, textColorOn } from '../utils/omniColors'
@@ -1113,7 +1113,7 @@ function parsePrimaryChatLabelColor(value: string | undefined): string | undefin
   return undefined
 }
 
-export default function CombinedChat({
+function CombinedChat({
   primaryChatSourceId,
   enablePrimaryChat,
   showPrimaryChatInput = true,
@@ -3717,3 +3717,4 @@ export default function CombinedChat({
   )
 }
 
+export default memo(CombinedChat)

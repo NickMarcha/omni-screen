@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import * as d3 from 'd3'
 import KickEmbed from './embeds/KickEmbed'
@@ -1048,6 +1048,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   const [combinedChatOverlayMode, setCombinedChatOverlayMode] = useState<boolean>(() => {
     return localStorage.getItem('omni-screen:combined-chat-overlay-mode') === '1'
   })
+  const setCombinedChatOverlayModeTransitioned = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    startTransition(() => setCombinedChatOverlayMode(v))
+  }, [])
   const [combinedChatOverlayOpacity, setCombinedChatOverlayOpacity] = useState<number>(() => {
     const saved = Number(localStorage.getItem('omni-screen:combined-chat-overlay-opacity'))
     return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 0.85
@@ -2878,7 +2881,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         type="button"
                         className="btn btn-xs btn-ghost"
                         title="Overlay on embeds"
-                        onClick={() => setCombinedChatOverlayMode(true)}
+                        onClick={() => setCombinedChatOverlayModeTransitioned(true)}
                         aria-label="Overlay chat on embeds"
                       >
                         <Icon name="layers" size={14} />
@@ -2965,7 +2968,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                 enabledKickSlugs={enabledKickSlugs}
                 primaryChatSourceLabelText={primaryChatSourceLabelText ?? ''}
                 setOverlayHeaderVisible={setOverlayHeaderVisible}
-                setCombinedChatOverlayMode={setCombinedChatOverlayMode}
+                setCombinedChatOverlayMode={setCombinedChatOverlayModeTransitioned}
                 setOverlayOpacityDropdownOpen={setOverlayOpacityDropdownOpen}
                 setCombinedChatOverlayOpacity={setCombinedChatOverlayOpacity}
                 setOverlayMessagesClickThrough={setOverlayMessagesClickThrough}
@@ -3877,7 +3880,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                       type="button"
                       className="btn btn-xs btn-ghost"
                       title="Overlay on embeds"
-                      onClick={() => setCombinedChatOverlayMode(true)}
+                      onClick={() => setCombinedChatOverlayModeTransitioned(true)}
                       aria-label="Overlay chat on embeds"
                     >
                       <Icon name="layers" size={14} />
