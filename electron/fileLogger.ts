@@ -67,6 +67,7 @@ const DEBUG_MESSAGE_PREFIXES = [
   'Set height from attribute',
   'No iframe found, ignoring message',
   'Iframe not visible, ignoring message',
+  '[url-is-live]',
 ]
 
 class FileLogger {

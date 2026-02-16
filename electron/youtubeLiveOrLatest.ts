@@ -205,17 +205,19 @@ async function resolveChannelId(input: string): Promise<ResolveResult> {
 const FETCH_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
 }
 
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: FETCH_HEADERS })
+  const res = await fetch(url, { cache: 'no-store', headers: FETCH_HEADERS })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.text()
 }
 
 /** Fetch and return body text plus final URL (after redirects). Use to resolve channel ID from redirect. */
 async function fetchTextWithUrl(url: string): Promise<{ text: string; url: string }> {
-  const res = await fetch(url, { headers: FETCH_HEADERS, redirect: 'follow' })
+  const res = await fetch(url, { cache: 'no-store', headers: FETCH_HEADERS, redirect: 'follow' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
   return { text, url: res.url }
@@ -236,16 +238,36 @@ function extractChannelIdFromChannelUrl(finalUrl: string): string | null {
 
 /** Check if a video's watch page indicates it is live (isLive in embedded JSON). Exported for url-is-live. */
 export async function isVideoLive(videoId: string): Promise<boolean> {
-  const url = `https://www.youtube.com/watch?v=${videoId}`
+  const url = `https://www.youtube.com/watch?v=${videoId}&_=${Date.now()}`
   const html = await fetchText(url)
-  if (/\b"isLive"\s*:\s*true\b/.test(html)) return true
-  if (/\b"isLive"\s*:\s*true/.test(html)) return true
-  if (/\b"isLiveContent"\s*:\s*true\b/.test(html)) return true
-  if (/\b"status"\s*:\s*"LIVE"\b/.test(html)) return true
-  if (/\b"status"\s*:\s*"LIVE"/.test(html)) return true
-  if (/\b"liveBroadcastDetails"\b/.test(html) && /"isLive"\s*:\s*true/.test(html)) return true
-  if (/"liveBroadcastDetails"\s*:\s*\{[^}]*"isLive"\s*:\s*true/.test(html)) return true
-  if (/liveBroadcastDetails[\s\S]{0,200}isLive[\s\S]{0,50}true/.test(html)) return true
+  const m1 = /\b"isLive"\s*:\s*true\b/.test(html)
+  const m2 = /\b"isLive"\s*:\s*true/.test(html)
+  const m3 = /\b"isLiveContent"\s*:\s*true\b/.test(html)
+  const m4 = /\b"status"\s*:\s*"LIVE"\b/.test(html)
+  const m5 = /\b"status"\s*:\s*"LIVE"/.test(html)
+  const m6 = /\b"liveBroadcastDetails"\b/.test(html) && /"isLive"\s*:\s*true/.test(html)
+  const m7 = /"liveBroadcastDetails"\s*:\s*\{[^}]*"isLive"\s*:\s*true/.test(html)
+  const m8 = /liveBroadcastDetails[\s\S]{0,200}isLive[\s\S]{0,50}true/.test(html)
+  const live = m1 || m2 || m3 || m4 || m5 || m6 || m7 || m8
+
+  if (fileLogger.getLogLevel() === 'debug') {
+    const snippet = (() => {
+      for (const needle of ['isLive', 'liveBroadcastDetails', 'status']) {
+        const i = html.indexOf(needle)
+        if (i >= 0) {
+          const start = Math.max(0, i - 60)
+          const end = Math.min(html.length, i + 100)
+          return `${needle}@${i}: ...${html.slice(start, end).replace(/\s+/g, ' ')}...`
+        }
+      }
+      return 'no known live indicator found'
+    })()
+    fileLogger.writeLog('debug', 'main', '[url-is-live] YouTube check', [
+      { videoId, url, htmlLength: html.length, m1, m2, m3, m4, m5, m6, m7, m8, live, snippet },
+    ])
+  }
+
+  if (m1 || m2 || m3 || m4 || m5 || m6 || m7 || m8) return true
   return false
 }
 
@@ -272,6 +294,7 @@ function parseChannelIdFromRssXml(xml: string): string | null {
 
 async function fetchRssXml(url: string): Promise<string> {
   const res = await fetch(url, {
+    cache: 'no-store',
     headers: {
       ...FETCH_HEADERS,
       Accept: 'application/atom+xml, application/xml, text/xml, */*',

@@ -5,7 +5,10 @@
  * kick.com/api/v2 response shapes (livestream vs stream.is_live).
  */
 
+import fs from 'fs'
+import path from 'path'
 import { session, net } from 'electron'
+import { fileLogger } from './fileLogger'
 import { isVideoLive as isYouTubeVideoLive } from './youtubeLiveOrLatest'
 
 function isLikelyYouTubeId(id: string): boolean {
@@ -42,9 +45,12 @@ function parseEmbedUrl(url: string): { platform: string; id: string } | null {
 
 async function fetchText(url: string): Promise<string> {
   const res = await fetch(url, {
+    cache: 'no-store',
     headers: {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
     },
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -68,6 +74,8 @@ async function fetchWithSession(
         Accept: opts.accept,
         Origin: opts.origin,
         Referer: opts.referer,
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
       },
@@ -92,35 +100,121 @@ async function fetchWithSession(
  * Supports both response shapes: livestream (v2 legacy) and stream.is_live (official-style).
  */
 async function isKickChannelLive(slug: string): Promise<boolean> {
-  const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`
-  const { ok, bodyText } = await fetchWithSession(url, {
+  const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}?_=${Date.now()}`
+  const { ok, status, bodyText } = await fetchWithSession(url, {
     accept: 'application/json',
     origin: 'https://kick.com',
     referer: `https://kick.com/${encodeURIComponent(slug)}`,
   })
-  if (!ok) return false
+  if (!ok) {
+    if (fileLogger.getLogLevel() === 'debug') {
+      fileLogger.writeLog('debug', 'main', '[url-is-live] Kick check', [
+        { slug, url, ok, status, bodyPreview: (bodyText || '').slice(0, 300) },
+      ])
+    }
+    return false
+  }
   let data: any
   try {
     data = JSON.parse(bodyText || '{}')
   } catch {
+    if (fileLogger.getLogLevel() === 'debug') {
+      fileLogger.writeLog('debug', 'main', '[url-is-live] Kick check parse error', [
+        { slug, bodyPreview: (bodyText || '').slice(0, 500) },
+      ])
+    }
     return false
   }
-  // Legacy v2: livestream object with id/slug/channel_id
   const livestream = data?.livestream ?? data?.data?.livestream
-  if (livestream && (livestream.id ?? livestream.slug ?? livestream.channel_id)) return true
-  // Official API shape: stream with is_live
   const stream = data?.stream ?? data?.data?.stream
-  if (stream && stream.is_live === true) return true
+  const hasLivestream = !!(livestream && (livestream.id ?? livestream.slug ?? livestream.channel_id))
+  const hasStreamLive = !!(stream && stream.is_live === true)
+  const live = hasLivestream || hasStreamLive
+  if (fileLogger.getLogLevel() === 'debug') {
+    fileLogger.writeLog('debug', 'main', '[url-is-live] Kick check', [
+      { slug, url, hasLivestream, hasStreamLive, live, livestream: !!livestream, streamIsLive: stream?.is_live },
+    ])
+  }
+  if (hasLivestream) return true
+  if (hasStreamLive) return true
   return false
 }
 
-/** Check if a Twitch channel (login) is currently live. Scrapes channel page for isLive in embedded data. */
+/** Write Twitch page HTML to logs dir for debugging when live check returns false. Returns the file path. */
+function writeTwitchDebugHtml(login: string, html: string): string | null {
+  try {
+    const logsDir = fileLogger.getLogsDirectoryPath()
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const filename = `twitch-debug-${timestamp}-${login}.html`
+    const filePath = path.join(logsDir, filename)
+    fs.writeFileSync(filePath, html, 'utf8')
+    return filePath
+  } catch {
+    return null
+  }
+}
+
+/** Extract and parse JSON-LD from Twitch page. Returns { live, parsed } or { live, parseError }. */
+function parseTwitchJsonLd(html: string): { live: boolean; parsed?: object; parseError?: string } {
+  const match = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/i)
+  const raw = match?.[1]?.trim()
+  if (!raw) {
+    return { live: false, parseError: 'No application/ld+json script found' }
+  }
+  try {
+    const data = JSON.parse(raw) as { '@graph'?: Array<{ '@type'?: string; publication?: { isLiveBroadcast?: boolean } }>; '@type'?: string; publication?: { isLiveBroadcast?: boolean } }
+    const graph = data?.['@graph']
+    const items = Array.isArray(graph) ? graph : [data]
+    for (const item of items) {
+      if (item?.['@type'] === 'VideoObject' && item?.publication?.isLiveBroadcast === true) {
+        return { live: true, parsed: item }
+      }
+    }
+    return { live: false, parsed: data }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { live: false, parseError: msg }
+  }
+}
+
+/** Check if a Twitch channel (login) is currently live. Parses JSON-LD from page; falls back to regex if parse fails. */
 async function isTwitchChannelLive(login: string): Promise<boolean> {
-  const url = `https://www.twitch.tv/${encodeURIComponent(login)}`
+  const url = `https://www.twitch.tv/${encodeURIComponent(login)}?_=${Date.now()}`
   const html = await fetchText(url)
-  // Twitch injects __NEXT_DATA__ or similar with stream info; fallback: look for "isLive":true
-  if (/\b"isLive"\s*:\s*true\b/.test(html)) return true
-  if (/\b"type"\s*:\s*"live"\b/.test(html) && html.includes(login)) return true
+  const jsonResult = parseTwitchJsonLd(html)
+
+  if (jsonResult.parseError) {
+    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch JSON-LD parse failed', [
+      { login, url, parseError: jsonResult.parseError },
+    ])
+  }
+
+  if (fileLogger.getLogLevel() === 'debug') {
+    fileLogger.writeLog('debug', 'main', '[url-is-live] Twitch check', [
+      {
+        login,
+        url,
+        htmlLength: html.length,
+        live: jsonResult.live,
+        parsed: jsonResult.parsed,
+        parseError: jsonResult.parseError,
+      },
+    ])
+    if (!jsonResult.live && jsonResult.parseError) {
+      const debugPath = writeTwitchDebugHtml(login, html)
+      fileLogger.writeLog('debug', 'main', '[url-is-live] Twitch HTML saved (parse failed)', [
+        debugPath ? { path: debugPath } : 'failed to write',
+      ])
+    }
+  }
+
+  if (jsonResult.live) return true
+  if (jsonResult.parseError) {
+    // Fallback to regex when parse fails
+    if (/"isLiveBroadcast"\s*:\s*true\b/.test(html)) return true
+    if (/"isLive"\s*:\s*true\b/.test(html)) return true
+    if (/"type"\s*:\s*"live"\b/.test(html) && html.includes(login)) return true
+  }
   return false
 }
 
