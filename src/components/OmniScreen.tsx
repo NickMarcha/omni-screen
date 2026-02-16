@@ -8,7 +8,6 @@ import CombinedChat, { type CombinedChatContextMenuConfig } from './CombinedChat
 import { LiteLinkScroller, type LiteLinkScrollerSettings } from './LiteLinkScroller'
 import { buildLinkCardsFromMessage } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
-import autoplayIcon from '../assets/icons/autoplay.png'
 
 /** Background watermark text (stored with original casing for reuse; rendered uppercase). */
 const OMNISCREEN_BACKGROUND_TEXT = 'Ripperino Cappucino Poppuccino Hoppuccino Moppuccino  Dappuccino Kappaccino Appuccino Al Pacino, My Duderinos. '
@@ -22,7 +21,6 @@ const OMNISCREEN_BACKGROUND_LINES = (() => {
     return (rotated + ' ').repeat(5)
   })
 })()
-import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 import { Icon } from './Icon'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
@@ -2671,7 +2669,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [dockContextMenuAt, setDockContextMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [dockContextMenuHover, setDockContextMenuHover] = useState<'preferred' | 'dockPosition' | null>(null)
   const dockContextMenuRef = useRef<HTMLDivElement | null>(null)
-  /** Which embed key is currently "watching" in the live embed view (shows 👀 in dock). Only one at a time. */
+  /** Which embed key is currently "watching" in the live embed view (shows eye icon in dock). Only one at a time. */
   const [watchedEmbedKey, setWatchedEmbedKey] = useState<string | null>(null)
   /** Right-click on a dock item: context menu position and item. */
   const [dockItemContextMenu, setDockItemContextMenu] = useState<{ x: number; y: number; item: DockItem } | null>(null)
@@ -3243,7 +3241,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                                   onMouseLeave={scheduleCloseDockHover}
                                   style={active ? { backgroundColor: accent, borderColor: accent, color: activeText } : { borderColor: accent, color: accent }}
                                 >
-                                  {label}{isWatching ? ' 👀' : ''}
+                                  {label}{isWatching ? <span className="inline-flex items-center gap-0.5 ml-1"><Icon name="eye" size={14} /></span> : ''}
                                 </button>
                               </div>
                             )
@@ -3265,7 +3263,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                     </div>
                     {!chatPaneOpen && !chatExternalWindowOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane"><Icon name="message-circle" size={20} /></button>}
                     {!liteLinkScrollerOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller"><Icon name="image" size={20} /></button>}
-                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><span className="inline-block bg-current w-5 h-5" style={{ maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }} aria-hidden /></button>
+                    <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><Icon name={autoplay ? 'play' : 'pause'} size={20} /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${mute ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute"><Icon name={mute ? 'volume-x' : 'volume-2'} size={20} /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? `btn-primary ${EMBED_DOCK_ICON_BTN_CINEMA}` : ''}`} title="Cinema mode" onClick={() => setCinemaMode((v) => !v)} aria-label="Toggle cinema mode"><Icon name="film" size={20} /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Settings" onClick={() => setSettingsModalOpen(true)} aria-label="Open settings"><Icon name="settings" size={20} /></button>
@@ -3351,7 +3349,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                                 : { borderColor: accent, color: accent }
                             }
                           >
-                            {label}{isWatching ? ' 👀' : ''}
+                            {label}{isWatching ? <span className="inline-flex items-center gap-0.5 ml-1"><Icon name="eye" size={14} /></span> : ''}
                           </button>
                         </div>
                       )
@@ -3513,20 +3511,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 onClick={() => setAutoplay((v) => !v)}
                 aria-label="Toggle autoplay"
               >
-                <span
-                  className="inline-block bg-current w-5 h-5"
-                  style={{
-                    maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
-                    WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`,
-                    maskSize: 'contain',
-                    maskRepeat: 'no-repeat',
-                    maskPosition: 'center',
-                    WebkitMaskSize: 'contain',
-                    WebkitMaskRepeat: 'no-repeat',
-                    WebkitMaskPosition: 'center',
-                  }}
-                  aria-hidden
-                />
+                <Icon name={autoplay ? 'play' : 'pause'} size={20} />
               </button>
               <button
                 type="button"
@@ -3698,7 +3683,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                       closeDockItemContextMenu()
                     }}
                   >
-                    <span aria-hidden>👀</span>
+                    <Icon name="eye" size={16} />
                     <span>{isWatching ? 'Unmark watching' : 'Mark as watching'}</span>
                   </button>
                 )}

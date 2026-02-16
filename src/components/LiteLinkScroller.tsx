@@ -4,8 +4,6 @@ import { Icon } from './Icon'
 import { LinkCardOverviewCard, LinkCardExpandedContent } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
 import type { PlatformDisplayMode } from './LinkScroller'
-import autoplayIcon from '../assets/icons/autoplay.png'
-import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 
 const LOG_PREFIX = '[LiteLinkScroller]'
 
@@ -399,20 +397,7 @@ export function LiteLinkScroller({
             }}
             aria-label="Toggle autoplay"
           >
-            <span
-              className="w-5 h-5 inline-block bg-base-content"
-              style={{
-                maskImage: `url(${settings.autoplay ? autoplayIcon : autoplayPausedIcon})`,
-                WebkitMaskImage: `url(${settings.autoplay ? autoplayIcon : autoplayPausedIcon})`,
-                maskSize: 'contain',
-                maskRepeat: 'no-repeat',
-                maskPosition: 'center',
-                WebkitMaskSize: 'contain',
-                WebkitMaskRepeat: 'no-repeat',
-                WebkitMaskPosition: 'center',
-              }}
-              aria-hidden
-            />
+            <Icon name={settings.autoplay ? 'play' : 'pause'} size={20} />
           </button>
           <button
             type="button"

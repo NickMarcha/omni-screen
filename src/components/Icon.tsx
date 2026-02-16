@@ -1,23 +1,26 @@
-import pieChartSvg from '../assets/icons/pie-chart.svg?raw'
-import plusSquareSvg from '../assets/icons/plus-square.svg?raw'
-import imageSvg from '../assets/icons/image.svg?raw'
-import volumeXSvg from '../assets/icons/volume-x.svg?raw'
-import volume2Svg from '../assets/icons/volume-2.svg?raw'
-import filmSvg from '../assets/icons/film.svg?raw'
-import settingsSvg from '../assets/icons/settings.svg?raw'
-import logOutSvg from '../assets/icons/log-out.svg?raw'
-import messageCircleSvg from '../assets/icons/message-circle.svg?raw'
-import hashSvg from '../assets/icons/hash.svg?raw'
-import mailSvg from '../assets/icons/mail.svg?raw'
-import lockSvg from '../assets/icons/lock.svg?raw'
-import unlockSvg from '../assets/icons/unlock.svg?raw'
-import mapPinSvg from '../assets/icons/map-pin.svg?raw'
-import bookmarkSvg from '../assets/icons/bookmark.svg?raw'
-import sidebarSvg from '../assets/icons/sidebar.svg?raw'
-import layersSvg from '../assets/icons/layers.svg?raw'
-import xSvg from '../assets/icons/x.svg?raw'
-import percentSvg from '../assets/icons/percent.svg?raw'
-import externalLinkSvg from '../assets/icons/external-link.svg?raw'
+import pieChartSvg from '../assets/icons/feathericons/pie-chart.svg?raw'
+import plusSquareSvg from '../assets/icons/feathericons/plus-square.svg?raw'
+import imageSvg from '../assets/icons/feathericons/image.svg?raw'
+import volumeXSvg from '../assets/icons/feathericons/volume-x.svg?raw'
+import volume2Svg from '../assets/icons/feathericons/volume-2.svg?raw'
+import filmSvg from '../assets/icons/feathericons/film.svg?raw'
+import settingsSvg from '../assets/icons/feathericons/settings.svg?raw'
+import logOutSvg from '../assets/icons/feathericons/log-out.svg?raw'
+import messageCircleSvg from '../assets/icons/feathericons/message-circle.svg?raw'
+import hashSvg from '../assets/icons/feathericons/hash.svg?raw'
+import mailSvg from '../assets/icons/feathericons/mail.svg?raw'
+import lockSvg from '../assets/icons/feathericons/lock.svg?raw'
+import unlockSvg from '../assets/icons/feathericons/unlock.svg?raw'
+import mapPinSvg from '../assets/icons/feathericons/map-pin.svg?raw'
+import bookmarkSvg from '../assets/icons/feathericons/bookmark.svg?raw'
+import sidebarSvg from '../assets/icons/feathericons/sidebar.svg?raw'
+import layersSvg from '../assets/icons/feathericons/layers.svg?raw'
+import xSvg from '../assets/icons/feathericons/x.svg?raw'
+import percentSvg from '../assets/icons/feathericons/percent.svg?raw'
+import externalLinkSvg from '../assets/icons/feathericons/external-link.svg?raw'
+import eyeSvg from '../assets/icons/feathericons/eye.svg?raw'
+import playSvg from '../assets/icons/feathericons/play.svg?raw'
+import pauseSvg from '../assets/icons/feathericons/pause.svg?raw'
 
 const ICONS: Record<string, string> = {
   'pie-chart': pieChartSvg,
@@ -40,6 +43,9 @@ const ICONS: Record<string, string> = {
   x: xSvg,
   percent: percentSvg,
   'external-link': externalLinkSvg,
+  eye: eyeSvg,
+  play: playSvg,
+  pause: pauseSvg,
 }
 
 export type IconName = keyof typeof ICONS
