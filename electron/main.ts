@@ -3823,14 +3823,24 @@ ipcMain.handle('twitch-send-message', async (_event, payload: { channel: string;
     const authCookie = cookies.find((c) => c.name === 'auth-token')
     const oauthToken = authCookie?.value?.trim()
     if (!oauthToken) {
+      fileLogger.writeLog('warn', 'main', '[Twitch] Send skipped: no auth-token cookie', [channel])
       return { success: false, error: 'Not logged in to Twitch (add cookies in Connections)' }
     }
 
-    const channelResult = await getChannelIdByLogin(channel)
+    const channelResult = await getChannelIdByLogin(channel, oauthToken)
     if ('error' in channelResult) return { success: false, error: channelResult.error }
 
-    return await sendTwitchChatMessageGql(oauthToken, channelResult.channelId, content)
+    const result = await sendTwitchChatMessageGql(oauthToken, channelResult.channelId, content)
+    if (!result.success) return result
+    if (fileLogger.getLogLevel() === 'debug') {
+      fileLogger.writeLog('debug', 'main', '[Twitch] Send OK', [channel])
+    }
+    return result
   } catch (e) {
+    fileLogger.writeLog('error', 'main', '[Twitch] Send exception', [
+      typeof payload?.channel === 'string' ? payload.channel : '?',
+      e instanceof Error ? e.message : String(e),
+    ])
     return { success: false, error: e instanceof Error ? e.message : String(e) }
   }
 })
