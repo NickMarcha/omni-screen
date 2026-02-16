@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.13.1] - 2026-02-16
+
+### Fixed
+- **Twitch chat send**: Resolved Helix 401/404 when sending Twitch messages. Channel lookup now uses GQL (same API as Twitch website) when OAuth is available; falls back to Helix. Added debug logging for send failures (View → Log level → Debug).
+- **Live check (Twitch/Kick/YouTube)**: Fixed bookmarked Twitch streamers showing `live: false` when live. Added JSON-LD parsing for `isLiveBroadcast`, disabled caching for live checks, cache-busting query params. Debug logs available at View → Log level → Debug.
+
 ## [1.13.0] - 2026-02-16
 
 ### **Important** d.gg has to now be enabled through the extensions functionality.
@@ -298,7 +304,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.13.1...HEAD
+[1.13.1]: https://github.com/NickMarcha/omni-screen/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/NickMarcha/omni-screen/compare/v1.12.0...v1.13.0
 [1.9.0]: https://github.com/NickMarcha/omni-screen/compare/v1.8.1...v1.9.0
 [1.8.0]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...v1.8.0
