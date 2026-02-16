@@ -1143,8 +1143,8 @@ function CombinedChat({
   primaryChatSourceLabelColor,
   primaryChatSourceLabelText,
   primaryChatSourceIconUrl,
-  maxMessages,
-  maxMessagesScroll = 5000,
+  maxLines,
+  maxLinesScroll = 5000,
   showTimestamps,
   showSourceLabels,
   showPlatformIcons = false,
@@ -1191,9 +1191,9 @@ function CombinedChat({
   primaryChatSourceIconUrl?: string
   /** Text shown in the source badge for primary chat messages. */
   primaryChatSourceLabelText?: string
-  maxMessages: number
-  /** Max messages to keep when scrolled up (hard cap). Default 5000. */
-  maxMessagesScroll?: number
+  maxLines: number
+  /** Max visible lines to keep when scrolled up (hard cap). Default 5000. */
+  maxLinesScroll?: number
   showTimestamps: boolean
   showSourceLabels: boolean
   /** When true, show platform favicon in the source badge. */
@@ -1416,27 +1416,123 @@ function CombinedChat({
 
   /** Hard cap when scrolled up (from settings). */
   const hardCap = useMemo(() => {
-    const v = Number.isFinite(maxMessagesScroll) ? Math.floor(maxMessagesScroll) : 5000
+    const v = Number.isFinite(maxLinesScroll) ? Math.floor(maxLinesScroll) : 5000
     return Math.max(50, Math.min(50000, v))
-  }, [maxMessagesScroll])
+  }, [maxLinesScroll])
   const hardCapRef = useRef(hardCap)
   hardCapRef.current = hardCap
 
   const maxKeep = useMemo(() => {
-    const v = Number.isFinite(maxMessages) ? Math.floor(maxMessages) : 70
+    const v = Number.isFinite(maxLines) ? Math.floor(maxLines) : 70
     return Math.max(50, Math.min(hardCap, v))
-  }, [maxMessages, hardCap])
+  }, [maxLines, hardCap])
 
   const effectiveCap = Math.min(maxKeep, hardCap)
 
-  /** Trim only when at bottom (soft limit). When scrolled up, only trim if over hard cap. */
+  /** Build displayItems and renderList from items (for line-based trimming). */
+  const buildDisplayItemsAndRenderList = useCallback(
+    (arr: CombinedItemWithSeq[]) => {
+      const displayItems =
+        sortMode === 'timestamp'
+          ? [...arr].sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
+          : (() => {
+              const history = arr.filter((m) => Boolean((m as any).isHistory))
+              const live = arr.filter((m) => !Boolean((m as any).isHistory))
+              history.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
+              return [...history, ...live]
+            })()
+      const list: Array<
+        | { type: 'message'; index: number; item: CombinedItemWithSeq }
+        | { type: 'combo'; index: number; startIndex: number; count: number; emoteKey: string; source: string; tsMs: number; slug?: string }
+      > = []
+      const comboSkip = new Set<number>()
+      const comboAt = new Map<
+        number,
+        { startIndex: number; count: number; emoteKey: string; source: string; tsMs: number }
+      >()
+      const sources = [primaryChatSourceId, 'kick', 'youtube', 'twitch'].filter(Boolean) as string[]
+      for (const source of sources) {
+        const indices = displayItems
+          .map((m, i) => (m.source === source ? i : -1))
+          .filter((i) => i >= 0)
+        if (indices.length === 0) continue
+        let runStart = 0
+        let runEmoteKey: string | null = null
+        for (let j = 0; j <= indices.length; j++) {
+          const idx = j < indices.length ? indices[j]! : -1
+          const m = idx >= 0 ? displayItems[idx] : undefined
+          const key = m && isSingleEmoteMessage(m, emotesMap) ? getEmoteKey(m, emotesMap) : null
+          const sameRun = key != null && key === runEmoteKey
+          if (sameRun && j < indices.length) continue
+          if (runEmoteKey != null && runStart < j) {
+            const runLength = j - runStart
+            if (runLength >= 2) {
+              const lastIdx = indices[j - 1]!
+              const firstIdx = indices[runStart]!
+              const lastItem = displayItems[lastIdx]!
+              for (let k = runStart; k < j - 1; k++) comboSkip.add(indices[k]!)
+              comboAt.set(lastIdx, {
+                startIndex: firstIdx,
+                count: runLength,
+                emoteKey: runEmoteKey,
+                source,
+                tsMs: lastItem.tsMs,
+              })
+            }
+          }
+          if (j < indices.length && key != null) {
+            runStart = j
+            runEmoteKey = key
+          } else {
+            runEmoteKey = null
+          }
+        }
+      }
+      for (let i = 0; i < displayItems.length; i++) {
+        if (comboSkip.has(i)) continue
+        const combo = comboAt.get(i)
+        if (combo) {
+          const lastItem = displayItems[i]
+          const slug = lastItem && (lastItem as any).source === 'kick' ? (lastItem as any).slug : undefined
+          list.push({
+            type: 'combo',
+            index: i,
+            startIndex: combo.startIndex,
+            count: combo.count,
+            emoteKey: combo.emoteKey,
+            source: combo.source,
+            tsMs: combo.tsMs,
+            slug,
+          })
+        } else {
+          list.push({ type: 'message', index: i, item: displayItems[i]! })
+        }
+      }
+      return { displayItems, renderList: list }
+    },
+    [sortMode, emotesMap, primaryChatSourceId]
+  )
+
+  /** Trim by visible lines (messages + combo rows). When at bottom use soft limit; when scrolled up use hard cap. */
   const trimToLimit = useCallback(
     (arr: CombinedItemWithSeq[], atBottom: boolean): CombinedItemWithSeq[] => {
+      if (arr.length === 0) return arr
+      const { displayItems, renderList } = buildDisplayItemsAndRenderList(arr)
       const limit = atBottom ? effectiveCap : hardCap
-      if (arr.length <= limit) return arr
-      return arr.slice(arr.length - limit)
+      if (renderList.length <= limit) return arr
+      const linesToDrop = renderList.length - limit
+      const toRemove = new Set<CombinedItemWithSeq>()
+      for (let i = 0; i < linesToDrop; i++) {
+        const e = renderList[i]!
+        if (e.type === 'message') {
+          toRemove.add(e.item)
+        } else {
+          for (let j = e.startIndex; j <= e.index; j++) toRemove.add(displayItems[j]!)
+        }
+      }
+      return arr.filter((x) => !toRemove.has(x))
     },
-    [effectiveCap, hardCap]
+    [buildDisplayItemsAndRenderList, effectiveCap, hardCap]
   )
 
   const trimToLimitRef = useRef(trimToLimit)
@@ -2455,89 +2551,17 @@ function CombinedChat({
     return combined.filter((n) => n.toLowerCase().includes(q)).slice(0, 25)
   }, [whisperUsernames, primaryChatNicks, composeRecipient])
 
-  const displayItems = useMemo(() => {
-    if (sortMode === 'timestamp') {
-      const copy = [...items]
-      copy.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
-      return copy
-    }
-
-    // "Arrival" mode:
-    // - keep live messages in arrival order (seq)
-    // - but ALWAYS blend any history items (from any source) by timestamp so startup doesn't
-    //   show separate "Primary chat history block" then "Kick history block".
-    const history = items.filter((m) => Boolean((m as any).isHistory))
-    const live = items.filter((m) => !Boolean((m as any).isHistory))
-    history.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
-    return [...history, ...live]
-  }, [items, sortMode])
-
-  type RenderEntry =
-    | { type: 'message'; index: number; item: CombinedItemWithSeq }
-    | { type: 'combo'; index: number; count: number; emoteKey: string; source: string; tsMs: number; slug?: string }
-
-  const renderList = useMemo((): RenderEntry[] => {
-    const list: RenderEntry[] = []
-    const comboSkip = new Set<number>()
-    const comboAt = new Map<number, { count: number; emoteKey: string; source: string; tsMs: number }>()
-
-    const sources = [primaryChatSourceId, 'kick', 'youtube', 'twitch'].filter(Boolean) as string[]
-    for (const source of sources) {
-      const indices = displayItems
-        .map((m, i) => (m.source === source ? i : -1))
-        .filter((i) => i >= 0)
-      if (indices.length === 0) continue
-      let runStart = 0
-      let runEmoteKey: string | null = null
-      for (let j = 0; j <= indices.length; j++) {
-        const idx = j < indices.length ? indices[j]! : -1
-        const m = idx >= 0 ? displayItems[idx] : undefined
-        const key = m && isSingleEmoteMessage(m, emotesMap) ? getEmoteKey(m, emotesMap) : null
-        const sameRun = key != null && key === runEmoteKey
-        if (sameRun && j < indices.length) continue
-        if (runEmoteKey != null && runStart < j) {
-          const runLength = j - runStart
-          if (runLength >= 2) {
-            const lastIdx = indices[j - 1]!
-            const lastItem = displayItems[lastIdx]!
-            for (let k = runStart; k < j - 1; k++) comboSkip.add(indices[k]!)
-            comboAt.set(lastIdx, {
-              count: runLength,
-              emoteKey: runEmoteKey,
-              source,
-              tsMs: lastItem.tsMs,
-            })
-          }
-        }
-        if (j < indices.length && key != null) {
-          runStart = j
-          runEmoteKey = key
-        } else {
-          runEmoteKey = null
-        }
-      }
-    }
-
-    for (let i = 0; i < displayItems.length; i++) {
-      if (comboSkip.has(i)) continue
-      const combo = comboAt.get(i)
-        if (combo) {
-        const lastItem = displayItems[i]
-        const slug = lastItem && (lastItem as any).source === 'kick' ? (lastItem as any).slug : undefined
-        list.push({ type: 'combo', index: i, count: combo.count, emoteKey: combo.emoteKey, source: combo.source, tsMs: combo.tsMs, slug })
-      } else {
-        list.push({ type: 'message', index: i, item: displayItems[i] })
-      }
-    }
-    return list
-  }, [displayItems, emotesMap])
+  const { renderList } = useMemo(
+    () => buildDisplayItemsAndRenderList(items),
+    [items, buildDisplayItemsAndRenderList]
+  )
 
   useEffect(() => {
-    onCountChange?.(displayItems.length)
-  }, [displayItems.length, onCountChange])
+    onCountChange?.(renderList.length)
+  }, [renderList.length, onCountChange])
 
   // Auto-scroll when user has not scrolled up (stick to bottom).
-  // Use updateSeq (not merged.length) because the list is capped at MAX_MESSAGES
+  // Use updateSeq (not merged.length) because the list is capped at maxLines
   // and length can stay constant even as new messages arrive.
   useLayoutEffect(() => {
     const el = scrollerRef.current

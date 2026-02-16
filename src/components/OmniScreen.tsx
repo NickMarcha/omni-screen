@@ -994,18 +994,18 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     if (v === '0' || v === 'false') return false
     return true
   })
-  const initialCombinedMaxMessages = useMemo(() => {
-    const saved = Number(localStorage.getItem('omni-screen:combined-max-messages'))
+  const initialCombinedMaxLines = useMemo(() => {
+    const saved = Number(localStorage.getItem('omni-screen:combined-max-lines'))
     return Number.isFinite(saved) && saved >= 50 ? Math.floor(saved) : 70
   }, [])
-  const [combinedMaxMessages, setCombinedMaxMessages] = useState<number>(initialCombinedMaxMessages)
-  const [combinedMaxMessagesDraft, setCombinedMaxMessagesDraft] = useState<string>(() => String(initialCombinedMaxMessages))
-  const initialCombinedMaxMessagesScroll = useMemo(() => {
-    const saved = Number(localStorage.getItem('omni-screen:combined-max-messages-scroll'))
+  const [combinedMaxLines, setCombinedMaxLines] = useState<number>(initialCombinedMaxLines)
+  const [combinedMaxLinesDraft, setCombinedMaxLinesDraft] = useState<string>(() => String(initialCombinedMaxLines))
+  const initialCombinedMaxLinesScroll = useMemo(() => {
+    const saved = Number(localStorage.getItem('omni-screen:combined-max-lines-scroll'))
     return Number.isFinite(saved) && saved >= 50 ? Math.floor(saved) : 5000
   }, [])
-  const [combinedMaxMessagesScroll, setCombinedMaxMessagesScroll] = useState<number>(initialCombinedMaxMessagesScroll)
-  const [combinedMaxMessagesScrollDraft, setCombinedMaxMessagesScrollDraft] = useState<string>(() => String(initialCombinedMaxMessagesScroll))
+  const [combinedMaxLinesScroll, setCombinedMaxLinesScroll] = useState<number>(initialCombinedMaxLinesScroll)
+  const [combinedMaxLinesScrollDraft, setCombinedMaxLinesScrollDraft] = useState<string>(() => String(initialCombinedMaxLinesScroll))
   const [combinedShowTimestamps, setCombinedShowTimestamps] = useState<boolean>(() => {
     const saved = localStorage.getItem('omni-screen:combined-show-timestamps')
     if (saved === '0' || saved === 'false') return false
@@ -1726,17 +1726,17 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [selectedEmbedChatKeys, selectedEmbedKeys, chatOnlyMode])
 
   useEffect(() => {
-    setCombinedMaxMessagesDraft(String(combinedMaxMessages))
-  }, [combinedMaxMessages])
+    setCombinedMaxLinesDraft(String(combinedMaxLines))
+  }, [combinedMaxLines])
   useEffect(() => {
-    setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
-  }, [combinedMaxMessagesScroll])
+    setCombinedMaxLinesScrollDraft(String(combinedMaxLinesScroll))
+  }, [combinedMaxLinesScroll])
 
   // Persist all combined chat and chat pane settings in one place so none are missed on restart.
   useEffect(() => {
     try {
-      localStorage.setItem('omni-screen:combined-max-messages', String(combinedMaxMessages))
-      localStorage.setItem('omni-screen:combined-max-messages-scroll', String(combinedMaxMessagesScroll))
+      localStorage.setItem('omni-screen:combined-max-lines', String(combinedMaxLines))
+      localStorage.setItem('omni-screen:combined-max-lines-scroll', String(combinedMaxLinesScroll))
       localStorage.setItem('omni-screen:combined-show-timestamps', combinedShowTimestamps ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
@@ -1761,8 +1761,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       // ignore
     }
   }, [
-    combinedMaxMessages,
-    combinedMaxMessagesScroll,
+    combinedMaxLines,
+    combinedMaxLinesScroll,
     combinedShowTimestamps,
     combinedShowLabels,
     combinedShowPlatformIcons,
@@ -1906,42 +1906,42 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [cinemaMode, dockAtTop])
 
-  const commitCombinedMaxMessages = useCallback(
+  const commitCombinedMaxLines = useCallback(
     (raw?: string) => {
-      const s = String(raw ?? combinedMaxMessagesDraft).trim()
+      const s = String(raw ?? combinedMaxLinesDraft).trim()
       if (!s) {
-        setCombinedMaxMessagesDraft(String(combinedMaxMessages))
+        setCombinedMaxLinesDraft(String(combinedMaxLines))
         return
       }
       const n = Math.floor(Number(s))
       if (!Number.isFinite(n)) {
-        setCombinedMaxMessagesDraft(String(combinedMaxMessages))
+        setCombinedMaxLinesDraft(String(combinedMaxLines))
         return
       }
-      const next = clamp(n, 50, combinedMaxMessagesScroll)
-      setCombinedMaxMessages(next)
-      setCombinedMaxMessagesDraft(String(next))
+      const next = clamp(n, 50, combinedMaxLinesScroll)
+      setCombinedMaxLines(next)
+      setCombinedMaxLinesDraft(String(next))
     },
-    [combinedMaxMessages, combinedMaxMessagesDraft, combinedMaxMessagesScroll],
+    [combinedMaxLines, combinedMaxLinesDraft, combinedMaxLinesScroll],
   )
-  const commitCombinedMaxMessagesScroll = useCallback(
+  const commitCombinedMaxLinesScroll = useCallback(
     (raw?: string) => {
-      const s = String(raw ?? combinedMaxMessagesScrollDraft).trim()
+      const s = String(raw ?? combinedMaxLinesScrollDraft).trim()
       if (!s) {
-        setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
+        setCombinedMaxLinesScrollDraft(String(combinedMaxLinesScroll))
         return
       }
       const n = Math.floor(Number(s))
       if (!Number.isFinite(n)) {
-        setCombinedMaxMessagesScrollDraft(String(combinedMaxMessagesScroll))
+        setCombinedMaxLinesScrollDraft(String(combinedMaxLinesScroll))
         return
       }
       const next = clamp(n, 50, 50000)
-      setCombinedMaxMessagesScroll(next)
-      setCombinedMaxMessagesScrollDraft(String(next))
-      if (combinedMaxMessages > next) setCombinedMaxMessages(next)
+      setCombinedMaxLinesScroll(next)
+      setCombinedMaxLinesScrollDraft(String(next))
+      if (combinedMaxLines > next) setCombinedMaxLines(next)
     },
-    [combinedMaxMessagesScroll, combinedMaxMessagesScrollDraft, combinedMaxMessages],
+    [combinedMaxLinesScroll, combinedMaxLinesScrollDraft, combinedMaxLines],
   )
 
   // Track available size for the embed grid so it can adapt to window resizing.
@@ -2933,8 +2933,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               primaryChatSourceLabelText={primaryChatSourceLabelText}
               primaryChatSourceIconUrl={primaryChatSourceIconUrl}
               onOpenLink={handleChatOpenLink}
-              maxMessages={combinedMaxMessages}
-              maxMessagesScroll={combinedMaxMessagesScroll}
+              maxLines={combinedMaxLines}
+              maxLinesScroll={combinedMaxLinesScroll}
               showTimestamps={combinedShowTimestamps}
               showSourceLabels={combinedShowLabels}
               showPlatformIcons={combinedShowPlatformIcons}
@@ -2985,8 +2985,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               primaryChatSourceLabelText={primaryChatSourceLabelText}
               primaryChatSourceIconUrl={primaryChatSourceIconUrl}
               onOpenLink={handleChatOpenLink}
-              maxMessages={combinedMaxMessages}
-              maxMessagesScroll={combinedMaxMessagesScroll}
+              maxLines={combinedMaxLines}
+              maxLinesScroll={combinedMaxLinesScroll}
               showTimestamps={combinedShowTimestamps}
               showSourceLabels={combinedShowLabels}
               showPlatformIcons={combinedShowPlatformIcons}
@@ -4465,45 +4465,45 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                       <div className="text-xs font-medium text-base-content/60 uppercase tracking-wide mb-2">General</div>
                       <div className="space-y-2 pl-0">
                         <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>Max messages</span>
+                          <span>Max lines</span>
                           <input
                             type="text"
                             inputMode="numeric"
                             pattern="[0-9]*"
                             className="input input-sm w-24"
-                            value={combinedMaxMessagesDraft}
+                            value={combinedMaxLinesDraft}
                             onChange={(e) => {
                               const next = e.target.value
                               if (!/^\d*$/.test(next)) return
-                              setCombinedMaxMessagesDraft(next)
+                              setCombinedMaxLinesDraft(next)
                             }}
-                            onBlur={(e) => commitCombinedMaxMessages(e.target.value)}
+                            onBlur={(e) => commitCombinedMaxLines(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
                             }}
                           />
                         </label>
-                        <span className="label-text-alt text-base-content/60 block">When at bottom, keep at most this many messages. Must be ≤ scroll limit.</span>
+                        <span className="label-text-alt text-base-content/60 block">When at bottom, keep at most this many visible lines (messages + combo rows). Must be ≤ scroll limit.</span>
                         <label className="flex items-center justify-between gap-2 text-sm">
-                          <span>Max messages (when scrolled)</span>
+                          <span>Max lines (when scrolled)</span>
                           <input
                             type="text"
                             inputMode="numeric"
                             pattern="[0-9]*"
                             className="input input-sm w-24"
-                            value={combinedMaxMessagesScrollDraft}
+                            value={combinedMaxLinesScrollDraft}
                             onChange={(e) => {
                               const next = e.target.value
                               if (!/^\d*$/.test(next)) return
-                              setCombinedMaxMessagesScrollDraft(next)
+                              setCombinedMaxLinesScrollDraft(next)
                             }}
-                            onBlur={(e) => commitCombinedMaxMessagesScroll(e.target.value)}
+                            onBlur={(e) => commitCombinedMaxLinesScroll(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
                             }}
                           />
                         </label>
-                        <span className="label-text-alt text-base-content/60 block">When scrolled up, keep at most this many. Reduces memory use.</span>
+                        <span className="label-text-alt text-base-content/60 block">When scrolled up, keep at most this many visible lines. Reduces memory use.</span>
                         <div className="flex items-center justify-between gap-2 text-sm">
                           <span>Order</span>
                           <div className="join">
