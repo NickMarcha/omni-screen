@@ -3029,7 +3029,7 @@ function CombinedChat({
             onKeyDown={(e) => e.key === 'Enter' && setPinnedHidden(false)}
             aria-label="Show pinned message"
           >
-            <span aria-hidden>📍</span>
+            <Icon name="pin" size={18} />
           </div>
         )}
         {enablePrimaryChat && currentPoll && (
@@ -3201,14 +3201,14 @@ function CombinedChat({
             if (m.source.endsWith('-event')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const eventType = 'eventType' in m ? m.eventType : ''
-              const icon = eventType === 'donation' ? '💰' : '🎁'
+              const iconEl = eventType === 'donation' ? <Icon name="dollar-sign" size={16} /> : <Icon name="gift" size={16} />
               return (
                 <div
                   key={`msg-primary-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
                   className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/80"
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
-                  <span className="mr-1.5" aria-hidden>{icon}</span>
+                  <span className="mr-1.5 inline-flex items-center" aria-hidden>{iconEl}</span>
                   <span className="whitespace-pre-wrap break-words">{m.content}</span>
                 </div>
               )

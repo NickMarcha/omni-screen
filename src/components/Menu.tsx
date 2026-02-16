@@ -9,6 +9,7 @@ import mehdiAwarePng from '../assets/media/mehdiAware.png'
 import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
 import noHopePng from '../assets/media/NoHope.png'
 import whickedSteinPng from '../assets/media/WhickedStein.png'
+import { Icon } from './Icon'
 import {
   applyThemeToDocument,
   darkThemes,
@@ -1098,7 +1099,7 @@ function Menu({ onNavigate }: MenuProps) {
                         {manifest?.icon ? (
                           <img src={manifest.icon} alt="" className="w-10 h-10 rounded object-contain shrink-0 bg-base-100" />
                         ) : (
-                          <div className="w-10 h-10 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40 text-lg" aria-hidden>📦</div>
+                          <div className="w-10 h-10 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40" aria-hidden><Icon name="package" size={24} /></div>
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="font-medium text-sm">{manifest?.name ?? 'Loading…'}</div>
@@ -1153,7 +1154,7 @@ function Menu({ onNavigate }: MenuProps) {
                         {ext.icon ? (
                           <img src={ext.icon} alt="" className="w-8 h-8 rounded object-contain shrink-0 bg-base-100" />
                         ) : (
-                          <div className="w-8 h-8 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40 text-sm" aria-hidden>📦</div>
+                          <div className="w-8 h-8 rounded bg-base-100 shrink-0 flex items-center justify-center text-base-content/40" aria-hidden><Icon name="package" size={20} /></div>
                         )}
                         <div className="min-w-0 flex-1">
                           <span className="font-medium text-sm block truncate">{ext.name}</span>
