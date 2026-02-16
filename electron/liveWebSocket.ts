@@ -2,6 +2,18 @@ import WebSocket from 'ws'
 import { EventEmitter } from 'events'
 import { fileLogger } from './fileLogger'
 
+/** Parse Retry-After header to ms. Supports seconds (e.g. "3061") or HTTP-date. */
+function parseRetryAfter(value: string | string[] | undefined): number | null {
+  if (value == null) return null
+  const s = Array.isArray(value) ? value[0] : value
+  if (typeof s !== 'string' || !s.trim()) return null
+  const sec = parseInt(s, 10)
+  if (!Number.isNaN(sec)) return sec * 1000
+  const date = Date.parse(s)
+  if (Number.isNaN(date)) return null
+  return Math.max(0, date - Date.now())
+}
+
 export type LiveWebSocketEvent =
   | { type: 'connected' }
   | { type: 'disconnected'; code: number; reason: string }
@@ -15,6 +27,11 @@ export class LiveWebSocket extends EventEmitter {
   private maxReconnectAttempts = 10
   private reconnectDelay = 1000
   private maxReconnectDelay = 30000
+  /** When rate limited (429) without Retry-After header, use this delay. */
+  private readonly rateLimitDelay = 120_000
+  /** Parsed Retry-After from last 429 response (ms), if present. */
+  private retryAfterMs: number | null = null
+  private lastErrorMsg = ''
   private reconnectTimer: NodeJS.Timeout | null = null
   private isIntentionallyClosed = false
   private connectionTimeout: NodeJS.Timeout | null = null
@@ -47,6 +64,18 @@ export class LiveWebSocket extends EventEmitter {
         },
         perMessageDeflate: true,
         handshakeTimeout: 10000,
+      })
+
+      this.ws.on('unexpected-response', (_req: unknown, res: { statusCode?: number; headers?: Record<string, string | string[] | undefined> }) => {
+        if (res.statusCode === 429) {
+          this.lastErrorMsg = '429'
+          const raw = res.headers?.['retry-after'] ?? res.headers?.['Retry-After']
+          const parsed = parseRetryAfter(raw)
+          if (parsed != null) {
+            this.retryAfterMs = parsed
+            fileLogger.writeLog('info', 'main', '[LiveWebSocket] 429_retry_after', [this.url, `${parsed}ms`])
+          }
+        }
       })
 
       this.connectionTimeout = setTimeout(() => {
@@ -93,6 +122,7 @@ export class LiveWebSocket extends EventEmitter {
 
       this.ws.on('error', (error: Error) => {
         const msg = error?.message || String(error) || 'Unknown error'
+        this.lastErrorMsg = msg
         fileLogger.writeLog('warn', 'main', '[LiveWebSocket] socket_error', [this.url, msg])
         try {
           this.emit('error', { message: msg })
@@ -104,7 +134,9 @@ export class LiveWebSocket extends EventEmitter {
       this.ws.on('close', (code: number, reason: Buffer) => {
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
-        this.emit('disconnected', { code, reason: reason.toString() })
+        const reasonStr = reason.toString()
+        if (reasonStr) this.lastErrorMsg = reasonStr
+        this.emit('disconnected', { code, reason: reasonStr })
         if (!this.isIntentionallyClosed) {
           this.handleReconnect()
         }
@@ -189,10 +221,18 @@ export class LiveWebSocket extends EventEmitter {
     }
 
     this.reconnectAttempts++
-    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay)
+    const isRateLimited = /429|rate.?limit|too many/i.test(this.lastErrorMsg)
+    let delay: number
+    if (isRateLimited) {
+      delay = this.retryAfterMs ?? Math.min(this.rateLimitDelay * Math.pow(2, this.reconnectAttempts - 1), 600_000)
+      this.retryAfterMs = null
+    } else {
+      delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay)
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
+      this.lastErrorMsg = ''
       this.connect()
     }, delay)
   }

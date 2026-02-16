@@ -53,6 +53,14 @@ body {
   animation: poll-timer-shrink var(--poll-duration) linear calc(-1 * var(--poll-elapsed)) both;
 }
 
+/* Chat window transparent mode: override DaisyUI root background so window can be see-through */
+[data-chat-window-transparent="true"] {
+  background-color: transparent !important;
+}
+[data-chat-window-transparent="true"] [data-theme] {
+  background-color: transparent !important;
+}
+
 /* Embed dock and combined chat input bar: same height */
 :root {
   --embed-dock-height: 36px;

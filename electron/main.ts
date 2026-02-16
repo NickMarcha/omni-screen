@@ -3,7 +3,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserV
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
-import { readFileSync, statSync } from 'fs'
+import { readFileSync, statSync, writeFileSync, existsSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
 import { getPlatformUrls } from './envConfig'
@@ -145,12 +145,23 @@ if (process.argv.includes('--version')) {
 
 let win: BrowserWindow | null
 let viewerWin: BrowserWindow | null = null
+let chatWin: BrowserWindow | null = null
+/** Cached embed chat state for syncing to external chat window (main window is source of truth). */
+let cachedEmbedChatsState: { selectedEmbedChatKeys: string[]; selectedEmbedKeys: string[] } | null = null
+/** Chat window: transparent mode (requires window recreate). Stored in main process; synced from renderer on load. */
+let chatWindowTransparentBackground = false
+const CHAT_WINDOW_BOUNDS_PATH = path.join(app.getPath('userData'), 'chat-window-bounds.json')
+/** Cached ME event from primary chat WebSocket; sent to chat window on load so it knows auth state after recreate. */
+let cachedPrimaryChatMe: { type?: string; data?: unknown } | null = null
 /** Protocol results from launch URL (before renderer loaded); sent when main window finishes loading. */
 let pendingProtocolResults: ProtocolHandleResult[] = []
 
 // Chat WebSocket instance
 let chatWebSocket: ChatWebSocket | null = null
 let liveWebSocket: LiveWebSocket | null = null
+/** Cooldown (ms) between live WebSocket connect attempts to avoid rate limiting (429). */
+const LIVE_WS_CONNECT_COOLDOWN_MS = 10_000
+let lastLiveWsConnectAttempt = 0
 /** Current embed keys (and optional display names) from the live WebSocket feed. Populated by the extension's onLiveMessage handler. Used e.g. to treat YouTube as live when it appears in the feed. */
 const currentLiveEmbedKeys = new Set<string>()
 const currentLiveEmbedByKey = new Map<string, { displayName?: string }>()
@@ -1375,6 +1386,222 @@ ipcMain.handle('set-chat-link-open-action', (_event, action: LinkOpenAction) => 
   if (action === 'none' || action === 'clipboard' || action === 'browser' || action === 'viewer') {
     chatLinkOpenAction = action
   }
+})
+
+/** Load stored chat window bounds (width, height). */
+function loadChatWindowBounds(): { width: number; height: number } {
+  try {
+    if (existsSync(CHAT_WINDOW_BOUNDS_PATH)) {
+      const raw = readFileSync(CHAT_WINDOW_BOUNDS_PATH, 'utf-8')
+      const data = JSON.parse(raw) as { width?: number; height?: number }
+      const w = typeof data?.width === 'number' && data.width >= 360 ? data.width : 500
+      const h = typeof data?.height === 'number' && data.height >= 400 ? data.height : 700
+      return { width: w, height: h }
+    }
+  } catch {
+    /* ignore */
+  }
+  return { width: 500, height: 700 }
+}
+
+/** Save chat window bounds. */
+function saveChatWindowBounds(width: number, height: number) {
+  try {
+    writeFileSync(CHAT_WINDOW_BOUNDS_PATH, JSON.stringify({ width, height }), 'utf-8')
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Create or recreate the chat window. Caller ensures cachedEmbedChatsState is set. */
+async function createChatWindow(loadUrl: string): Promise<void> {
+  const bounds = loadChatWindowBounds()
+  chatWin = new BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
+    minWidth: 360,
+    minHeight: 400,
+    show: false,
+    title: 'Chat',
+    icon: path.join(process.env.VITE_PUBLIC!, 'icon.png'),
+    frame: false,
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
+    transparent: chatWindowTransparentBackground,
+    resizable: !chatWindowTransparentBackground,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      partition: 'persist:main',
+      webSecurity: false,
+    },
+  })
+  chatWin.on('close', () => {
+    if (chatWin && !chatWindowTransparentBackground) {
+      const [w, h] = chatWin.getSize()
+      saveChatWindowBounds(w, h)
+    }
+  })
+  const thisChatWin = chatWin
+  chatWin.on('closed', () => {
+    if (chatWin === thisChatWin) {
+      chatWin = null
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('chat-external-window-closed')
+      }
+    }
+  })
+  chatWin.on('resize', () => {
+    if (chatWin && !chatWin.isDestroyed() && !chatWindowTransparentBackground) {
+      const [w, h] = chatWin.getSize()
+      saveChatWindowBounds(w, h)
+    }
+  })
+  chatWin.setMenu(null)
+  chatWin.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key.toLowerCase() === 'i') {
+      chatWin?.webContents.toggleDevTools()
+      event.preventDefault()
+    }
+  })
+  chatWin.webContents.once('did-finish-load', () => {
+    if (chatWin != null && !chatWin.isDestroyed() && chatWin.webContents) {
+      if (cachedEmbedChatsState) {
+        chatWin.webContents.send('embed-chats-synced', cachedEmbedChatsState)
+      }
+      if (cachedPrimaryChatMe) {
+        chatWin.webContents.send('chat-websocket-me', cachedPrimaryChatMe)
+      }
+    }
+  })
+  await chatWin.loadURL(loadUrl)
+  chatWin.show()
+  chatWin.focus()
+}
+
+ipcMain.handle('open-chat-external-window', async (_event, payload: {
+  url?: string
+  selectedEmbedChatKeys?: string[]
+  selectedEmbedKeys?: string[]
+  transparentBackground?: boolean
+}) => {
+  const url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+  if (!url || !url.startsWith('http')) {
+    return { success: false, error: 'Invalid URL' }
+  }
+  const chatKeys = Array.isArray(payload?.selectedEmbedChatKeys) ? payload.selectedEmbedChatKeys : []
+  const embedKeys = Array.isArray(payload?.selectedEmbedKeys) ? payload.selectedEmbedKeys : []
+  cachedEmbedChatsState = { selectedEmbedChatKeys: chatKeys, selectedEmbedKeys: embedKeys }
+  if (typeof payload?.transparentBackground === 'boolean') {
+    chatWindowTransparentBackground = payload.transparentBackground
+  }
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('embed-chats-synced', cachedEmbedChatsState)
+    chatWin.show()
+    chatWin.focus()
+    return { success: true }
+  }
+  const [base, hash] = url.split('#')
+  const separator = base.includes('?') ? '&' : '?'
+  let loadUrl = `${base}${separator}embedChats=${encodeURIComponent(JSON.stringify(cachedEmbedChatsState))}`
+  if (chatWindowTransparentBackground) loadUrl += '&chatTransparent=true'
+  if (hash) loadUrl += `#${hash}`
+  await createChatWindow(loadUrl)
+  return { success: true }
+})
+
+/** Forward embed chat selection from main window to chat window when it changes. */
+ipcMain.on('sync-embed-chats-to-external-window', (_event, payload: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
+  const chatKeys = Array.isArray(payload?.selectedEmbedChatKeys) ? payload.selectedEmbedChatKeys : []
+  const embedKeys = Array.isArray(payload?.selectedEmbedKeys) ? payload.selectedEmbedKeys : []
+  cachedEmbedChatsState = { selectedEmbedChatKeys: chatKeys, selectedEmbedKeys: embedKeys }
+  if (chatWin && !chatWin.isDestroyed() && chatWin.webContents) {
+    chatWin.webContents.send('embed-chats-synced', cachedEmbedChatsState)
+  }
+})
+
+/** Chat window requests initial state on mount (handles race where did-finish-load fires before React ready). */
+ipcMain.handle('chat-window-get-initial-state', () => {
+  return cachedEmbedChatsState ?? { selectedEmbedChatKeys: [], selectedEmbedKeys: [] }
+})
+
+/** Chat window requests cached ME on mount so it knows auth state after window recreation (transparency toggle). */
+ipcMain.handle('chat-window-get-cached-me', (event) => {
+  if (chatWin && !chatWin.isDestroyed() && event.sender === chatWin.webContents) {
+    return cachedPrimaryChatMe
+  }
+  return null
+})
+
+/** Chat window syncs transparent preference on load so main process can use it when reopening. */
+ipcMain.handle('chat-window-sync-transparent-preference', (_event, enabled: boolean) => {
+  chatWindowTransparentBackground = !!enabled
+})
+
+/** Chat window View menu: Always On Top + Transparency + Transparent background + Dev Tools. Opens at cursor. */
+ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBackground?: boolean }) => {
+  const w = BrowserWindow.fromWebContents(event.sender)
+  if (!w || w.isDestroyed()) return
+  const isAlwaysOnTop = w.isAlwaysOnTop()
+  const opacity = w.getOpacity()
+  const transparentBackground = payload?.transparentBackground ?? false
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Always On Top',
+      type: 'checkbox',
+      checked: isAlwaysOnTop,
+      click: (menuItem) => {
+        if (w && !w.isDestroyed()) w.setAlwaysOnTop(menuItem.checked)
+      },
+    },
+    {
+      label: 'Transparency',
+      submenu: [
+        { label: '100% (Opaque)', type: 'radio', checked: opacity >= 0.99, click: () => { if (w && !w.isDestroyed()) w.setOpacity(1.0) } },
+        { label: '75%', type: 'radio', checked: opacity >= 0.7 && opacity < 0.8, click: () => { if (w && !w.isDestroyed()) w.setOpacity(0.75) } },
+        { label: '50%', type: 'radio', checked: opacity >= 0.45 && opacity < 0.55, click: () => { if (w && !w.isDestroyed()) w.setOpacity(0.5) } },
+        { label: '25%', type: 'radio', checked: opacity < 0.3, click: () => { if (w && !w.isDestroyed()) w.setOpacity(0.25) } },
+      ],
+    },
+    {
+      label: 'Transparent Background',
+      type: 'checkbox',
+      checked: transparentBackground,
+      click: async () => {
+        const newValue = !transparentBackground
+        chatWindowTransparentBackground = newValue
+        if (w && !w.isDestroyed()) {
+          const bounds = w.getBounds()
+          saveChatWindowBounds(bounds.width, bounds.height)
+          w.webContents.send('chat-window-transparent-background-changed', newValue)
+          const currentUrl = w.webContents.getURL()
+          const urlObj = new URL(currentUrl)
+          const base = `${urlObj.origin}${urlObj.pathname || '/'}`
+          const fullUrl = cachedEmbedChatsState
+            ? `${base}?embedChats=${encodeURIComponent(JSON.stringify(cachedEmbedChatsState))}&chatTransparent=${newValue}#chat-window`
+            : null
+          await new Promise<void>((resolve) => {
+            w.once('closed', () => resolve())
+            w.close()
+          })
+          if (fullUrl) {
+            await createChatWindow(fullUrl)
+          }
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('chat-window-transparent-background-changed', newValue)
+          }
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Toggle Developer Tools',
+      accelerator: process.platform === 'darwin' ? 'Alt+Command+I' : 'Ctrl+Shift+I',
+      click: () => {
+        if (w && !w.isDestroyed()) w.webContents.toggleDevTools()
+      },
+    },
+  ]
+  const menu = Menu.buildFromTemplate(template)
+  menu.popup({ window: w })
 })
 
 ipcMain.handle('fetch-mentions', async (_event, username: string, size: number = 150, offset: number = 0, useCache: boolean = true) => {
@@ -2955,41 +3182,21 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
     if (!chatWebSocket) {
       chatWebSocket = new ChatWebSocket(primary.config.chatWssUrl, primary.config.chatOrigin)
       
-      // Helper function to safely send messages to renderer
+      // Helper function to safely send messages to main window and chat window (when open)
       const safeSend = (channel: string, ...args: any[]) => {
-        try {
-          // Check if window exists and is not destroyed
-          if (!win) return
-          
-          // Check if window is destroyed - this might throw, so wrap in try-catch
-          let isDestroyed = false
+        const targets: Electron.WebContents[] = []
+        if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+          targets.push(win.webContents)
+        }
+        if (chatWin && !chatWin.isDestroyed() && chatWin.webContents && !chatWin.webContents.isDestroyed()) {
+          targets.push(chatWin.webContents)
+        }
+        for (const wc of targets) {
           try {
-            isDestroyed = win.isDestroyed()
+            wc.send(channel, ...args)
           } catch {
-            // If checking isDestroyed throws, assume it's destroyed
-            return
+            // Window or webContents was destroyed - silently ignore
           }
-          
-          if (isDestroyed) return
-          
-          // Check if webContents exists and is not destroyed
-          if (!win.webContents) return
-          
-          let webContentsDestroyed = false
-          try {
-            webContentsDestroyed = win.webContents.isDestroyed()
-          } catch {
-            // If checking isDestroyed throws, assume it's destroyed
-            return
-          }
-          
-          if (webContentsDestroyed) return
-          
-          // Now safe to send
-          win.webContents.send(channel, ...args)
-        } catch (error) {
-          // Window or webContents was destroyed - silently ignore
-          // This is expected during app shutdown
         }
       }
       
@@ -3045,6 +3252,7 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
       })
       
       chatWebSocket.on('me', (event) => {
+        cachedPrimaryChatMe = event
         safeSend('chat-websocket-me', event)
       })
       
@@ -3318,7 +3526,9 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
   try {
     const primary = getPrimaryChatSource()
     if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
+    let justCreated = false
     if (!liveWebSocket) {
+      justCreated = true
       liveWebSocket = new LiveWebSocket(primary.config.liveWssUrl, primary.config.liveOrigin)
 
       const safeSend = (channel: string, ...args: any[]) => {
@@ -3379,6 +3589,12 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
     }
 
     if (!liveWebSocket.isConnected()) {
+      const now = Date.now()
+      // Skip cooldown when we just created the socket (e.g. after Strict Mode unmount/remount)
+      if (!justCreated && now - lastLiveWsConnectAttempt < LIVE_WS_CONNECT_COOLDOWN_MS) {
+        return { success: true }
+      }
+      lastLiveWsConnectAttempt = now
       liveWebSocket.connect()
     }
 
@@ -3418,27 +3634,10 @@ ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[
     if (!kickChatManager) {
       kickChatManager = new KickChatManager()
 
-      const safeSend = (channel: string, ...args: any[]) => {
-        try {
-          if (!win) return
-          let isDestroyed = false
-          try {
-            isDestroyed = win.isDestroyed()
-          } catch {
-            return
-          }
-          if (isDestroyed) return
-          if (!win.webContents) return
-          let webContentsDestroyed = false
-          try {
-            webContentsDestroyed = win.webContents.isDestroyed()
-          } catch {
-            return
-          }
-          if (webContentsDestroyed) return
-          win.webContents.send(channel, ...args)
-        } catch {
-          // ignore
+      const safeSend = (ch: string, ...a: any[]) => {
+        for (const w of [win, chatWin]) {
+          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
+          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
         }
       }
 
@@ -3570,27 +3769,10 @@ ipcMain.handle(
     if (!youTubeChatManager) {
       youTubeChatManager = new YouTubeChatManager()
 
-      const safeSend = (channel: string, ...args: any[]) => {
-        try {
-          if (!win) return
-          let isDestroyed = false
-          try {
-            isDestroyed = win.isDestroyed()
-          } catch {
-            return
-          }
-          if (isDestroyed) return
-          if (!win.webContents) return
-          let webContentsDestroyed = false
-          try {
-            webContentsDestroyed = win.webContents.isDestroyed()
-          } catch {
-            return
-          }
-          if (webContentsDestroyed) return
-          win.webContents.send(channel, ...args)
-        } catch {
-          // ignore
+      const safeSend = (ch: string, ...a: any[]) => {
+        for (const w of [win, chatWin]) {
+          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
+          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
         }
       }
 
@@ -3612,27 +3794,10 @@ ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: st
     if (!twitchChatManager) {
       twitchChatManager = new TwitchChatManager()
 
-      const safeSend = (channel: string, ...args: any[]) => {
-        try {
-          if (!win) return
-          let isDestroyed = false
-          try {
-            isDestroyed = win.isDestroyed()
-          } catch {
-            return
-          }
-          if (isDestroyed) return
-          if (!win.webContents) return
-          let webContentsDestroyed = false
-          try {
-            webContentsDestroyed = win.webContents.isDestroyed()
-          } catch {
-            return
-          }
-          if (webContentsDestroyed) return
-          win.webContents.send(channel, ...args)
-        } catch {
-          // ignore
+      const safeSend = (ch: string, ...a: any[]) => {
+        for (const w of [win, chatWin]) {
+          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
+          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
         }
       }
 

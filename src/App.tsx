@@ -4,16 +4,35 @@ import Menu from './components/Menu'
 import OmniScreen from './components/OmniScreen'
 import DebugPage from './components/DebugPage'
 import TitleBar from './components/TitleBar'
+import ChatWindowTitleBar from './components/ChatWindowTitleBar'
 import { applyThemeToDocument, getAppPreferences } from './utils/appPreferences'
 import './App.css'
 
-type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug'
+type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug' | 'chat-window'
 
 const TOAST_DURATION_MS = 4000
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('menu')
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#chat-window') return 'chat-window'
+    return 'menu'
+  })
   const [titleBarVisible, setTitleBarVisible] = useState(true)
+  const [chatWindowTransparentBackground, setChatWindowTransparentBackground] = useState(() => {
+    try {
+      const fromUrl = typeof window !== 'undefined' && window.location.hash === '#chat-window'
+        ? new URLSearchParams(window.location.search).get('chatTransparent')
+        : null
+      if (fromUrl === 'true' || fromUrl === 'false') {
+        const val = fromUrl === 'true'
+        localStorage.setItem('chat-window-transparent-background', String(val))
+        return val
+      }
+      return localStorage.getItem('chat-window-transparent-background') === 'true'
+    } catch {
+      return false
+    }
+  })
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -27,11 +46,35 @@ function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     const unsub = window.ipcRenderer?.on?.('title-bar-toggle', () => setTitleBarVisible((v) => !v)) as unknown as (() => void) | undefined
+    const unsubTransparent = window.ipcRenderer?.on?.('chat-window-transparent-background-changed', (_: unknown, enabled: boolean) => {
+      setChatWindowTransparentBackground(enabled)
+      try {
+        localStorage.setItem('chat-window-transparent-background', String(enabled))
+      } catch {
+        /* ignore */
+      }
+    }) as unknown as (() => void) | undefined
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       unsub?.()
+      unsubTransparent?.()
     }
   }, [])
+
+  // Chat window: sync transparent preference to main process so it can recreate window correctly
+  useEffect(() => {
+    if (currentPage === 'chat-window') {
+      window.ipcRenderer?.invoke('chat-window-sync-transparent-preference', chatWindowTransparentBackground)
+    }
+  }, [currentPage, chatWindowTransparentBackground])
+
+  // Chat window transparent mode: set data attribute on html so CSS can override DaisyUI root background
+  useEffect(() => {
+    if (currentPage === 'chat-window' && chatWindowTransparentBackground) {
+      document.documentElement.setAttribute('data-chat-window-transparent', 'true')
+      return () => document.documentElement.removeAttribute('data-chat-window-transparent')
+    }
+  }, [currentPage, chatWindowTransparentBackground])
 
   // Apply persisted theme on app load (Menu can edit it).
   useEffect(() => {
@@ -133,6 +176,8 @@ function App() {
       <LinkScroller onBackToMenu={handleBackToMenu} />
     ) : currentPage === 'omni-screen' ? (
       <OmniScreen onBackToMenu={handleBackToMenu} />
+    ) : currentPage === 'chat-window' ? (
+      <OmniScreen chatOnlyMode chatWindowTransparentBackground={chatWindowTransparentBackground} />
     ) : currentPage === 'debug' ? (
       <DebugPage onBackToMenu={handleBackToMenu} />
     ) : (
@@ -140,8 +185,13 @@ function App() {
     )
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-base-100 text-base-content">
-      {titleBarVisible && <TitleBar />}
+    <div
+      className={`flex flex-col h-full min-h-0 text-base-content ${currentPage === 'chat-window' && chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}
+    >
+      {titleBarVisible && currentPage === 'chat-window' && (
+        <ChatWindowTitleBar transparentBackground={chatWindowTransparentBackground} />
+      )}
+      {titleBarVisible && currentPage !== 'chat-window' && <TitleBar />}
       {/* pt-1 gives a small gap so DevTools or first row of content isn't covered by the title bar */}
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden pt-1 relative z-0">{pageContent}</main>
       {/* Toast for protocol add-streamer result (DaisyUI toast + alert) */}

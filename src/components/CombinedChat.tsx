@@ -1096,6 +1096,8 @@ export type CombinedChatContextMenuConfig = {
   highlightTerms?: string[]
   addHighlightTerm?: (term: string) => void
   removeHighlightTerm?: (term: string) => void
+  /** Open combined chat in external Electron window. When set, shows "Open in external window" menu option. */
+  openExternalChatWindow?: () => void
 }
 
 /** Parse optional primary chat label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
@@ -1152,6 +1154,7 @@ function CombinedChat({
   overlayCinemaMode,
   inputContainerRef,
   contextMenuRef,
+  chatAreaTransparentBackground = false,
 }: {
   /** Id of the primary chat source (from config.chatSources). Used for source badge and message source. */
   primaryChatSourceId: string | null
@@ -1223,6 +1226,8 @@ function CombinedChat({
   inputContainerRef?: React.RefObject<HTMLDivElement | null>
   /** When set, parent can call .openContextMenu(e) to show the same context menu as the message area (e.g. on header). */
   contextMenuRef?: React.MutableRefObject<{ openContextMenu: (e: React.MouseEvent) => void } | null>
+  /** When true (chat window), messages area background is transparent so window can float over other content. */
+  chatAreaTransparentBackground?: boolean
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [flairsList, setFlairsList] = useState<PrimaryChatFlair[]>([])
@@ -1861,6 +1866,10 @@ function CombinedChat({
     window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
     window.ipcRenderer.on('chat-websocket-me', handleMe)
     window.ipcRenderer.on('chat-websocket-message', handleMessage)
+    // Chat window: restore cached ME after recreation (e.g. transparency toggle) so we don't show logged-out UI
+    window.ipcRenderer.invoke('chat-window-get-cached-me').then((me: unknown) => {
+      if (alive && me) handleMe(null, me)
+    }).catch(() => {})
     window.ipcRenderer.on('chat-websocket-history', handleHistory)
     window.ipcRenderer.on('chat-websocket-broadcast', handleBroadcast)
     window.ipcRenderer.on('chat-websocket-pin', handlePin)
@@ -3039,12 +3048,14 @@ function CombinedChat({
           ref={scrollerRef}
           className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''} ${overlayMode && overlayCinemaMode === false ? 'rounded-lg' : ''}`}
           style={
-            overlayMode
-              ? {
-                  background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)`,
-                  ...(overlayHeaderHeight != null ? { paddingTop: overlayHeaderHeight } : {}),
-                }
-              : undefined
+            chatAreaTransparentBackground
+              ? { background: 'transparent' }
+              : overlayMode
+                ? {
+                    background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)`,
+                    ...(overlayHeaderHeight != null ? { paddingTop: overlayHeaderHeight } : {}),
+                  }
+                : undefined
           }
           onWheel={() => {
             setScrollbarVisible(true)
@@ -3608,6 +3619,20 @@ function CombinedChat({
                   <span>Chat pane side</span>
                   <span aria-hidden className="text-base-content/50">▸</span>
                 </div>
+                {contextMenuConfig.openExternalChatWindow && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="px-3 py-1.5 text-left hover:bg-base-300 w-full flex items-center gap-2"
+                    onClick={() => {
+                      contextMenuConfig.openExternalChatWindow?.()
+                      closeContextMenu()
+                    }}
+                  >
+                    <Icon name="external-link" size={16} />
+                    <span>Open in external window</span>
+                  </button>
+                )}
                 {contextMenuConfig.primaryChat && (
                   <div
                     className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"

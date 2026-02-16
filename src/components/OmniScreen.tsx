@@ -586,6 +586,32 @@ function canonicalEmbedKey(key: string): string {
   return parsed ? makeEmbedKey(parsed.platform, parsed.id) : key
 }
 
+/** Parse embed chat state from URL query (used when opening external chat window with initial state). */
+function getEmbedChatsStateFromUrl(): { selectedEmbedChatKeys: Set<string>; selectedEmbedKeys: Set<string> } | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const raw = params.get('embedChats')
+    if (!raw) return null
+    const parsed = JSON.parse(decodeURIComponent(raw)) as {
+      selectedEmbedChatKeys?: unknown[]
+      selectedEmbedKeys?: unknown[]
+    }
+    const chatArr = Array.isArray(parsed?.selectedEmbedChatKeys)
+      ? parsed.selectedEmbedChatKeys.filter((x): x is string => typeof x === 'string')
+      : []
+    const embedArr = Array.isArray(parsed?.selectedEmbedKeys)
+      ? parsed.selectedEmbedKeys.filter((x): x is string => typeof x === 'string')
+      : []
+    return {
+      selectedEmbedChatKeys: new Set(chatArr.map(canonicalEmbedKey)),
+      selectedEmbedKeys: new Set(embedArr.map(canonicalEmbedKey)),
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Find all bookmarked streamers that own this embed key (same key can belong to multiple streamers, e.g. same YT stream). */
 function findStreamersForKey(
   key: string,
@@ -724,7 +750,7 @@ function parseEmbedUrl(url: string): { platform: string; id: string } | null {
 const EMBED_DOCK_ICON_BTN = 'btn btn-sm btn-square btn-ghost min-h-0 p-0'
 const EMBED_DOCK_ICON_BTN_CINEMA = 'rounded-none self-stretch h-full min-h-0'
 
-export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void }) {
+export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWindowTransparentBackground = false }: { onBackToMenu?: () => void; chatOnlyMode?: boolean; chatWindowTransparentBackground?: boolean }) {
   // ---- Live WS (embeds list) ----
   const [availableEmbeds, setAvailableEmbeds] = useState<Map<string, LiveEmbed>>(new Map())
   const [bannedEmbeds, setBannedEmbeds] = useState<Map<string, BannedEmbed>>(new Map())
@@ -754,6 +780,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   // ---- Selection + layout ----
   const [selectedEmbedKeys, setSelectedEmbedKeys] = useState<Set<string>>(() => {
+    const fromUrl = window.location.hash === '#chat-window' ? getEmbedChatsStateFromUrl() : null
+    if (fromUrl) return fromUrl.selectedEmbedKeys
     try {
       const raw = localStorage.getItem('omni-screen:selected-embeds')
       if (!raw) return new Set()
@@ -766,6 +794,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
   })
 
   const [selectedEmbedChatKeys, setSelectedEmbedChatKeys] = useState<Set<string>>(() => {
+    const fromUrl = window.location.hash === '#chat-window' ? getEmbedChatsStateFromUrl() : null
+    if (fromUrl) return fromUrl.selectedEmbedChatKeys
     try {
       const raw = localStorage.getItem('omni-screen:selected-embed-chats')
       if (!raw) return new Set()
@@ -799,6 +829,8 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
   // ---- Chat pane (combined chat only; primary chat source is included via combined chat when extension is installed) ----
   const [chatPaneOpen, setChatPaneOpen] = useState(true)
+  /** True when chat is open in an external Electron window. Hides chat pane button and keeps pane closed. */
+  const [chatExternalWindowOpen, setChatExternalWindowOpen] = useState(false)
   const [primaryChatSourceId, setPrimaryChatSourceId] = useState<string | null>(null)
   const [primaryChatSourceAvailable, setPrimaryChatSourceAvailable] = useState<boolean>(false)
   const [primaryChatSourceIconUrl, setPrimaryChatSourceIconUrl] = useState<string | undefined>(undefined)
@@ -837,6 +869,42 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     window.ipcRenderer.on('extensions-reloaded', handler)
     return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
   }, [refetchAppConfig])
+  useEffect(() => {
+    const handler = () => setChatExternalWindowOpen(false)
+    window.ipcRenderer.on('chat-external-window-closed', handler)
+    return () => { window.ipcRenderer.off('chat-external-window-closed', handler) }
+  }, [])
+  // Sync embed/chat selection from main window via IPC (storage events don't reliably fire across Electron windows)
+  useEffect(() => {
+    if (!chatOnlyMode) return
+    const applyPayload = (payload: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
+      if (Array.isArray(payload?.selectedEmbedChatKeys)) {
+        const next = new Set(payload.selectedEmbedChatKeys.filter((x): x is string => typeof x === 'string').map(canonicalEmbedKey))
+        setSelectedEmbedChatKeys((prev) => {
+          if (prev.size !== next.size || [...prev].some((k) => !next.has(k))) return next
+          return prev
+        })
+      }
+      if (Array.isArray(payload?.selectedEmbedKeys)) {
+        const next = new Set(payload.selectedEmbedKeys.filter((x): x is string => typeof x === 'string').map(canonicalEmbedKey))
+        setSelectedEmbedKeys((prev) => {
+          if (prev.size !== next.size || [...prev].some((k) => !next.has(k))) return next
+          return prev
+        })
+      }
+    }
+    const handler = (_e: unknown, payload: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
+      applyPayload(payload)
+    }
+    window.ipcRenderer.on('embed-chats-synced', handler)
+    // Request initial state on mount (handles race where did-finish-load fires before React)
+    window.ipcRenderer.invoke('chat-window-get-initial-state').then((data: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
+      if (data && (Array.isArray(data.selectedEmbedChatKeys) || Array.isArray(data.selectedEmbedKeys))) {
+        applyPayload(data)
+      }
+    }).catch(() => {})
+    return () => { window.ipcRenderer.off('embed-chats-synced', handler) }
+  }, [chatOnlyMode])
   // Hydrate extension settings from localStorage (and migrate legacy chat-source keys into ext-settings when present).
   useEffect(() => {
     const schemas = extensionSettingsSchemas
@@ -1341,6 +1409,23 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       removeHighlightTerm: (term: string) => {
         setCombinedHighlightTerms((prev) => prev.filter((x) => x !== term))
       },
+      ...(!chatOnlyMode && {
+        openExternalChatWindow: () => {
+          setChatPaneOpen(false)
+          setChatExternalWindowOpen(true)
+          const base = `${window.location.origin}${window.location.pathname || '/'}`
+          const url = `${base}#chat-window`
+          const chatArr = Array.from(selectedEmbedChatKeys.values())
+          const embedArr = Array.from(selectedEmbedKeys.values())
+          const transparentBg = typeof localStorage !== 'undefined' && localStorage.getItem('chat-window-transparent-background') === 'true'
+          window.ipcRenderer.invoke('open-chat-external-window', {
+            url,
+            selectedEmbedChatKeys: chatArr,
+            selectedEmbedKeys: embedArr,
+            transparentBackground: transparentBg,
+          })
+        },
+      }),
     }),
     [
       combinedShowTimestamps,
@@ -1355,6 +1440,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       showChatInput,
       setPrimaryChatFlairsFromChat,
       combinedHighlightTerms,
+      chatOnlyMode,
+      selectedEmbedChatKeys,
+      selectedEmbedKeys,
     ]
   )
 
@@ -1610,7 +1698,16 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     } catch {
       // ignore
     }
-  }, [selectedEmbedChatKeys])
+    // Sync to external chat window when open (storage events don't work reliably across Electron windows)
+    if (!chatOnlyMode) {
+      const chatArr = Array.from(selectedEmbedChatKeys.values())
+      const embedArr = Array.from(selectedEmbedKeys.values())
+      window.ipcRenderer.send('sync-embed-chats-to-external-window', {
+        selectedEmbedChatKeys: chatArr,
+        selectedEmbedKeys: embedArr,
+      })
+    }
+  }, [selectedEmbedChatKeys, selectedEmbedKeys, chatOnlyMode])
 
   useEffect(() => {
     setCombinedMaxMessagesDraft(String(combinedMaxMessages))
@@ -1930,6 +2027,9 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       // Embeds and banned embeds are handled by live-websocket-embeds / live-websocket-banned-embeds from extension
     }
 
+    // Chat-only window must not connect/disconnect: it would destroy the shared live WebSocket on unmount
+    if (chatOnlyMode) return
+
     window.ipcRenderer.invoke('live-websocket-connect').catch(() => {})
     window.ipcRenderer.on('live-websocket-message', handleMessage)
     window.ipcRenderer.on('live-websocket-embeds', handleEmbeds)
@@ -1942,11 +2042,13 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
       window.ipcRenderer.off('live-websocket-banned-embeds', handleBannedEmbeds)
       window.ipcRenderer.invoke('live-websocket-disconnect').catch(() => {})
     }
-  }, [])
+  }, [chatOnlyMode])
 
   // Subscribe Kick chatrooms for "Combined chat" based on per-embed Chat toggles.
+  // When chatOnlyMode (external window), main window handles targets; chat window just receives messages.
   useEffect(() => {
-    const shouldRun = chatPaneOpen
+    if (chatOnlyMode) return
+    const shouldRun = chatPaneOpen || chatExternalWindowOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
       return
@@ -1963,11 +2065,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     // De-dupe and keep stable-ish order.
     const uniq = Array.from(new Set(slugs)).sort()
     window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: uniq }).catch(() => {})
-  }, [chatPaneOpen, selectedEmbedChatKeys])
+  }, [chatOnlyMode, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys])
 
   // Subscribe YouTube live chat for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
-    const shouldRun = chatPaneOpen
+    if (chatOnlyMode) return
+    const shouldRun = chatPaneOpen || chatExternalWindowOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: [], opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
       return
@@ -1995,11 +2098,12 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
     const uniq = Array.from(new Set(ids)).sort()
     window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: uniq, opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
-  }, [combinedAvailableEmbeds, chatPaneOpen, selectedEmbedChatKeys, youTubePollMultiplier])
+  }, [chatOnlyMode, combinedAvailableEmbeds, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys, youTubePollMultiplier])
 
   // Subscribe Twitch IRC chat for "Combined chat" based on per-embed Chat toggles.
   useEffect(() => {
-    const shouldRun = chatPaneOpen
+    if (chatOnlyMode) return
+    const shouldRun = chatPaneOpen || chatExternalWindowOpen
     if (!shouldRun) {
       window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: [] }).catch(() => {})
       return
@@ -2015,7 +2119,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
 
     const uniq = Array.from(new Set(chans)).sort()
     window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: uniq }).catch(() => {})
-  }, [chatPaneOpen, selectedEmbedChatKeys])
+  }, [chatOnlyMode, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys])
 
   // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
   useEffect(() => {
@@ -2771,6 +2875,57 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
     })
   }, [cinemaMode, gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
 
+  // Chat-only mode: external window shows only the combined chat (no grid, dock, etc.)
+  const [chatOnlyContainer, setChatOnlyContainer] = useState<HTMLDivElement | null>(null)
+  if (chatOnlyMode) {
+    return (
+      <div className={`h-full min-h-0 text-base-content flex flex-col overflow-hidden ${chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}>
+        <div ref={setChatOnlyContainer} className="flex-1 min-h-0 overflow-hidden" />
+        {chatOnlyContainer &&
+          createPortal(
+            <CombinedChat
+              primaryChatSourceId={primaryChatSourceId}
+              enablePrimaryChat={combinedIncludePrimaryChat && primaryChatSourceAvailable}
+              showPrimaryChatInput={showChatInput}
+              enabledKickSlugs={enabledKickSlugs}
+              enabledYoutubeVideoIds={enabledYoutubeVideoIds}
+              enabledTwitchChannels={enabledTwitchChannels}
+              getEmbedDisplayName={getEmbedDisplayName}
+              getEmbedColor={getEmbedColor}
+              getEmbedLabelHidden={getEmbedLabelHidden}
+              primaryChatSourceLabelColor={primaryChatSourceLabelColorOverride || undefined}
+              primaryChatSourceLabelText={primaryChatSourceLabelText}
+              primaryChatSourceIconUrl={primaryChatSourceIconUrl}
+              onOpenLink={handleChatOpenLink}
+              maxMessages={combinedMaxMessages}
+              maxMessagesScroll={combinedMaxMessagesScroll}
+              showTimestamps={combinedShowTimestamps}
+              showSourceLabels={combinedShowLabels}
+              showPlatformIcons={combinedShowPlatformIcons}
+              sortMode={combinedSortMode}
+              highlightTerms={combinedHighlightTerms}
+              pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
+              showPrimaryChatSourceFlairsAndColors={!combinedDisablePrimaryChatFlairsAndColors}
+              contextMenuConfig={combinedChatContextMenuConfig}
+              onCountChange={setCombinedMsgCount}
+              onPrimaryChatUserCountChange={setCombinedPrimaryChatUserCount}
+              onCombinedUserCountsChange={setCombinedUserCounts}
+              primaryChatInputRef={primaryChatInputRef}
+              primaryChatActionsRef={primaryChatActionsRef}
+              focusShortcutLabel={formatPrimaryChatFocusKeybind(primaryChatFocusKeybind)}
+              channelSwitchKeybind={channelSwitchKeybind}
+              channelSwitchShortcutLabel={formatKeybind(channelSwitchKeybind)}
+              overlayMode={false}
+              overlayOpacity={combinedChatOverlayOpacity}
+              messagesClickThrough={false}
+              chatAreaTransparentBackground={chatWindowTransparentBackground}
+            />,
+            chatOnlyContainer
+          )}
+      </div>
+    )
+  }
+
   return (
     // Full-height layout; only the bottom embed bar is always visible.
     <div className="h-full min-h-0 bg-base-100 text-base-content flex flex-col overflow-hidden">
@@ -2987,7 +3142,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
           {/* Embeds dock (when overlay + chat open: dock and chat input in one row; input side matches chat side). z-20 so it paints above the grid (z-10) and we don't see the background image through the input strip. */}
           {combinedChatOverlayMode && chatPaneOpen ? (
             <div
-              className={`relative z-20 flex flex-none items-center min-h-0 bg-base-200 overflow-hidden ${dockAtTop ? 'order-0' : 'order-1'} ${!cinemaMode ? 'rounded-lg' : ''}`}
+              className={`relative z-20 flex flex-none items-center min-h-0 bg-base-200 overflow-visible ${dockAtTop ? 'order-0' : 'order-1'} ${!cinemaMode ? 'rounded-lg' : ''}`}
               style={{ height: cinemaMode ? 'var(--embed-dock-height)' : 'var(--embed-dock-bar-relaxed-height)' }}
             >
               <div className={`flex-1 min-w-0 min-h-0 flex items-center ${chatPaneSide === 'left' ? 'flex-row-reverse' : ''}`}>
@@ -3053,7 +3208,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                         {(pasteLinkError || ytChannelError) ? <div className="text-xs text-error">{pasteLinkError || ytChannelError}</div> : null}
                       </div>
                     </div>
-                    {!chatPaneOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane"><Icon name="message-circle" size={20} /></button>}
+                    {!chatPaneOpen && !chatExternalWindowOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane"><Icon name="message-circle" size={20} /></button>}
                     {!liteLinkScrollerOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller"><Icon name="image" size={20} /></button>}
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><span className="inline-block bg-current w-5 h-5" style={{ maskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, WebkitMaskImage: `url(${autoplay ? autoplayIcon : autoplayPausedIcon})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }} aria-hidden /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${mute ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute"><Icon name={mute ? 'volume-x' : 'volume-2'} size={20} /></button>
@@ -3274,7 +3429,7 @@ export default function OmniScreen({ onBackToMenu }: { onBackToMenu?: () => void
                   </div>
                 </div>
               </div>
-              {!chatPaneOpen && (
+              {!chatPaneOpen && !chatExternalWindowOpen && (
                 <button
                   type="button"
                   className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}

@@ -17,6 +17,7 @@ import sidebarSvg from '../assets/icons/sidebar.svg?raw'
 import layersSvg from '../assets/icons/layers.svg?raw'
 import xSvg from '../assets/icons/x.svg?raw'
 import percentSvg from '../assets/icons/percent.svg?raw'
+import externalLinkSvg from '../assets/icons/external-link.svg?raw'
 
 const ICONS: Record<string, string> = {
   'pie-chart': pieChartSvg,
@@ -38,6 +39,7 @@ const ICONS: Record<string, string> = {
   layers: layersSvg,
   x: xSvg,
   percent: percentSvg,
+  'external-link': externalLinkSvg,
 }
 
 export type IconName = keyof typeof ICONS
