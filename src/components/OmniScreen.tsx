@@ -8,8 +8,20 @@ import CombinedChat, { type CombinedChatContextMenuConfig } from './CombinedChat
 import { LiteLinkScroller, type LiteLinkScrollerSettings } from './LiteLinkScroller'
 import { buildLinkCardsFromMessage } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
-import danTheBuilderBg from '../assets/media/DanTheBuilder.png'
 import autoplayIcon from '../assets/icons/autoplay.png'
+
+/** Background watermark text (stored with original casing for reuse; rendered uppercase). */
+const OMNISCREEN_BACKGROUND_TEXT = 'Ripperino Cappucino Poppuccino Hoppuccino Moppuccino  Dappuccino Kappaccino Appuccino Al Pacino, My Duderinos. '
+
+/** Precomputed rotated lines for background watermark (avoids recalc on rerender). */
+const OMNISCREEN_BACKGROUND_LINES = (() => {
+  const words = OMNISCREEN_BACKGROUND_TEXT.split(/\s+/).filter(Boolean)
+  return Array.from({ length: 50 }, (_, i) => {
+    const offset = i % words.length
+    const rotated = [...words.slice(offset), ...words.slice(0, offset)].join(' ').toUpperCase()
+    return (rotated + ' ').repeat(5)
+  })
+})()
 import autoplayPausedIcon from '../assets/icons/autoplay-paused.png'
 import { Icon } from './Icon'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
@@ -3074,11 +3086,28 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
 
         {/* Center column: embeds grid + dock (dock order switches by dockAtTop) */}
         <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'} ${cinemaMode ? '' : 'gap-3'}`}>
-          {/* 50% transparent background behind embeds */}
-          <div
-            className="absolute inset-0 opacity-50 pointer-events-none bg-center bg-no-repeat bg-cover"
-            style={{ backgroundImage: `url(${danTheBuilderBg})` }}
-          />
+          {/* Theme-following background with repeating watermark text (clipped on all edges) */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none bg-base-200">
+            <div
+              className="absolute text-base-content/15 whitespace-pre text-lg font-medium select-none"
+              style={{
+                transform: 'rotate(-15deg)',
+                transformOrigin: 'center center',
+                left: '50%',
+                top: '50%',
+                marginLeft: '-100vmax',
+                marginTop: '-100vmax',
+                width: '200vmax',
+                lineHeight: 2.5,
+              }}
+            >
+              {OMNISCREEN_BACKGROUND_LINES.map((line, i) => (
+                <span key={i} style={{ display: 'block' }}>
+                  {line}
+                </span>
+              ))}
+            </div>
+          </div>
 
           {/* Embed grid area (measured by ResizeObserver) */}
           <div ref={gridAreaRef} className={`relative z-10 flex-1 min-h-0 overflow-hidden ${dockAtTop ? 'order-1' : 'order-0'}`}>

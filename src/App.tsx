@@ -192,8 +192,7 @@ function App() {
         <ChatWindowTitleBar transparentBackground={chatWindowTransparentBackground} />
       )}
       {titleBarVisible && currentPage !== 'chat-window' && <TitleBar />}
-      {/* pt-1 gives a small gap so DevTools or first row of content isn't covered by the title bar */}
-      <main className="flex-1 min-h-0 flex flex-col overflow-hidden pt-1 relative z-0">{pageContent}</main>
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden relative z-0">{pageContent}</main>
       {/* Toast for protocol add-streamer result (DaisyUI toast + alert) */}
       <div className="fixed inset-0 pointer-events-none z-[9999]" aria-hidden>
         <div className="absolute bottom-4 right-4 toast toast-end toast-bottom">
