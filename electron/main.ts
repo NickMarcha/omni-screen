@@ -153,6 +153,8 @@ let chatWindowTransparentBackground = false
 const CHAT_WINDOW_BOUNDS_PATH = path.join(app.getPath('userData'), 'chat-window-bounds.json')
 /** Cached ME event from primary chat WebSocket; sent to chat window on load so it knows auth state after recreate. */
 let cachedPrimaryChatMe: { type?: string; data?: unknown } | null = null
+/** Production server base URL (e.g. http://127.0.0.1:5173) for chat window fallback when renderer has file:// */
+let productionServerBaseUrl: string | null = null
 /** Protocol results from launch URL (before renderer loaded); sent when main window finishes loading. */
 let pendingProtocolResults: ProtocolHandleResult[] = []
 
@@ -1175,20 +1177,33 @@ function createWindow() {
           res.writeHead(200, { 'Content-Type': contentType })
           res.end(content)
         } else {
-          res.writeHead(404)
-          res.end('Not found')
+          // Directory or unknown: SPA fallback for non-asset paths
+          serveIndexHtml(res)
         }
-      } catch (error) {
+      } catch {
+        // File not found: SPA fallback so chat window and client routes work
+        serveIndexHtml(res)
+      }
+    })
+    
+    function serveIndexHtml(res: import('http').ServerResponse) {
+      try {
+        const indexPath = path.join(RENDERER_DIST, 'index.html')
+        const content = readFileSync(indexPath)
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(content)
+      } catch {
         res.writeHead(404)
         res.end('Not found')
       }
-    })
+    }
     
     // Start server on a fixed port to ensure localStorage persists between restarts
     // localStorage is scoped by origin, so we need a consistent port
     const FIXED_PORT = 5173 // Use same port as Vite dev server for consistency
     localServer.listen(FIXED_PORT, '127.0.0.1', () => {
       const url = `http://127.0.0.1:${FIXED_PORT}`
+      productionServerBaseUrl = url
       console.log(`[Main Process] Starting local HTTP server for production: ${url}`)
       if (win && !win.isDestroyed()) {
         win.loadURL(url)
@@ -1200,6 +1215,7 @@ function createWindow() {
         localServer.listen(0, '127.0.0.1', () => {
           const port = (localServer.address() as { port: number })?.port || 0
           const url = `http://127.0.0.1:${port}`
+          productionServerBaseUrl = url
           console.log(`[Main Process] Starting local HTTP server on fallback port: ${url}`)
           if (win && !win.isDestroyed()) {
             win.loadURL(url)
@@ -1388,15 +1404,17 @@ ipcMain.handle('set-chat-link-open-action', (_event, action: LinkOpenAction) => 
   }
 })
 
-/** Load stored chat window bounds (width, height). */
-function loadChatWindowBounds(): { width: number; height: number } {
+/** Load stored chat window bounds (x, y, width, height). */
+function loadChatWindowBounds(): { x?: number; y?: number; width: number; height: number } {
   try {
     if (existsSync(CHAT_WINDOW_BOUNDS_PATH)) {
       const raw = readFileSync(CHAT_WINDOW_BOUNDS_PATH, 'utf-8')
-      const data = JSON.parse(raw) as { width?: number; height?: number }
+      const data = JSON.parse(raw) as { x?: number; y?: number; width?: number; height?: number }
       const w = typeof data?.width === 'number' && data.width >= 360 ? data.width : 500
       const h = typeof data?.height === 'number' && data.height >= 400 ? data.height : 700
-      return { width: w, height: h }
+      const x = typeof data?.x === 'number' ? data.x : undefined
+      const y = typeof data?.y === 'number' ? data.y : undefined
+      return { x, y, width: w, height: h }
     }
   } catch {
     /* ignore */
@@ -1404,10 +1422,10 @@ function loadChatWindowBounds(): { width: number; height: number } {
   return { width: 500, height: 700 }
 }
 
-/** Save chat window bounds. */
-function saveChatWindowBounds(width: number, height: number) {
+/** Save chat window bounds (x, y, width, height). */
+function saveChatWindowBounds(bounds: { x?: number; y?: number; width: number; height: number }) {
   try {
-    writeFileSync(CHAT_WINDOW_BOUNDS_PATH, JSON.stringify({ width, height }), 'utf-8')
+    writeFileSync(CHAT_WINDOW_BOUNDS_PATH, JSON.stringify(bounds), 'utf-8')
   } catch {
     /* ignore */
   }
@@ -1416,9 +1434,10 @@ function saveChatWindowBounds(width: number, height: number) {
 /** Create or recreate the chat window. Caller ensures cachedEmbedChatsState is set. */
 async function createChatWindow(loadUrl: string): Promise<void> {
   const bounds = loadChatWindowBounds()
-  chatWin = new BrowserWindow({
+  const winOpts: Electron.BrowserWindowConstructorOptions = {
     width: bounds.width,
     height: bounds.height,
+    ...(typeof bounds.x === 'number' && typeof bounds.y === 'number' && { x: bounds.x, y: bounds.y }),
     minWidth: 360,
     minHeight: 400,
     show: false,
@@ -1433,11 +1452,12 @@ async function createChatWindow(loadUrl: string): Promise<void> {
       partition: 'persist:main',
       webSecurity: false,
     },
-  })
+  }
+  chatWin = new BrowserWindow(winOpts)
   chatWin.on('close', () => {
     if (chatWin && !chatWindowTransparentBackground) {
-      const [w, h] = chatWin.getSize()
-      saveChatWindowBounds(w, h)
+      const b = chatWin.getBounds()
+      saveChatWindowBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
     }
   })
   const thisChatWin = chatWin
@@ -1451,8 +1471,8 @@ async function createChatWindow(loadUrl: string): Promise<void> {
   })
   chatWin.on('resize', () => {
     if (chatWin && !chatWin.isDestroyed() && !chatWindowTransparentBackground) {
-      const [w, h] = chatWin.getSize()
-      saveChatWindowBounds(w, h)
+      const b = chatWin.getBounds()
+      saveChatWindowBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
     }
   })
   chatWin.setMenu(null)
@@ -1475,6 +1495,9 @@ async function createChatWindow(loadUrl: string): Promise<void> {
   await chatWin.loadURL(loadUrl)
   chatWin.show()
   chatWin.focus()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('chat-external-window-opened')
+  }
 }
 
 ipcMain.handle('open-chat-external-window', async (_event, payload: {
@@ -1483,7 +1506,11 @@ ipcMain.handle('open-chat-external-window', async (_event, payload: {
   selectedEmbedKeys?: string[]
   transparentBackground?: boolean
 }) => {
-  const url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+  let url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+  // In production, renderer may have file:// if main window loaded before server; use known server URL
+  if ((!url || !url.startsWith('http')) && productionServerBaseUrl) {
+    url = `${productionServerBaseUrl}/`
+  }
   if (!url || !url.startsWith('http')) {
     return { success: false, error: 'Invalid URL' }
   }
@@ -1570,7 +1597,7 @@ ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBac
         chatWindowTransparentBackground = newValue
         if (w && !w.isDestroyed()) {
           const bounds = w.getBounds()
-          saveChatWindowBounds(bounds.width, bounds.height)
+          saveChatWindowBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height })
           w.webContents.send('chat-window-transparent-background-changed', newValue)
           const currentUrl = w.webContents.getURL()
           const urlObj = new URL(currentUrl)

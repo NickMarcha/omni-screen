@@ -43,7 +43,8 @@ function parseEmbedUrl(url: string): { platform: string; id: string } | null {
   return null
 }
 
-async function fetchText(url: string): Promise<string> {
+/** Fetch Twitch page and return status, headers, and body for debugging rate limits. */
+async function fetchTwitchWithMeta(url: string): Promise<{ status: number; headers: Record<string, string>; body: string }> {
   const res = await fetch(url, {
     cache: 'no-store',
     headers: {
@@ -53,8 +54,12 @@ async function fetchText(url: string): Promise<string> {
       Pragma: 'no-cache',
     },
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.text()
+  const headers: Record<string, string> = {}
+  res.headers.forEach((v, k) => {
+    headers[k] = v
+  })
+  const body = await res.text()
+  return { status: res.status, headers, body }
 }
 
 /** Fetch URL with app session (cookies) so Kick/Cloudflare accept the request. */
@@ -180,12 +185,33 @@ function parseTwitchJsonLd(html: string): { live: boolean; parsed?: object; pars
 /** Check if a Twitch channel (login) is currently live. Parses JSON-LD from page; falls back to regex if parse fails. */
 async function isTwitchChannelLive(login: string): Promise<boolean> {
   const url = `https://www.twitch.tv/${encodeURIComponent(login)}?_=${Date.now()}`
-  const html = await fetchText(url)
+  const { status, headers, body: html } = await fetchTwitchWithMeta(url)
   const jsonResult = parseTwitchJsonLd(html)
 
   if (jsonResult.parseError) {
+    const relevantHeaders: Record<string, string> = {}
+    for (const [k, v] of Object.entries(headers)) {
+      const lower = k.toLowerCase()
+      if (
+        lower.startsWith('x-ratelimit') ||
+        lower === 'retry-after' ||
+        lower === 'content-type' ||
+        lower === 'x-twitch' ||
+        lower === 'cf-'
+      ) {
+        relevantHeaders[k] = v
+      }
+    }
     fileLogger.writeLog('error', 'main', '[url-is-live] Twitch JSON-LD parse failed', [
-      { login, url, parseError: jsonResult.parseError },
+      {
+        login,
+        url,
+        parseError: jsonResult.parseError,
+        status,
+        headers: relevantHeaders,
+        bodyLength: html.length,
+        bodyPreview: html.slice(0, 200),
+      },
     ])
   }
 

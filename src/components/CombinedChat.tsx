@@ -2376,8 +2376,16 @@ function CombinedChat({
     return { primary: primaryChatUserNicks.length, kick }
   }, [enabledKickSlugs, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
 
+  const prevCombinedUserCountsRef = useRef<typeof combinedUserCounts | null>(null)
   useEffect(() => {
-    onCombinedUserCountsChange?.(combinedUserCounts)
+    const prev = prevCombinedUserCountsRef.current
+    const same =
+      prev &&
+      prev.primary === combinedUserCounts.primary &&
+      Object.keys(prev.kick).length === Object.keys(combinedUserCounts.kick).length &&
+      Object.keys(prev.kick).every((k) => prev.kick[k] === combinedUserCounts.kick[k])
+    prevCombinedUserCountsRef.current = combinedUserCounts
+    if (!same) onCombinedUserCountsChange?.(combinedUserCounts)
   }, [combinedUserCounts, onCombinedUserCountsChange])
 
   // Also report single count for backward compat (active channel count).
@@ -2391,8 +2399,12 @@ function CombinedChat({
     return 0
   }, [activeChannel, primaryChatSourceId, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
 
+  const prevDisplayUserCountRef = useRef<number | null>(null)
   useEffect(() => {
-    onPrimaryChatUserCountChange?.(displayUserCount)
+    if (prevDisplayUserCountRef.current !== displayUserCount) {
+      prevDisplayUserCountRef.current = displayUserCount
+      onPrimaryChatUserCountChange?.(displayUserCount)
+    }
   }, [displayUserCount, onPrimaryChatUserCountChange])
 
   /** Cache of primary chat user data by nick (from last message seen from that nick), for tooltips on mentioned nicks. */

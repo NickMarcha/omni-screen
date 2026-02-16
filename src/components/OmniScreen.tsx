@@ -870,22 +870,29 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
   }, [refetchAppConfig])
   useEffect(() => {
-    const handler = () => setChatExternalWindowOpen(false)
-    window.ipcRenderer.on('chat-external-window-closed', handler)
-    return () => { window.ipcRenderer.off('chat-external-window-closed', handler) }
+    const handlerClosed = () => setChatExternalWindowOpen(false)
+    const handlerOpened = () => setChatExternalWindowOpen(true)
+    window.ipcRenderer.on('chat-external-window-closed', handlerClosed)
+    window.ipcRenderer.on('chat-external-window-opened', handlerOpened)
+    return () => {
+      window.ipcRenderer.off('chat-external-window-closed', handlerClosed)
+      window.ipcRenderer.off('chat-external-window-opened', handlerOpened)
+    }
   }, [])
   // Sync embed/chat selection from main window via IPC (storage events don't reliably fire across Electron windows)
   useEffect(() => {
     if (!chatOnlyMode) return
     const applyPayload = (payload: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
-      if (Array.isArray(payload?.selectedEmbedChatKeys)) {
+      if (!payload || (!Array.isArray(payload.selectedEmbedChatKeys) && !Array.isArray(payload.selectedEmbedKeys)))
+        return
+      if (Array.isArray(payload.selectedEmbedChatKeys)) {
         const next = new Set(payload.selectedEmbedChatKeys.filter((x): x is string => typeof x === 'string').map(canonicalEmbedKey))
         setSelectedEmbedChatKeys((prev) => {
           if (prev.size !== next.size || [...prev].some((k) => !next.has(k))) return next
           return prev
         })
       }
-      if (Array.isArray(payload?.selectedEmbedKeys)) {
+      if (Array.isArray(payload.selectedEmbedKeys)) {
         const next = new Set(payload.selectedEmbedKeys.filter((x): x is string => typeof x === 'string').map(canonicalEmbedKey))
         setSelectedEmbedKeys((prev) => {
           if (prev.size !== next.size || [...prev].some((k) => !next.has(k))) return next
@@ -897,7 +904,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       applyPayload(payload)
     }
     window.ipcRenderer.on('embed-chats-synced', handler)
-    // Request initial state on mount (handles race where did-finish-load fires before React)
     window.ipcRenderer.invoke('chat-window-get-initial-state').then((data: { selectedEmbedChatKeys?: string[]; selectedEmbedKeys?: string[] }) => {
       if (data && (Array.isArray(data.selectedEmbedChatKeys) || Array.isArray(data.selectedEmbedKeys))) {
         applyPayload(data)
