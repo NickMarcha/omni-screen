@@ -31,3 +31,6 @@ release
 omni-screen-bin*.tar.gz
 
 .env
+
+# Temp / scratch files
+.temp/

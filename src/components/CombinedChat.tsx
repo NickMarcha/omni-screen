@@ -51,6 +51,24 @@ interface PrimaryChatInboxMessage {
 
 const PRIMARY_CHAT_WHISPER_USERS_KEY = 'omni-screen:primary-chat-whisper-usernames'
 
+/** Sinhala char U+0D9E (Among Us crewmate) – used for SUS/suspost detection. */
+const SUS_CHAR = '\u0D9E'
+
+/** Privileged features (mod, vip, admin, etc.) – from chat-gui UserFeature. */
+const PRIVILEGED_FEATURES = new Set(['moderator', 'protected', 'admin', 'vip', 'micro', 'flair12', 'flair17'])
+
+/** Sub tier flairs – having any means subscriber. */
+const SUB_TIER_FLAIRS = new Set(['subscriber', 'flair13', 'flair1', 'flair3', 'flair8', 'flair42'])
+
+function isSuspost(content: string, rawMsg: PrimaryChatMessage): boolean {
+  if (!content || content.indexOf(SUS_CHAR) !== 0) return false
+  const isSub =
+    rawMsg.subscription != null ||
+    (rawMsg.features ?? []).some((f) => SUB_TIER_FLAIRS.has(f))
+  const isPrivileged = (rawMsg.features ?? []).some((f) => PRIVILEGED_FEATURES.has(f))
+  return isSub || isPrivileged
+}
+
 /** Format whisper timestamp: same day → hh:mm, else → date + hh:mm */
 function formatWhisperTimestamp(ts: string): string {
   if (!ts) return ''
@@ -3278,12 +3296,30 @@ function CombinedChat({
               m.source === primaryChatSourceId && showPrimaryChatSourceFlairsAndColors
                 ? (rawMsg.features ?? []).filter((f: string) => flairsMapRef.current.has(f))
                 : []
+            const isPrimaryChatUserMsg = m.source === primaryChatSourceId && 'nick' in m
+            const nickLower = isPrimaryChatUserMsg && m.nick ? m.nick.trim().toLowerCase() : ''
+            const fullDatetime = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleString() : ''
+            const flairClassNames = primaryChatFlairFeatures
+              .map((f) => flairsMapRef.current.get(f)?.name)
+              .filter(Boolean)
+              .join(' ')
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
-                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${isPrimaryChatUserMsg ? 'msg-user' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
+                {...(isPrimaryChatUserMsg && nickLower ? { 'data-username': nickLower } : {})}
               >
-                {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
+                {isPrimaryChatUserMsg ? (
+                  <time
+                    className={`time shrink-0 ${showTimestamps ? 'text-xs text-base-content/50' : 'sr-only'}`}
+                    title={fullDatetime}
+                    data-unixtimestamp={m.tsMs}
+                  >
+                    {ts}
+                  </time>
+                ) : showTimestamps ? (
+                  <span className="text-xs text-base-content/50 shrink-0">{ts}</span>
+                ) : null}
                 {showSourceLabels && (m.source === primaryChatSourceId ? (primaryChatSourceLabelText != null && primaryChatSourceLabelText.trim() !== '') : !getEmbedLabelHidden?.(colorKey)) ? (
                   <span
                     className="badge badge-sm shrink-0"
@@ -3332,7 +3368,7 @@ function CombinedChat({
                       ) : null}
                       <span className="inline-flex items-center gap-0">
                         <span
-                          className={`font-semibold hover:underline ${primaryChatColorFlair ? `user ${primaryChatColorFlair.name}` : ''}`}
+                          className={`font-semibold hover:underline user ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
                           style={primaryChatColorFlair ? undefined : { color: accent }}
                         >
                           {'nick' in m ? m.nick : ''}
@@ -3349,9 +3385,12 @@ function CombinedChat({
                     </span>
                   )}
                 </span>
-                <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0">
+                <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0">
                   {m.source === primaryChatSourceId ? (
-                    <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
+                    <span
+                      className={`msg-chat msg-chat-inner ${isPrimaryChatUserMsg && isSuspost(m.content ?? '', rawMsg) ? 'sus' : ''}`.trim()}
+                      style={{ position: 'relative' }}
+                    >
                       {renderPrimaryChatMessageContent(m.content ?? '')}
                     </span>
                   ) : m.source === 'kick'
@@ -3401,7 +3440,7 @@ function CombinedChat({
                   aria-hidden
                 />
               ) : null}
-              <span className="inline-flex items-center gap-1 shrink-0">
+              <span className="text inline-flex items-center gap-1 shrink-0">
                 {isPrimaryChat && prefix ? (
                   <div
                     className={`emote ${prefix} cursor-pointer`}
