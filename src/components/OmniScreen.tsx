@@ -2208,6 +2208,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [bookmarkedStreamers, bookmarkedYoutubeCheckMultiplier, bookmarkedPollRefreshTrigger])
 
   // Poll bookmarked streamers' Kick channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
+  // On error (rate limit, parse), preserve previous state so open embeds are not removed.
   useEffect(() => {
     const withKick = bookmarkedStreamers.filter((s) => s.kickSlug?.trim())
     logBookmarked('Kick poll: bookmarked streamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
@@ -2216,6 +2217,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     let cancelled = false
     const run = async () => {
       const newEmbeds = new Map<string, LiveEmbed>()
+      const erroredSlugs = new Set<string>()
       for (const s of withKick) {
         if (cancelled) return
         const slug = (s.kickSlug || '').trim().toLowerCase()
@@ -2224,7 +2226,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           const r = await window.ipcRenderer.invoke('url-is-live', `https://kick.com/${slug}`) as { live?: boolean; error?: string }
           if (cancelled) return
           logBookmarked('Kick result', { nickname: s.nickname || s.id, slug, live: r?.live, error: r?.error })
-          if (r?.live) {
+          if (r?.error) {
+            erroredSlugs.add(slug)
+          } else if (r?.live) {
             const key = makeEmbedKey('kick', slug)
             newEmbeds.set(key, {
               platform: 'kick',
@@ -2234,6 +2238,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           }
         } catch (e) {
           logBookmarked('Kick error', { nickname: s.nickname || s.id, slug, err: String(e) })
+          erroredSlugs.add(slug)
         }
       }
       if (cancelled) return
@@ -2242,6 +2247,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('kick:')) next.delete(k)
         newEmbeds.forEach((embed, key) => next.set(canonicalEmbedKey(key), embed))
+        for (const slug of erroredSlugs) {
+          const key = canonicalEmbedKey(makeEmbedKey('kick', slug))
+          const prevEmbed = prev.get(key)
+          if (prevEmbed) next.set(key, prevEmbed)
+        }
         return next
       })
     }
@@ -2254,6 +2264,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [bookmarkedStreamers, bookmarkedPollRefreshTrigger])
 
   // Poll bookmarked streamers' Twitch channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
+  // On error (parse/rate limit), preserve previous state so open embeds are not removed.
   useEffect(() => {
     const withTwitch = bookmarkedStreamers.filter((s) => s.twitchLogin?.trim())
     logBookmarked('Twitch poll: bookmarked streamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
@@ -2262,6 +2273,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     let cancelled = false
     const run = async () => {
       const newEmbeds = new Map<string, LiveEmbed>()
+      const erroredLogins = new Set<string>()
       for (const s of withTwitch) {
         if (cancelled) return
         const login = (s.twitchLogin || '').trim().toLowerCase()
@@ -2270,7 +2282,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           const r = await window.ipcRenderer.invoke('url-is-live', `https://twitch.tv/${login}`) as { live?: boolean; error?: string }
           if (cancelled) return
           logBookmarked('Twitch result', { nickname: s.nickname || s.id, login, live: r?.live, error: r?.error })
-          if (r?.live) {
+          if (r?.error) {
+            erroredLogins.add(login)
+          } else if (r?.live) {
             const key = makeEmbedKey('twitch', login)
             newEmbeds.set(key, {
               platform: 'twitch',
@@ -2280,6 +2294,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           }
         } catch (e) {
           logBookmarked('Twitch error', { nickname: s.nickname || s.id, login, err: String(e) })
+          erroredLogins.add(login)
         }
       }
       if (cancelled) return
@@ -2288,6 +2303,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         const next = new Map(prev)
         for (const k of next.keys()) if (k.startsWith('twitch:')) next.delete(k)
         newEmbeds.forEach((embed, key) => next.set(canonicalEmbedKey(key), embed))
+        for (const login of erroredLogins) {
+          const key = canonicalEmbedKey(makeEmbedKey('twitch', login))
+          const prevEmbed = prev.get(key)
+          if (prevEmbed) next.set(key, prevEmbed)
+        }
         return next
       })
     }

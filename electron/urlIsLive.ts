@@ -103,8 +103,9 @@ async function fetchWithSession(
  * Check if a Kick channel slug is currently live.
  * Uses app session so Kick/Cloudflare cookies are sent (same as Kick chat).
  * Supports both response shapes: livestream (v2 legacy) and stream.is_live (official-style).
+ * Returns { live, error } - when error is set, caller should not update state.
  */
-async function isKickChannelLive(slug: string): Promise<boolean> {
+async function isKickChannelLive(slug: string): Promise<{ live: boolean; error?: string }> {
   const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}?_=${Date.now()}`
   const { ok, status, bodyText } = await fetchWithSession(url, {
     accept: 'application/json',
@@ -117,7 +118,7 @@ async function isKickChannelLive(slug: string): Promise<boolean> {
         { slug, url, ok, status, bodyPreview: (bodyText || '').slice(0, 300) },
       ])
     }
-    return false
+    return { live: false, error: status === 429 ? 'Rate limited' : `HTTP ${status}` }
   }
   let data: any
   try {
@@ -128,7 +129,7 @@ async function isKickChannelLive(slug: string): Promise<boolean> {
         { slug, bodyPreview: (bodyText || '').slice(0, 500) },
       ])
     }
-    return false
+    return { live: false, error: 'Parse error' }
   }
   const livestream = data?.livestream ?? data?.data?.livestream
   const stream = data?.stream ?? data?.data?.stream
@@ -140,9 +141,9 @@ async function isKickChannelLive(slug: string): Promise<boolean> {
       { slug, url, hasLivestream, hasStreamLive, live, livestream: !!livestream, streamIsLive: stream?.is_live },
     ])
   }
-  if (hasLivestream) return true
-  if (hasStreamLive) return true
-  return false
+  if (hasLivestream) return { live: true }
+  if (hasStreamLive) return { live: true }
+  return { live: false }
 }
 
 /** Write Twitch page HTML to logs dir for debugging when live check returns false. Returns the file path. */
@@ -182,10 +183,22 @@ function parseTwitchJsonLd(html: string): { live: boolean; parsed?: object; pars
   }
 }
 
-/** Check if a Twitch channel (login) is currently live. Parses JSON-LD from page; falls back to regex if parse fails. */
-async function isTwitchChannelLive(login: string): Promise<boolean> {
+/** Check if a Twitch channel (login) is currently live. Parses JSON-LD from page; falls back to regex if parse fails.
+ * Returns { live, error } - when error is set, caller should not update state (preserve previous). */
+async function isTwitchChannelLive(login: string): Promise<{ live: boolean; error?: string }> {
   const url = `https://www.twitch.tv/${encodeURIComponent(login)}?_=${Date.now()}`
   const { status, headers, body: html } = await fetchTwitchWithMeta(url)
+
+  // Rate limit or server error: do not update state
+  if (status === 429) {
+    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch rate limited', [{ login, url, status }])
+    return { live: false, error: 'Rate limited' }
+  }
+  if (status >= 500) {
+    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch server error', [{ login, url, status }])
+    return { live: false, error: `Server error ${status}` }
+  }
+
   const jsonResult = parseTwitchJsonLd(html)
 
   if (jsonResult.parseError) {
@@ -234,14 +247,16 @@ async function isTwitchChannelLive(login: string): Promise<boolean> {
     }
   }
 
-  if (jsonResult.live) return true
+  if (jsonResult.live) return { live: true }
   if (jsonResult.parseError) {
     // Fallback to regex when parse fails
-    if (/"isLiveBroadcast"\s*:\s*true\b/.test(html)) return true
-    if (/"isLive"\s*:\s*true\b/.test(html)) return true
-    if (/"type"\s*:\s*"live"\b/.test(html) && html.includes(login)) return true
+    if (/"isLiveBroadcast"\s*:\s*true\b/.test(html)) return { live: true }
+    if (/"isLive"\s*:\s*true\b/.test(html)) return { live: true }
+    if (/"type"\s*:\s*"live"\b/.test(html) && html.includes(login)) return { live: true }
+    // Parse failed and no regex match: do not update state (could be rate limit, changed HTML, etc.)
+    return { live: false, error: jsonResult.parseError }
   }
-  return false
+  return { live: false }
 }
 
 export interface UrlIsLiveResult {
@@ -261,12 +276,11 @@ export async function checkUrlIsLive(url: string): Promise<UrlIsLiveResult> {
       return { live }
     }
     if (platform === 'kick') {
-      const live = await isKickChannelLive(id)
-      return { live }
+      return await isKickChannelLive(id)
     }
     if (platform === 'twitch') {
-      const live = await isTwitchChannelLive(id)
-      return { live }
+      const result = await isTwitchChannelLive(id)
+      return result
     }
     return { live: false, error: 'Unsupported platform' }
   } catch (e) {
