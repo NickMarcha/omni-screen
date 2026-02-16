@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.13.0] - 2026-02-16
+
+### **Important** d.gg has to now be enabled through the extensions functionality.
+
+### Added
+- **Popup chat window**: Combined chat can open in a separate popup window with a custom title bar. View menu: Always On Top, Transparency (100%/75%/50%/25%), Transparent Background, Toggle Developer Tools. Window size persists across transparency toggles.
+- **Transparent background for chat window**: Chat window and chat area can use a transparent background; window is recreated when toggling (transparent = not resizable; non-transparent = resizable). Auth state is restored after recreation.
+- **File logger**: Structured file logging for main process and chat WebSocket events; logs written to user data directory.
+- **YouTube/Twitch chatting**: Initial support for YouTube and Twitch chat in combined chat.
+- **New extension flow**: Extensions provide chat sources, connection platforms, and live WebSocket config through a generic API. Install from manifest URL (Settings → Extensions or `omnichat://install?url=...`); enable/disable, reload, uninstall. See `docs/Extensions.md`.
+- **Icon assets**: Replaced emoji placeholders with actual icon assets in chat UI.
+
+### Changed
+- **Chat Web Sockets refactor**: Chat WebSocket and live WebSocket logic refactored; config and URLs come from the primary chat source extension.
+- **Logging**: Reduced log noise; main app log and ws-discrepancies focused on protocol/schema issues.
+- **Combined chat UI**: Cleaner icons and margins in the omni chat screen.
+- **Chat optimization**: Performance improvements for chat rendering and updates.
+
+
+### Fixed
+- **React key error**: Combined chat emote rendering no longer triggers React key warnings.
+
+
+
 ## [1.12.0] - 2026-02-08
 
 ### Added
@@ -274,7 +298,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/NickMarcha/omni-screen/compare/v1.12.0...v1.13.0
 [1.9.0]: https://github.com/NickMarcha/omni-screen/compare/v1.8.1...v1.9.0
 [1.8.0]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/NickMarcha/omni-screen/compare/v1.7.1...v1.7.2
