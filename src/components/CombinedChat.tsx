@@ -3612,7 +3612,7 @@ function CombinedChat({
         </>
         )}
         {!privViewOpen && showMoreMessagesBelow && (
-          <div className="chat-scroll-notify absolute bottom-0 left-0 right-0 z-10 p-2 pointer-events-none">
+          <div className="chat-scroll-notify sticky bottom-0 left-0 right-0 z-10 p-2 pointer-events-none">
             <div
               className="text-sm text-center text-primary font-medium hover:underline rounded-lg bg-base-300 shadow-sm m-2 p-2 cursor-pointer pointer-events-auto hover:bg-base-200"
               onClick={scrollToBottom}
@@ -3813,29 +3813,37 @@ function CombinedChat({
                   <span>Chat pane side</span>
                   <span aria-hidden className="text-base-content/50">▸</span>
                 </div>
-                {contextMenuConfig.openExternalChatWindow && (
+                {contextMenuConfig.primaryChat && (
                   <button
                     type="button"
-                    role="menuitem"
-                    className="px-3 py-1.5 text-left hover:bg-base-300 w-full flex items-center gap-2"
+                    role="menuitemcheckbox"
+                    aria-checked={contextMenuConfig.primaryChat.showInput}
+                    className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2"
                     onClick={() => {
-                      contextMenuConfig.openExternalChatWindow?.()
+                      contextMenuConfig.primaryChat!.setShowInput(!contextMenuConfig.primaryChat!.showInput)
                       closeContextMenu()
                     }}
                   >
-                    <Icon name="external-link" size={16} />
-                    <span>Open in external window</span>
+                    <span>Show chat input</span>
+                    {contextMenuConfig.primaryChat.showInput && <span aria-hidden>✓</span>}
                   </button>
                 )}
-                {contextMenuConfig.primaryChat && (
-                  <div
-                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
-                    onMouseEnter={() => setContextMenuHover(primaryChatSourceId ?? '')}
-                    role="menuitem"
-                  >
-                    <span>{primaryChatSourceLabelText ?? 'Chat'}</span>
-                    <span aria-hidden className="text-base-content/50">▸</span>
-                  </div>
+                {contextMenuConfig.openExternalChatWindow && (
+                  <>
+                    <div className="border-t border-base-300 my-1" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="px-3 py-1.5 text-left hover:bg-base-300 w-full flex items-center justify-between gap-2"
+                      onClick={() => {
+                        contextMenuConfig.openExternalChatWindow?.()
+                        closeContextMenu()
+                      }}
+                    >
+                      <span>Open in external window</span>
+                      <Icon name="external-link" size={16} className="shrink-0" aria-hidden />
+                    </button>
+                  </>
                 )}
               </div>
               {contextMenuHover === 'display' && (
@@ -3914,17 +3922,6 @@ function CombinedChat({
                   <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'right'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide.setPaneSide('right'); closeContextMenu() }}>
                     <span>Right</span>
                     {contextMenuConfig.paneSide.value === 'right' && <span aria-hidden>✓</span>}
-                  </button>
-                </div>
-              )}
-              {primaryChatSourceId && contextMenuHover === primaryChatSourceId && contextMenuConfig.primaryChat && (
-                <div
-                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
-                  onMouseEnter={() => setContextMenuHover(primaryChatSourceId ?? '')}
-                >
-                  <button type="button" role="menuitemcheckbox" aria-checked={contextMenuConfig.primaryChat.showInput} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.primaryChat!.setShowInput(!contextMenuConfig.primaryChat!.showInput); closeContextMenu() }}>
-                    <span>Show chat input</span>
-                    {contextMenuConfig.primaryChat.showInput && <span aria-hidden>✓</span>}
                   </button>
                 </div>
               )}
