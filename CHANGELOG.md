@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.14.0] - 2026-02-11
+
+### Added
+- **Mute handling**: Combined chat now handles mute state (e.g. when streamer dies); input disabled with timer and placeholder during mute.
+- **Extensions – local load for debug**: Extensions can be loaded from local paths for development/debug purposes; additional extension features.
+- **Watermark**: Watermark text instead of background overlay.
+- **Live tests**: Tests for live URL detection; Twitch parsing failure fixes.
+
+### Changed
+- **Max Messages → Max Lines**: Renamed setting in combined chat (max messages is now max lines).
+- **Title bar menu**: Improved title bar menu.
+- **Emoticon cleanup**: Further emoticon/icon cleanup in chat UI.
+- **Feather icons**: Moved feather icons to dedicated assets folder.
+
+### Fixed
+- **Combined chat**: Bug fixes for rare chat behaviours and general stability.
+- **Twitch parsing**: Fixed Twitch parsing failure in live detection.
+
 ## [1.13.1] - 2026-02-16
 
 ### Fixed
@@ -304,7 +322,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.13.1...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/NickMarcha/omni-screen/compare/v1.13.1...v1.14.0
 [1.13.1]: https://github.com/NickMarcha/omni-screen/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/NickMarcha/omni-screen/compare/v1.12.0...v1.13.0
 [1.9.0]: https://github.com/NickMarcha/omni-screen/compare/v1.8.1...v1.9.0
