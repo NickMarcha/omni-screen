@@ -1635,17 +1635,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [watermarkConfigJson])
 
-  // Prevent layout shift (gap on right) when modal opens: body may get overflow hidden and scrollbar disappears
-  useEffect(() => {
-    if (!settingsModalOpen) return
-    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
-    const prevPadding = document.body.style.paddingRight
-    document.body.style.paddingRight = `${scrollbarWidth}px`
-    return () => {
-      document.body.style.paddingRight = prevPadding
-    }
-  }, [settingsModalOpen])
-
   const combinedChatContextMenuConfig = useMemo<CombinedChatContextMenuConfig>(
     () => ({
       display: {

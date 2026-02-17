@@ -11,6 +11,12 @@ body {
   overscroll-behavior: none;
 }
 
+/* Override DaisyUI scrollbar-gutter when modal is open. DaisyUI adds scrollbar-gutter:stable to :root
+   to prevent layout shift, but this app has overflow:hidden so there is no scrollbar—the gutter just creates a gap. */
+:root:has(.modal-open) {
+  scrollbar-gutter: auto;
+}
+
 #root {
   height: 100%;
   min-height: 0;
