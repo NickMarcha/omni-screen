@@ -1937,6 +1937,50 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [liteLinkScrollerSettings.maxMessages, primaryChatSourceId])
 
+  /** Derive watchedEmbedKey from chat WebSocket (ME, NAMES, UPDATEUSER) so we use server state instead of optimistic local update. */
+  useEffect(() => {
+    const watchingToKey = (w: { platform?: string | null; id?: string | null } | null): string | null => {
+      if (!w || w.platform == null || w.id == null) return null
+      const p = String(w.platform).trim()
+      const i = String(w.id).trim()
+      return p && i ? `${p}:${i}` : null
+    }
+    const handleMe = (_e: unknown, payload: { type?: string; data?: { id?: number; watching?: { platform?: string; id?: string } | null } } | null) => {
+      const me = payload?.data ?? payload
+      if (me && typeof me === 'object' && 'id' in me) {
+        const u = me as { id?: number; watching?: { platform?: string; id?: string } | null }
+        primaryChatMeIdRef.current = typeof u.id === 'number' ? u.id : null
+        setWatchedEmbedKey(watchingToKey(u.watching ?? null))
+      } else {
+        primaryChatMeIdRef.current = null
+        setWatchedEmbedKey(null)
+      }
+    }
+    const handleNames = (_e: unknown, payload: { type?: string; names?: { users?: Array<{ id?: number; watching?: { platform?: string; id?: string } | null }> } } | null) => {
+      const users = payload?.names?.users
+      if (!Array.isArray(users) || primaryChatMeIdRef.current == null) return
+      const me = users.find((u) => u?.id === primaryChatMeIdRef.current)
+      if (me) setWatchedEmbedKey(watchingToKey(me.watching ?? null))
+    }
+    const handleUserEvent = (_e: unknown, payload: { type?: string; user?: { id?: number; watching?: { platform?: string; id?: string } | null } } | null) => {
+      if (payload?.type !== 'UPDATEUSER') return
+      const u = payload?.user
+      if (!u || u.id !== primaryChatMeIdRef.current) return
+      setWatchedEmbedKey(watchingToKey(u.watching ?? null))
+    }
+    window.ipcRenderer.on('chat-websocket-me', handleMe)
+    window.ipcRenderer.on('chat-websocket-names', handleNames)
+    window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
+    window.ipcRenderer.invoke('get-cached-primary-chat-me').then((me: unknown) => {
+      if (me) handleMe(null, me as { type?: string; data?: { id?: number; watching?: { platform?: string; id?: string } | null } })
+    }).catch(() => {})
+    return () => {
+      window.ipcRenderer.off('chat-websocket-me', handleMe)
+      window.ipcRenderer.off('chat-websocket-names', handleNames)
+      window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
+    }
+  }, [])
+
   useEffect(() => {
     const max = liteLinkScrollerSettings.maxMessages
     setLiteLinkScrollerCards((prev) => (prev.length <= max ? prev : prev.slice(-max)))
@@ -2754,8 +2798,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [dockContextMenuAt, setDockContextMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [dockContextMenuHover, setDockContextMenuHover] = useState<'preferred' | 'dockPosition' | null>(null)
   const dockContextMenuRef = useRef<HTMLDivElement | null>(null)
-  /** Which embed key is currently "watching" in the live embed view (shows eye icon in dock). Only one at a time. */
+  /** Which embed key is currently "watching" in the live embed view (shows eye icon in dock). Only one at a time. Derived from chat WebSocket (ME, NAMES, UPDATEUSER) so we use server state. */
   const [watchedEmbedKey, setWatchedEmbedKey] = useState<string | null>(null)
+  const primaryChatMeIdRef = useRef<number | null>(null)
   /** Right-click on a dock item: context menu position and item. */
   const [dockItemContextMenu, setDockItemContextMenu] = useState<{ x: number; y: number; item: DockItem } | null>(null)
   const dockItemContextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -3785,10 +3830,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                     onClick={() => {
                       if (isWatching) {
                         window.ipcRenderer?.invoke('live-websocket-send', { type: 'watching', data: null }).catch(() => {})
-                        setWatchedEmbedKey(null)
                       } else {
                         window.ipcRenderer?.invoke('live-websocket-send', { type: 'watching', data: { platform: firstEmbed.platform, id: firstEmbed.id } }).catch(() => {})
-                        setWatchedEmbedKey(firstKey)
                       }
                       closeDockItemContextMenu()
                     }}

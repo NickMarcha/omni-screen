@@ -36,6 +36,7 @@ export class LiveWebSocket extends EventEmitter {
   private isIntentionallyClosed = false
   private connectionTimeout: NodeJS.Timeout | null = null
   private typeCounts: Map<string, number> = new Map()
+  private lastConnectOptions?: { headers?: Record<string, string> }
 
   private readonly origin: string
 
@@ -46,22 +47,27 @@ export class LiveWebSocket extends EventEmitter {
     this.origin = origin
   }
 
-  connect(): void {
+  /** Connect with optional headers (e.g. Cookie for authenticated watching). Stored for reconnect. */
+  connect(options?: { headers?: Record<string, string> }): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return
     }
 
     this.isIntentionallyClosed = false
+    if (options) this.lastConnectOptions = options
+
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+      Accept: '*/*',
+      'Accept-Language': 'en,en-US;q=0.9',
+      Origin: this.origin,
+      ...(options ?? this.lastConnectOptions)?.headers,
+    }
 
     try {
-      // live server validates Origin; incognito works without cookies so we do NOT forward cookies here.
       this.ws = new WebSocket(this.url, {
         origin: this.origin,
-        headers: {
-          // A normal UA can help if the server does heuristic filtering.
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
+        headers,
         perMessageDeflate: true,
         handshakeTimeout: 10000,
       })
@@ -206,10 +212,20 @@ export class LiveWebSocket extends EventEmitter {
   send(data: object): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
     try {
-      this.ws.send(JSON.stringify(data))
+      const raw = JSON.stringify(data)
+      this.ws.send(raw)
+      try {
+        fileLogger.writeChatHistory('primary-live-out', raw)
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       fileLogger.writeLog('warn', 'main', '[LiveWebSocket] send_error', [String(err)])
     }
+  }
+
+  getUrl(): string {
+    return this.url
   }
 
   destroy(): void {
@@ -238,7 +254,7 @@ export class LiveWebSocket extends EventEmitter {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.lastErrorMsg = ''
-      this.connect()
+      this.connect(this.lastConnectOptions)
     }, delay)
   }
 }

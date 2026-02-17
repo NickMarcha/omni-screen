@@ -1571,6 +1571,9 @@ ipcMain.handle('chat-window-get-cached-me', (event) => {
   return null
 })
 
+/** Main window (or any caller) can request cached ME for watched-embed state on app start / reconnect. */
+ipcMain.handle('get-cached-primary-chat-me', () => cachedPrimaryChatMe ?? null)
+
 /** Chat window syncs transparent preference on load so main process can use it when reopening. */
 ipcMain.handle('chat-window-sync-transparent-preference', (_event, enabled: boolean) => {
   chatWindowTransparentBackground = !!enabled
@@ -3588,11 +3591,11 @@ ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platfor
   return { success: sent }
 })
 
-// Live (embeds) WebSocket IPC handlers
-ipcMain.handle('live-websocket-connect', async (_event) => {
+/** Create live WebSocket if needed and trigger connect. Uses primary chat source config (liveWssUrl from extension). */
+async function ensureLiveWebSocketConnect(): Promise<{ success: boolean; error?: string }> {
   try {
     const primary = getPrimaryChatSource()
-    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
+    if (!primary) return { success: false, error: 'Chat source extension not installed' }
     let justCreated = false
     if (!liveWebSocket) {
       justCreated = true
@@ -3600,31 +3603,16 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
 
       const safeSend = (channel: string, ...args: any[]) => {
         try {
-          if (!win) return
-          let isDestroyed = false
-          try {
-            isDestroyed = win.isDestroyed()
-          } catch {
-            return
-          }
-          if (isDestroyed) return
-          if (!win.webContents) return
-          let webContentsDestroyed = false
-          try {
-            webContentsDestroyed = win.webContents.isDestroyed()
-          } catch {
-            return
-          }
-          if (webContentsDestroyed) return
+          if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return
           win.webContents.send(channel, ...args)
         } catch {
-          // ignore
+          /* ignore */
         }
       }
 
       liveWebSocket.on('connected', () => safeSend('live-websocket-connected'))
-      liveWebSocket.on('disconnected', (data) => safeSend('live-websocket-disconnected', data))
-      liveWebSocket.on('error', (error) => {
+      liveWebSocket.on('disconnected', (data: any) => safeSend('live-websocket-disconnected', data))
+      liveWebSocket.on('error', (error: any) => {
         const message = error?.message || (error instanceof Error ? error.message : String(error) || 'Unknown error')
         safeSend('live-websocket-error', { message })
       })
@@ -3657,18 +3645,25 @@ ipcMain.handle('live-websocket-connect', async (_event) => {
 
     if (!liveWebSocket.isConnected()) {
       const now = Date.now()
-      // Skip cooldown when we just created the socket (e.g. after Strict Mode unmount/remount)
       if (!justCreated && now - lastLiveWsConnectAttempt < LIVE_WS_CONNECT_COOLDOWN_MS) {
         return { success: true }
       }
       lastLiveWsConnectAttempt = now
-      liveWebSocket.connect()
+      const cookieStr = await getCookiesForUrl(primary.config.baseUrl)
+      liveWebSocket.connect({
+        headers: cookieStr ? { Cookie: cookieStr } : undefined,
+      })
     }
 
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
+}
+
+ipcMain.handle('live-websocket-connect', async (_event) => {
+  const result = await ensureLiveWebSocketConnect()
+  return result.success ? { success: true } : { success: false, error: result.error, data: null }
 })
 
 ipcMain.handle('live-websocket-disconnect', async (_event) => {
@@ -3689,9 +3684,39 @@ ipcMain.handle('live-websocket-status', async (_event) => {
 })
 
 ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data: any }) => {
-  if (liveWebSocket?.isConnected() && data && typeof data === 'object' && typeof (data as any).type === 'string') {
-    liveWebSocket.send(data as object)
+  if (!data || typeof data !== 'object' || typeof (data as any).type !== 'string') {
+    return { success: false, error: 'Invalid payload' }
   }
+  const primary = getPrimaryChatSource()
+  if (!primary) {
+    try {
+      fileLogger.writeLog('warn', 'main', '[live-websocket-send] No chat source (extension not loaded); watching not sent', [])
+    } catch {
+      /* ignore */
+    }
+    return { success: false, error: 'Chat source extension not installed' }
+  }
+  if (!liveWebSocket) {
+    try {
+      fileLogger.writeLog('info', 'main', '[live-websocket-send] Live WebSocket not created; triggering connect. URL:', [primary.config.liveWssUrl])
+    } catch {
+      /* ignore */
+    }
+    const connectResult = await ensureLiveWebSocketConnect()
+    if (!connectResult.success || !liveWebSocket || !liveWebSocket.isConnected()) {
+      return { success: false, error: connectResult.error || 'Live WebSocket not connected (connection in progress or failed)' }
+    }
+  }
+  if (!liveWebSocket.isConnected()) {
+    try {
+      fileLogger.writeLog('warn', 'main', '[live-websocket-send] Live WebSocket not connected; message dropped. URL:', [liveWebSocket.getUrl()])
+    } catch {
+      /* ignore */
+    }
+    return { success: false, error: 'Live WebSocket not connected' }
+  }
+  liveWebSocket.send(data as object)
+  return { success: true }
 })
 
 // Kick (Pusher) chat IPC handlers
