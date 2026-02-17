@@ -1336,7 +1336,11 @@ ipcMain.handle('window-minimize', () => {
 })
 ipcMain.handle('window-maximize', () => {
   const w = BrowserWindow.getFocusedWindow()
-  if (w) {
+  if (!w) return
+  // Transparent windows on Windows cannot be maximized (Electron limitation); use fullscreen instead
+  if (w === chatWin && chatWindowTransparentBackground) {
+    w.setFullScreen(!w.isFullScreen())
+  } else {
     if (w.isMaximized()) w.unmaximize()
     else w.maximize()
   }
@@ -1347,7 +1351,10 @@ ipcMain.handle('window-close', () => {
 })
 ipcMain.handle('window-is-maximized', () => {
   const w = BrowserWindow.getFocusedWindow()
-  return w ? w.isMaximized() : false
+  if (!w) return false
+  // When chat window is transparent, we use fullscreen instead of maximize
+  if (w === chatWin && chatWindowTransparentBackground) return w.isFullScreen()
+  return w.isMaximized()
 })
 
 ipcMain.handle('menu-popup', (_event, payload: { menuLabel: string }) => {
@@ -1636,6 +1643,7 @@ ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBac
         }
       },
     },
+    { label: '(disables resizing)', enabled: false },
     { type: 'separator' },
     {
       label: 'Toggle Developer Tools',
