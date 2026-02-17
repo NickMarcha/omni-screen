@@ -9,18 +9,80 @@ import { LiteLinkScroller, type LiteLinkScrollerSettings } from './LiteLinkScrol
 import { buildLinkCardsFromMessage } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
 
-/** Background watermark text (stored with original casing for reuse; rendered uppercase). */
-const OMNISCREEN_BACKGROUND_TEXT = 'Ripperino Cappucino Poppuccino Hoppuccino Moppuccino  Dappuccino Kappaccino Appuccino Al Pacino, My Duderinos. '
+/** Default background watermark text (stored with original casing for reuse; rendered uppercase). */
+const OMNISCREEN_BACKGROUND_TEXT_DEFAULT = 'Ripperino Cappucino Poppuccino Hoppuccino Moppuccino  Dappuccino Kappaccino Appuccino Al Pacino, My Duderinos. '
 
-/** Precomputed rotated lines for background watermark (avoids recalc on rerender). */
-const OMNISCREEN_BACKGROUND_LINES = (() => {
-  const words = OMNISCREEN_BACKGROUND_TEXT.split(/\s+/).filter(Boolean)
+type WatermarkTextCase = 'upper' | 'lower' | 'original'
+
+interface WatermarkConfig {
+  enabled: boolean
+  text: string
+  textCase: WatermarkTextCase
+  opacity: number
+  rotation: number
+  lineHeight: number
+  fontSize: string
+  animated: boolean
+  animationSpeedMin: number
+  animationSpeedMax: number
+}
+
+const WATERMARK_CONFIG_DEFAULT: WatermarkConfig = {
+  enabled: true,
+  text: OMNISCREEN_BACKGROUND_TEXT_DEFAULT,
+  textCase: 'upper',
+  opacity: 15,
+  rotation: -15,
+  lineHeight: 2.5,
+  fontSize: '1.125rem',
+  animated: true,
+  animationSpeedMin: 200,
+  animationSpeedMax: 400,
+}
+
+/** Deterministic per-line duration for animation (no Math.random to avoid reflow on rerender). */
+function getLineAnimationDuration(index: number, min: number, max: number): number {
+  const t = Math.sin(index * 12.9898) * 43758.5453
+  const frac = t - Math.floor(t)
+  return min + frac * (max - min)
+}
+
+function watermarkConfigToJson(c: WatermarkConfig): string {
+  return JSON.stringify(c, null, 2)
+}
+
+function parseWatermarkConfig(json: string): WatermarkConfig {
+  try {
+    const o = JSON.parse(json)
+    if (!o || typeof o !== 'object') return WATERMARK_CONFIG_DEFAULT
+    return {
+      enabled: typeof o.enabled === 'boolean' ? o.enabled : WATERMARK_CONFIG_DEFAULT.enabled,
+      text: typeof o.text === 'string' ? o.text : WATERMARK_CONFIG_DEFAULT.text,
+      textCase: (['upper', 'lower', 'original'] as const).includes(o.textCase) ? o.textCase : WATERMARK_CONFIG_DEFAULT.textCase,
+      opacity: Number.isFinite(Number(o.opacity)) ? Math.min(100, Math.max(0, Number(o.opacity))) : WATERMARK_CONFIG_DEFAULT.opacity,
+      rotation: Number.isFinite(Number(o.rotation)) ? Math.min(180, Math.max(-180, Number(o.rotation))) : WATERMARK_CONFIG_DEFAULT.rotation,
+      lineHeight: Number.isFinite(Number(o.lineHeight)) && Number(o.lineHeight) > 0 ? Number(o.lineHeight) : WATERMARK_CONFIG_DEFAULT.lineHeight,
+      fontSize: typeof o.fontSize === 'string' ? o.fontSize : WATERMARK_CONFIG_DEFAULT.fontSize,
+      animated: typeof o.animated === 'boolean' ? o.animated : WATERMARK_CONFIG_DEFAULT.animated,
+      animationSpeedMin: Number.isFinite(Number(o.animationSpeedMin)) && Number(o.animationSpeedMin) > 0 ? Number(o.animationSpeedMin) : WATERMARK_CONFIG_DEFAULT.animationSpeedMin,
+      animationSpeedMax: Number.isFinite(Number(o.animationSpeedMax)) && Number(o.animationSpeedMax) > 0 ? Number(o.animationSpeedMax) : WATERMARK_CONFIG_DEFAULT.animationSpeedMax,
+    }
+  } catch {
+    return WATERMARK_CONFIG_DEFAULT
+  }
+}
+
+function buildWatermarkLines(text: string, textCase: WatermarkTextCase): string[] {
+  const words = text.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return []
+  const transform = (s: string) =>
+    textCase === 'upper' ? s.toUpperCase() : textCase === 'lower' ? s.toLowerCase() : s
   return Array.from({ length: 50 }, (_, i) => {
     const offset = i % words.length
-    const rotated = [...words.slice(offset), ...words.slice(0, offset)].join(' ').toUpperCase()
-    return (rotated + ' ').repeat(5)
+    const rotated = [...words.slice(offset), ...words.slice(0, offset)].join(' ')
+    return (transform(rotated) + ' ').repeat(5)
   })
-})()
+}
 import { Icon } from './Icon'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
@@ -1305,7 +1367,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       return []
     }
   })
-  type SettingsTab = 'bookmarks' | 'chat' | 'liteLinkScroller' | 'extensions' | 'keybinds'
+  type SettingsTab = 'bookmarks' | 'chat' | 'liteLinkScroller' | 'extensions' | 'keybinds' | 'watermark'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('bookmarks')
   const settingsTabContentRef = useRef<HTMLDivElement>(null)
@@ -1384,6 +1446,29 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       // ignore
     }
   }, [preferredPlatformOrder])
+
+  /** Watermark background settings (editable JSON). */
+  const [watermarkConfigJson, setWatermarkConfigJson] = useState(() => {
+    try {
+      const v = localStorage.getItem('omni-screen:watermark-config')
+      return v && v.trim() ? v : watermarkConfigToJson(WATERMARK_CONFIG_DEFAULT)
+    } catch {
+      return watermarkConfigToJson(WATERMARK_CONFIG_DEFAULT)
+    }
+  })
+  const watermarkConfig = useMemo(() => parseWatermarkConfig(watermarkConfigJson), [watermarkConfigJson])
+  const watermarkLines = useMemo(
+    () => buildWatermarkLines(watermarkConfig.text.trim() || OMNISCREEN_BACKGROUND_TEXT_DEFAULT, watermarkConfig.textCase),
+    [watermarkConfig.text, watermarkConfig.textCase]
+  )
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('omni-screen:watermark-config', watermarkConfigJson)
+    } catch {
+      // ignore
+    }
+  }, [watermarkConfigJson])
 
   // Prevent layout shift (gap on right) when modal opens: body may get overflow hidden and scrollbar disappears
   useEffect(() => {
@@ -3106,25 +3191,50 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'} ${cinemaMode ? '' : 'gap-3'}`}>
           {/* Theme-following background with repeating watermark text (clipped on all edges) */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none bg-base-200">
-            <div
-              className="absolute text-base-content/15 whitespace-pre text-lg font-medium select-none"
-              style={{
-                transform: 'rotate(-15deg)',
-                transformOrigin: 'center center',
-                left: '50%',
-                top: '50%',
-                marginLeft: '-100vmax',
-                marginTop: '-100vmax',
-                width: '200vmax',
-                lineHeight: 2.5,
-              }}
-            >
-              {OMNISCREEN_BACKGROUND_LINES.map((line, i) => (
-                <span key={i} style={{ display: 'block' }}>
-                  {line}
-                </span>
-              ))}
-            </div>
+            {watermarkConfig.enabled && watermarkLines.length > 0 && (
+              <div
+                className="absolute text-base-content whitespace-pre font-medium select-none"
+                style={{
+                  opacity: watermarkConfig.opacity / 100,
+                  transform: `rotate(${watermarkConfig.rotation}deg)`,
+                  transformOrigin: 'center center',
+                  left: '50%',
+                  top: '50%',
+                  marginLeft: '-100vmax',
+                  marginTop: '-100vmax',
+                  width: '200vmax',
+                  lineHeight: watermarkConfig.lineHeight,
+                  fontSize: watermarkConfig.fontSize,
+                }}
+              >
+                {watermarkConfig.animated
+                  ? watermarkLines.map((line, i) => {
+                      const duration = getLineAnimationDuration(
+                        i,
+                        watermarkConfig.animationSpeedMin,
+                        watermarkConfig.animationSpeedMax
+                      )
+                      return (
+                        <div key={i} className="overflow-hidden" style={{ width: '100%' }}>
+                          <span
+                            className="inline-block"
+                            style={{
+                              animation: `watermark-scroll ${duration}s linear infinite`,
+                            }}
+                          >
+                            {line}
+                            {line}
+                          </span>
+                        </div>
+                      )
+                    })
+                  : watermarkLines.map((line, i) => (
+                      <span key={i} style={{ display: 'block' }}>
+                        {line}
+                      </span>
+                    ))}
+              </div>
+            )}
           </div>
 
           {/* Embed grid area (measured by ResizeObserver) */}
@@ -4139,6 +4249,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               >
                 Keybinds
               </button>
+              <button
+                type="button"
+                className={`tab ${settingsTab === 'watermark' ? 'tab-active' : ''}`}
+                onClick={() => setSettingsTab('watermark')}
+              >
+                <span className="inline-flex items-center gap-1.5"><Icon name="layers" size={16} /> Watermark</span>
+              </button>
             </div>
             <div
               ref={settingsTabContentRef}
@@ -4894,6 +5011,76 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                         onClick={(e) => (e.currentTarget as HTMLInputElement).focus()}
                       />
                     </div>
+                  </div>
+                </div>
+              )}
+              {settingsTab === 'watermark' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-base-content/60 mb-2">
+                    Edit the watermark config as JSON. Invalid JSON falls back to defaults.
+                  </p>
+                  <div className="form-control">
+                    <label className="label py-1">
+                      <span className="label-text">Watermark text</span>
+                    </label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[60px] font-mono text-sm"
+                      placeholder={OMNISCREEN_BACKGROUND_TEXT_DEFAULT}
+                      value={watermarkConfig.text}
+                      onChange={(e) => setWatermarkConfigJson(watermarkConfigToJson({ ...watermarkConfig, text: e.target.value }))}
+                      rows={2}
+                    />
+                  </div>
+                  <div className="form-control">
+                    <label className="label py-1">
+                      <span className="label-text">Text case</span>
+                    </label>
+                    <select
+                      className="select select-bordered select-sm w-full max-w-xs"
+                      value={watermarkConfig.textCase}
+                      onChange={(e) => {
+                        const v = e.target.value as WatermarkTextCase
+                        setWatermarkConfigJson(watermarkConfigToJson({ ...watermarkConfig, textCase: v }))
+                      }}
+                    >
+                      <option value="upper">UPPERCASE</option>
+                      <option value="lower">lowercase</option>
+                      <option value="original">Original (as typed)</option>
+                    </select>
+                  </div>
+                  <textarea
+                    className="textarea textarea-bordered w-full min-h-[200px] font-mono text-sm"
+                    value={watermarkConfigJson}
+                    onChange={(e) => setWatermarkConfigJson(e.target.value)}
+                    spellCheck={false}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setWatermarkConfigJson(watermarkConfigToJson(WATERMARK_CONFIG_DEFAULT))}
+                    >
+                      Reset to default
+                    </button>
+                    {(() => {
+                      try {
+                        JSON.parse(watermarkConfigJson)
+                        return null
+                      } catch {
+                        return <span className="text-xs text-warning">Invalid JSON – using last valid config</span>
+                      }
+                    })()}
+                  </div>
+                  <div className="text-xs text-base-content/50 space-y-2 pt-2 border-t border-base-300">
+                    <p>
+                      <strong>textCase</strong>: <code>upper</code>, <code>lower</code>, or <code>original</code> — controls how the text is displayed.
+                    </p>
+                    <p>
+                      <strong>animationSpeedMin / animationSpeedMax</strong>: Duration in seconds for one full scroll cycle per line. Higher values = slower movement. Each line gets a different speed between min and max for a staggered effect.
+                    </p>
+                    <p>
+                      <strong>animated: false</strong>: Disables the scroll animation. Use this to reduce CPU/GPU usage if the watermark causes performance issues.
+                    </p>
                   </div>
                 </div>
               )}

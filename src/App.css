@@ -265,6 +265,12 @@ body {
   80% { transform: translateX(4px); }
 }
 
+/* Watermark line scroll (used only when animated: true) */
+@keyframes watermark-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
 /* Message body: relaxed line spacing so wrapped lines are readable.
    !important to override Tailwind .text-sm line-height inherited from parent.
    Unitless 1.6 so it scales with font-size and is clearly visible. */
