@@ -5,11 +5,9 @@
  * kick.com/api/v2 response shapes (livestream vs stream.is_live).
  */
 
-import fs from 'fs'
-import path from 'path'
 import { session, net } from 'electron'
 import { fileLogger } from './fileLogger'
-import { isVideoLive as isYouTubeVideoLive } from './youtubeLiveOrLatest'
+import { isVideoLiveWithViewers } from './youtubeLiveOrLatest'
 
 function isLikelyYouTubeId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{8,20}$/.test(id)
@@ -41,25 +39,6 @@ function parseEmbedUrl(url: string): { platform: string; id: string } | null {
     // ignore
   }
   return null
-}
-
-/** Fetch Twitch page and return status, headers, and body for debugging rate limits. */
-async function fetchTwitchWithMeta(url: string): Promise<{ status: number; headers: Record<string, string>; body: string }> {
-  const res = await fetch(url, {
-    cache: 'no-store',
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Cache-Control': 'no-cache',
-      Pragma: 'no-cache',
-    },
-  })
-  const headers: Record<string, string> = {}
-  res.headers.forEach((v, k) => {
-    headers[k] = v
-  })
-  const body = await res.text()
-  return { status: res.status, headers, body }
 }
 
 /** Fetch URL with app session (cookies) so Kick/Cloudflare accept the request. */
@@ -99,13 +78,28 @@ async function fetchWithSession(
   })
 }
 
+/** Extract viewer count from Kick API response (field names vary across versions). */
+function readKickViewerCount(data: any): number | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const n =
+    data.viewers_count ??
+    data.viewersCount ??
+    data.livestream?.viewer_count ??
+    data.livestream?.viewers_count ??
+    data.data?.livestream?.viewer_count ??
+    data.data?.livestream?.viewers_count ??
+    data.stream?.viewer_count ??
+    data.stream?.viewers_count
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
 /**
  * Check if a Kick channel slug is currently live.
  * Uses app session so Kick/Cloudflare cookies are sent (same as Kick chat).
  * Supports both response shapes: livestream (v2 legacy) and stream.is_live (official-style).
- * Returns { live, error } - when error is set, caller should not update state.
+ * Returns { live, viewers?, error } - when error is set, caller should not update state.
  */
-async function isKickChannelLive(slug: string): Promise<{ live: boolean; error?: string }> {
+async function isKickChannelLive(slug: string): Promise<{ live: boolean; viewers?: number; error?: string }> {
   const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}?_=${Date.now()}`
   const { ok, status, bodyText } = await fetchWithSession(url, {
     accept: 'application/json',
@@ -141,129 +135,66 @@ async function isKickChannelLive(slug: string): Promise<{ live: boolean; error?:
       { slug, url, hasLivestream, hasStreamLive, live, livestream: !!livestream, streamIsLive: stream?.is_live },
     ])
   }
-  if (hasLivestream) return { live: true }
-  if (hasStreamLive) return { live: true }
+  const viewers = readKickViewerCount(data)
+  if (hasLivestream) return { live: true, viewers }
+  if (hasStreamLive) return { live: true, viewers }
   return { live: false }
 }
 
-/** Write Twitch page HTML to logs dir for debugging when live check returns false. Returns the file path. */
-function writeTwitchDebugHtml(login: string, html: string): string | null {
-  try {
-    const logsDir = fileLogger.getLogsDirectoryPath()
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const filename = `twitch-debug-${timestamp}-${login}.html`
-    const filePath = path.join(logsDir, filename)
-    fs.writeFileSync(filePath, html, 'utf8')
-    return filePath
-  } catch {
-    return null
-  }
-}
+/** Twitch GQL UseViewCount - returns { live, viewers } without needing page HTML. */
+const TWITCH_GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
+const TWITCH_USE_VIEW_COUNT_HASH = 'e28de6b91c2ac736882f4960e7de60ca4a4eeebc06affdc45d6408b19318cef7'
 
-/** Extract and parse JSON-LD from Twitch page. Returns { live, parsed } or { live, parseError }. */
-function parseTwitchJsonLd(html: string): { live: boolean; parsed?: object; parseError?: string } {
-  const match = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/i)
-  const raw = match?.[1]?.trim()
-  if (!raw) {
-    return { live: false, parseError: 'No application/ld+json script found' }
-  }
+async function fetchTwitchViewCountGql(login: string): Promise<{ live: boolean; viewers?: number; error?: string }> {
   try {
-    const data = JSON.parse(raw) as { '@graph'?: Array<{ '@type'?: string; publication?: { isLiveBroadcast?: boolean } }>; '@type'?: string; publication?: { isLiveBroadcast?: boolean } }
-    const graph = data?.['@graph']
-    const items = Array.isArray(graph) ? graph : [data]
-    for (const item of items) {
-      if (item?.['@type'] === 'VideoObject' && item?.publication?.isLiveBroadcast === true) {
-        return { live: true, parsed: item }
-      }
-    }
-    return { live: false, parsed: data }
+    const res = await fetch('https://gql.twitch.tv/gql', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=UTF-8',
+        'Client-Id': TWITCH_GQL_CLIENT_ID,
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+        Accept: '*/*',
+        'Accept-Language': 'en-US',
+        Referer: 'https://www.twitch.tv/',
+        Origin: 'https://www.twitch.tv',
+      },
+      body: JSON.stringify([
+        {
+          operationName: 'UseViewCount',
+          variables: { channelLogin: login },
+          extensions: {
+            persistedQuery: { version: 1, sha256Hash: TWITCH_USE_VIEW_COUNT_HASH },
+          },
+        },
+      ]),
+    })
+    if (res.status === 429) return { live: false, error: 'Rate limited' }
+    if (!res.ok) return { live: false, error: `HTTP ${res.status}` }
+    const data = (await res.json()) as Array<{
+      data?: { user?: { stream?: { viewersCount?: number } } }
+      errors?: Array<{ message?: string }>
+    }>
+    const first = data?.[0]
+    const stream = first?.data?.user?.stream
+    const live = stream != null
+    const viewers = stream?.viewersCount
+    return { live, viewers: typeof viewers === 'number' ? viewers : undefined }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return { live: false, parseError: msg }
+    return { live: false, error: msg }
   }
 }
 
-/** Check if a Twitch channel (login) is currently live. Parses JSON-LD from page; falls back to regex if parse fails.
- * Returns { live, error } - when error is set, caller should not update state (preserve previous). */
-async function isTwitchChannelLive(login: string): Promise<{ live: boolean; error?: string }> {
-  const url = `https://www.twitch.tv/${encodeURIComponent(login)}?_=${Date.now()}`
-  const { status, headers, body: html } = await fetchTwitchWithMeta(url)
-
-  // Rate limit or server error: do not update state
-  if (status === 429) {
-    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch rate limited', [{ login, url, status }])
-    return { live: false, error: 'Rate limited' }
-  }
-  if (status >= 500) {
-    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch server error', [{ login, url, status }])
-    return { live: false, error: `Server error ${status}` }
-  }
-
-  const jsonResult = parseTwitchJsonLd(html)
-
-  if (jsonResult.parseError) {
-    const relevantHeaders: Record<string, string> = {}
-    for (const [k, v] of Object.entries(headers)) {
-      const lower = k.toLowerCase()
-      if (
-        lower.startsWith('x-ratelimit') ||
-        lower === 'retry-after' ||
-        lower === 'content-type' ||
-        lower === 'x-twitch' ||
-        lower === 'cf-'
-      ) {
-        relevantHeaders[k] = v
-      }
-    }
-    const contentType = Object.entries(headers).find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? ''
-    const isExpectedCase = status === 200 && jsonResult.parseError === 'No application/ld+json script found' && String(contentType).toLowerCase().includes('text/html')
-    const logLevel = isExpectedCase ? 'warn' : 'error'
-    fileLogger.writeLog(logLevel, 'main', '[url-is-live] Twitch JSON-LD parse failed', [
-      {
-        login,
-        url,
-        parseError: jsonResult.parseError,
-        status,
-        headers: relevantHeaders,
-        bodyLength: html.length,
-        bodyPreview: html.slice(0, 200),
-      },
-    ])
-  }
-
-  if (fileLogger.getLogLevel() === 'debug') {
-    fileLogger.writeLog('debug', 'main', '[url-is-live] Twitch check', [
-      {
-        login,
-        url,
-        htmlLength: html.length,
-        live: jsonResult.live,
-        parsed: jsonResult.parsed,
-        parseError: jsonResult.parseError,
-      },
-    ])
-    if (!jsonResult.live && jsonResult.parseError) {
-      const debugPath = writeTwitchDebugHtml(login, html)
-      fileLogger.writeLog('debug', 'main', '[url-is-live] Twitch HTML saved (parse failed)', [
-        debugPath ? { path: debugPath } : 'failed to write',
-      ])
-    }
-  }
-
-  if (jsonResult.live) return { live: true }
-  if (jsonResult.parseError) {
-    // Fallback to regex when parse fails
-    if (/"isLiveBroadcast"\s*:\s*true\b/.test(html)) return { live: true }
-    if (/"isLive"\s*:\s*true\b/.test(html)) return { live: true }
-    if (/"type"\s*:\s*"live"\b/.test(html) && html.includes(login)) return { live: true }
-    // Parse failed and no regex match: do not update state (could be rate limit, changed HTML, etc.)
-    return { live: false, error: jsonResult.parseError }
-  }
-  return { live: false }
+/** Check if a Twitch channel (login) is currently live. Uses GQL UseViewCount only (page fetch removed - unreliable). */
+async function isTwitchChannelLive(login: string): Promise<{ live: boolean; viewers?: number; error?: string }> {
+  return fetchTwitchViewCountGql(login)
 }
 
 export interface UrlIsLiveResult {
   live: boolean
+  /** Viewer count when available (Kick, Twitch, YouTube). */
+  viewers?: number
   error?: string
 }
 
@@ -275,8 +206,7 @@ export async function checkUrlIsLive(url: string): Promise<UrlIsLiveResult> {
   const { platform, id } = parsed
   try {
     if (platform === 'youtube') {
-      const live = await isYouTubeVideoLive(id)
-      return { live }
+      return await isVideoLiveWithViewers(id)
     }
     if (platform === 'kick') {
       return await isKickChannelLive(id)

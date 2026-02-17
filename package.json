@@ -15,6 +15,8 @@
     "preview": "vite preview",
     "test:embeds": "tsx scripts/test-embeds.ts",
     "test:url-is-live": "npx tsx scripts/test-url-is-live.ts",
+    "test:viewer-counts": "npx tsx scripts/test-viewer-counts.ts",
+    "test:twitch-gql": "npx tsx scripts/test-twitch-gql.ts",
     "check:chat-upstream": "npx tsx scripts/check-chat-upstream.ts"
   },
   "dependencies": {

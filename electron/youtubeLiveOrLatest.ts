@@ -236,8 +236,32 @@ function extractChannelIdFromChannelUrl(finalUrl: string): string | null {
   }
 }
 
+/** Extract viewer count from YouTube watch page HTML (live: concurrentViewers; VOD: viewCount). */
+function parseYouTubeViewerCount(html: string): number | undefined {
+  const patterns = [
+    /"concurrentViewers"\s*:\s*"(\d+)"/,
+    /"concurrentViewers"\s*:\s*(\d+)/,
+    /"viewCount"\s*:\s*"(\d+)"/,
+    /"viewCount"\s*:\s*(\d+)/,
+  ]
+  for (const re of patterns) {
+    const m = html.match(re)
+    if (m) {
+      const n = parseInt(m[1], 10)
+      if (Number.isFinite(n) && n >= 0) return n
+    }
+  }
+  return undefined
+}
+
 /** Check if a video's watch page indicates it is live (isLive in embedded JSON). Exported for url-is-live. */
 export async function isVideoLive(videoId: string): Promise<boolean> {
+  const result = await isVideoLiveWithViewers(videoId)
+  return result.live
+}
+
+/** Check if a video is live and optionally extract viewer count. Used by url-is-live. */
+export async function isVideoLiveWithViewers(videoId: string): Promise<{ live: boolean; viewers?: number }> {
   const url = `https://www.youtube.com/watch?v=${videoId}&_=${Date.now()}`
   const html = await fetchText(url)
   const m1 = /\b"isLive"\s*:\s*true\b/.test(html)
@@ -249,6 +273,7 @@ export async function isVideoLive(videoId: string): Promise<boolean> {
   const m7 = /"liveBroadcastDetails"\s*:\s*\{[^}]*"isLive"\s*:\s*true/.test(html)
   const m8 = /liveBroadcastDetails[\s\S]{0,200}isLive[\s\S]{0,50}true/.test(html)
   const live = m1 || m2 || m3 || m4 || m5 || m6 || m7 || m8
+  const viewers = parseYouTubeViewerCount(html)
 
   if (fileLogger.getLogLevel() === 'debug') {
     const snippet = (() => {
@@ -263,12 +288,11 @@ export async function isVideoLive(videoId: string): Promise<boolean> {
       return 'no known live indicator found'
     })()
     fileLogger.writeLog('debug', 'main', '[url-is-live] YouTube check', [
-      { videoId, url, htmlLength: html.length, m1, m2, m3, m4, m5, m6, m7, m8, live, snippet },
+      { videoId, url, htmlLength: html.length, m1, m2, m3, m4, m5, m6, m7, m8, live, viewers, snippet },
     ])
   }
 
-  if (m1 || m2 || m3 || m4 || m5 || m6 || m7 || m8) return true
-  return false
+  return { live, viewers }
 }
 
 /** Parse video IDs from RSS/Atom XML (shared by channel and playlist feeds). */
@@ -321,6 +345,8 @@ export interface YouTubeLiveOrLatestResult {
   isLive: boolean
   iframeUrl: string
   videoId: string
+  /** Viewer count when live (from watch page). */
+  viewers?: number
 }
 
 export interface YouTubeLiveOrLatestError {
@@ -393,7 +419,7 @@ export async function getYouTubeLiveOrLatest(
     const videoId = videoIds[0]
     // Step 5: The Live feed can include the most recent past stream when the channel is offline.
     // Verify the video is actually live; if not, do not return it.
-    const actuallyLive = await isVideoLive(videoId)
+    const { live: actuallyLive, viewers } = await isVideoLiveWithViewers(videoId)
     if (!actuallyLive) {
       return { error: 'Channel is not currently live' }
     }
@@ -402,6 +428,7 @@ export async function getYouTubeLiveOrLatest(
       isLive: true,
       iframeUrl: `https://www.youtube.com/embed/${videoId}`,
       videoId,
+      viewers,
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

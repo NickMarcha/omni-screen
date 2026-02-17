@@ -520,6 +520,93 @@ function visibleLabelIndices(
 
 const LABEL_Y_OVERLAP_THRESHOLD = 10
 
+type BarDatum = { id: string; name: string; value: number; color?: string }
+
+/** Horizontal bar chart for viewer counts. Y labels on the right of bars. */
+function ViewersBarChart({
+  data,
+  xScaleMode,
+  xStartAtZero,
+}: {
+  data: BarDatum[]
+  xScaleMode: 'linear' | 'log'
+  xStartAtZero: boolean
+}) {
+  const axisRef = useRef<SVGGElement>(null)
+  const barHeight = 22
+  const marginTop = 24
+  const marginRight = 90
+  const marginBottom = 12
+  const marginLeft = 36
+  const width = 300
+  const height = Math.max(80, data.length * barHeight + marginTop + marginBottom)
+
+  const minVal = data.length > 0 ? d3.min(data, (d) => d.value)! : 0
+  const maxVal = data.length > 0 ? d3.max(data, (d) => d.value)! : 1
+  const xMin = xStartAtZero ? (xScaleMode === 'log' ? Math.min(1, minVal) || 1 : 0) : minVal
+  const xMax = minVal === maxVal ? maxVal + Math.max(1, maxVal * 0.1) : maxVal
+
+  const x =
+    xScaleMode === 'log'
+      ? d3.scaleLog().domain([xMin, xMax]).range([marginLeft, width - marginRight])
+      : d3.scaleLinear().domain([xMin, xMax]).range([marginLeft, width - marginRight])
+
+  const y = d3
+    .scaleBand()
+    .domain(data.map((d) => d.id))
+    .rangeRound([marginTop, height - marginBottom])
+    .padding(0.15)
+
+  const formatValue = (v: number) => v.toLocaleString()
+
+  useEffect(() => {
+    const g = axisRef.current
+    if (!g) return
+    d3.select(g).selectAll('*').remove()
+    const axis = d3.axisTop(x)
+    if (xScaleMode === 'linear') {
+      axis.ticks(width / 60).tickFormat((v) => formatValue(Number(v)))
+    } else {
+      axis.ticks(5, formatValue).tickFormat((v) => formatValue(Number(v)))
+    }
+    d3.select(g).call(axis).selectAll('.domain').remove()
+  }, [x, xScaleMode])
+
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="block" preserveAspectRatio="xMinYMid meet" style={{ font: '10px sans-serif' }}>
+      <g ref={axisRef} transform={`translate(0,${marginTop})`} className="fill-base-content" />
+      <g fill="var(--color-base-content)">
+        {data.map((d) => {
+          const barWidth = Math.max(0, x(d.value) - x(xMin))
+          const shortBar = barWidth < 28
+          return (
+            <g key={d.id}>
+              <rect
+                x={x(xMin)}
+                y={y(d.id) ?? 0}
+                width={barWidth}
+                height={y.bandwidth() ?? 0}
+                fill={d.color ?? 'var(--color-primary)'}
+                rx={2}
+              />
+              <text
+                x={shortBar ? x(d.value) + 4 : x(d.value) - 4}
+                y={(y(d.id) ?? 0) + (y.bandwidth() ?? 0) / 2}
+                dy="0.35em"
+                textAnchor={shortBar ? 'start' : 'end'}
+                fill={shortBar ? 'var(--color-base-content)' : 'var(--color-base-100)'}
+                className="text-[10px] font-medium"
+              >
+                {d.name} · {formatValue(d.value)}
+              </text>
+            </g>
+          )
+        })}
+      </g>
+    </svg>
+  )
+}
+
 function PieChartSvg({
   data,
   fallbackColor,
@@ -2354,9 +2441,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         const channelId = (s.youtubeChannelId || '').trim()
         if (!channelId) continue
         try {
-          const r = await window.ipcRenderer.invoke('youtube-live-or-latest', channelId, { streamerNickname: s.nickname, useDggFallback: false }) as { isLive?: boolean; videoId?: string; error?: string }
+          const r = await window.ipcRenderer.invoke('youtube-live-or-latest', channelId, { streamerNickname: s.nickname, useDggFallback: false }) as { isLive?: boolean; videoId?: string; viewers?: number; error?: string }
           if (cancelled) return
-          logBookmarked('YT result', { nickname: s.nickname || s.id, channelId, isLive: r?.isLive, videoId: r?.videoId, error: r?.error })
+          logBookmarked('YT result', { nickname: s.nickname || s.id, channelId, isLive: r?.isLive, videoId: r?.videoId, viewers: r?.viewers, error: r?.error })
           if (r?.isLive && r?.videoId) {
             const key = makeEmbedKey('youtube', r.videoId)
             const ids = nextMap.get(key) ?? []
@@ -2365,7 +2452,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
             newEmbeds.set(key, {
               platform: 'youtube',
               id: r.videoId,
-              mediaItem: { metadata: { displayName: s.nickname || r.videoId, title: s.nickname || r.videoId } },
+              mediaItem: { metadata: { displayName: s.nickname || r.videoId, title: s.nickname || r.videoId, viewers: r?.viewers } },
             })
           }
         } catch (e) {
@@ -2413,9 +2500,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         const slug = (s.kickSlug || '').trim().toLowerCase()
         if (!slug) continue
         try {
-          const r = await window.ipcRenderer.invoke('url-is-live', `https://kick.com/${slug}`) as { live?: boolean; error?: string }
+          const r = await window.ipcRenderer.invoke('url-is-live', `https://kick.com/${slug}`) as { live?: boolean; viewers?: number; error?: string }
           if (cancelled) return
-          logBookmarked('Kick result', { nickname: s.nickname || s.id, slug, live: r?.live, error: r?.error })
+          logBookmarked('Kick result', { nickname: s.nickname || s.id, slug, live: r?.live, viewers: r?.viewers, error: r?.error })
           if (r?.error) {
             erroredSlugs.add(slug)
           } else if (r?.live) {
@@ -2423,7 +2510,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
             newEmbeds.set(key, {
               platform: 'kick',
               id: slug,
-              mediaItem: { metadata: { displayName: s.nickname || slug, title: s.nickname || slug } },
+              mediaItem: { metadata: { displayName: s.nickname || slug, title: s.nickname || slug, viewers: r?.viewers } },
             })
           }
         } catch (e) {
@@ -2469,9 +2556,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         const login = (s.twitchLogin || '').trim().toLowerCase()
         if (!login) continue
         try {
-          const r = await window.ipcRenderer.invoke('url-is-live', `https://twitch.tv/${login}`) as { live?: boolean; error?: string }
+          const r = await window.ipcRenderer.invoke('url-is-live', `https://twitch.tv/${login}`) as { live?: boolean; viewers?: number; error?: string }
           if (cancelled) return
-          logBookmarked('Twitch result', { nickname: s.nickname || s.id, login, live: r?.live, error: r?.error })
+          logBookmarked('Twitch result', { nickname: s.nickname || s.id, login, live: r?.live, viewers: r?.viewers, error: r?.error })
           if (r?.error) {
             erroredLogins.add(login)
           } else if (r?.live) {
@@ -2479,7 +2566,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
             newEmbeds.set(key, {
               platform: 'twitch',
               id: login,
-              mediaItem: { metadata: { displayName: s.nickname || login, title: s.nickname || login } },
+              mediaItem: { metadata: { displayName: s.nickname || login, title: s.nickname || login, viewers: r?.viewers } },
             })
           }
         } catch (e) {
@@ -3066,28 +3153,76 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     return dockItems.find((it) => getDockItemId(it) === dockHoverItemId) ?? null
   }, [dockHoverItemId, dockItems, getDockItemId])
 
-  /** Pie chart: one slice per embed; values from embeds websocket (count = people watching that embed). */
-  const pieChartData = useMemo((): PieDatum[] => {
-    const entries: PieDatum[] = []
-    const maxLabelLen = 18
+  const maxLabelLen = 18
+  const [viewersBarXScaleMode, setViewersBarXScaleMode] = useState<'linear' | 'log'>('linear')
+  const cycleViewersBarScale = useCallback(() => {
+    setViewersBarXScaleMode((s) => (s === 'linear' ? 'log' : 'linear'))
+  }, [])
+
+  const [viewersBarXStartAtZero, setViewersBarXStartAtZero] = useState(true)
+  const cycleViewersBarXStart = useCallback(() => {
+    setViewersBarXStartAtZero((z) => !z)
+  }, [])
+
+  type ViewersBarFilter = 'all' | 'bookmarks' | 'pinned' | 'embeds'
+  const [viewersBarFilter, setViewersBarFilter] = useState<ViewersBarFilter>('all')
+  const cycleViewersBarFilter = useCallback(() => {
+    setViewersBarFilter((f) => (f === 'all' ? 'bookmarks' : f === 'bookmarks' ? 'pinned' : f === 'pinned' ? 'embeds' : 'all'))
+  }, [])
+
+  const makePieEntries = useCallback(
+    (valueFn: (e: LiveEmbed) => number) => {
+      const entries: PieDatum[] = []
+      for (const [key, embed] of combinedAvailableEmbeds) {
+        const value = valueFn(embed as LiveEmbed)
+        if (value <= 0) continue
+        const rawName =
+          embed.mediaItem?.metadata?.displayName ||
+          embed.mediaItem?.metadata?.title ||
+          key
+        const name = rawName.length > maxLabelLen ? rawName.slice(0, maxLabelLen - 1) + '…' : rawName
+        const color = omniColorForKey(key, { displayName: embed.mediaItem?.metadata?.displayName })
+        entries.push({ name, value, color })
+      }
+      return entries.sort((a, b) => b.value - a.value)
+    },
+    [combinedAvailableEmbeds],
+  )
+
+  /** Bar chart by platform viewer counts (API/GQL). Live embeds only; excludes offline. Filter by source when viewersBarFilter set. */
+  const barChartDataByViewers = useMemo((): BarDatum[] => {
+    const entries: BarDatum[] = []
+    const includeKey = (key: string, embed: LiveEmbed): boolean => {
+      const c = canonicalEmbedKey(key)
+      if (viewersBarFilter === 'all') return true
+      if (viewersBarFilter === 'pinned') return Array.from(pinnedEmbeds.keys()).some((pk) => canonicalEmbedKey(pk) === c)
+      if (viewersBarFilter === 'bookmarks') return bookmarkedOriginatedEmbeds.has(c) || Array.from(bookmarkedOriginatedEmbeds.keys()).some((bk) => canonicalEmbedKey(bk) === c)
+      if (viewersBarFilter === 'embeds') return typeof embed.count === 'number'
+      return true
+    }
     for (const [key, embed] of combinedAvailableEmbeds) {
-      const value: number =
-        typeof (embed as LiveEmbed).count === 'number'
-          ? (embed as LiveEmbed).count ?? 0
-          : typeof embed.mediaItem?.metadata?.viewers === 'number'
-            ? embed.mediaItem.metadata.viewers
-            : 0
-      if (value <= 0) continue
+      if (!includeKey(key, embed as LiveEmbed)) continue
+      const viewers = typeof (embed as LiveEmbed).mediaItem?.metadata?.viewers === 'number'
+        ? (embed as LiveEmbed).mediaItem!.metadata!.viewers!
+        : 0
+      if (viewers <= 0) continue
+      if ((embed as LiveEmbed).mediaItem?.metadata?.live === false) continue
       const rawName =
         embed.mediaItem?.metadata?.displayName ||
         embed.mediaItem?.metadata?.title ||
         key
       const name = rawName.length > maxLabelLen ? rawName.slice(0, maxLabelLen - 1) + '…' : rawName
       const color = omniColorForKey(key, { displayName: embed.mediaItem?.metadata?.displayName })
-      entries.push({ name, value, color })
+      entries.push({ id: key, name, value: viewers, color })
     }
     return entries.sort((a, b) => b.value - a.value)
-  }, [combinedAvailableEmbeds])
+  }, [combinedAvailableEmbeds, viewersBarFilter, pinnedEmbeds, bookmarkedOriginatedEmbeds])
+
+  /** Pie chart by embed websocket count (extension users watching). Shown only when available. */
+  const pieChartDataByCount = useMemo(
+    () => makePieEntries((e) => (typeof e.count === 'number' ? e.count : 0)),
+    [makePieEntries],
+  )
 
   const pieChartButtonRef = useRef<HTMLButtonElement>(null)
   const pieChartCloseTimerRef = useRef<number | null>(null)
@@ -4109,8 +4244,12 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                             <div className="text-xs font-medium" style={{ color: omniColorForKey(key) }}>{platform}</div>
                             <div className="truncate text-xs text-base-content/60" title={title}>{title}</div>
                             <div className="text-xs text-base-content/50">
-                              {typeof embed?.count === 'number' ? `${embed.count} embeds` : '—'}
-                              {typeof embed?.mediaItem?.metadata?.viewers === 'number' ? ` • ${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : ' • — viewers'}
+                              {[
+                                typeof embed?.count === 'number' ? `${embed.count} embeds` : null,
+                                typeof embed?.mediaItem?.metadata?.viewers === 'number' ? `${embed.mediaItem.metadata.viewers.toLocaleString()} viewers` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' • ')}
                             </div>
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-xs">Video</span>
@@ -4248,7 +4387,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
 
         {/* Pie chart popup (what's being watched by platform) */}
         {showPiePopup && pieChartRect && (() => {
-          const popupW = 380
+          const hasBoth = barChartDataByViewers.length > 0 && pieChartDataByCount.length > 0
+          const popupW = hasBoth ? 680 : 380
           const preferredLeft = pieChartRect.left + pieChartRect.width / 2 - popupW / 2
           const margin = 8
           let minLeft = margin
@@ -4294,14 +4434,63 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 </button>
               ) : null}
             </div>
-            {pieChartData.length === 0 ? (
+            {barChartDataByViewers.length === 0 && pieChartDataByCount.length === 0 ? (
               <div className="text-xs text-base-content/50 py-4 text-center">No embed data yet.</div>
             ) : (
-              <div className="flex flex-col items-center w-full">
-                <PieChartSvg data={pieChartData} fallbackColor="#888" size={200} outerRadius={70} />
-                <div className="text-xs text-base-content/60 text-center mt-1">
-                  Total: {pieChartData.reduce((s, d) => s + d.value, 0).toLocaleString()} watching
-                </div>
+              <div className="flex flex-wrap gap-6 justify-center items-start">
+                {(barChartDataByViewers.length > 0 || pieChartDataByCount.length > 0) && (
+                  <div className="flex flex-col items-center">
+                    <div className="flex items-center justify-between w-full mb-1 gap-2">
+                      <span className="text-xs font-medium text-base-content/80">By viewers</span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={cycleViewersBarScale}
+                          title="Cycle: Linear ↔ Log"
+                        >
+                          {viewersBarXScaleMode === 'linear' ? 'Lin' : 'Log'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={cycleViewersBarXStart}
+                          title="Cycle: X axis starts at 0 ↔ min"
+                        >
+                          {viewersBarXStartAtZero ? '0' : 'min'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={cycleViewersBarFilter}
+                          title="Cycle: All → Bookmarks → Pinned → Embeds"
+                        >
+                          {viewersBarFilter.charAt(0).toUpperCase() + viewersBarFilter.slice(1)}
+                        </button>
+                      </div>
+                    </div>
+                    {barChartDataByViewers.length > 0 ? (
+                      <ViewersBarChart
+                        data={barChartDataByViewers}
+                        xScaleMode={viewersBarXScaleMode}
+                        xStartAtZero={viewersBarXStartAtZero}
+                      />
+                    ) : (
+                      <div className="text-xs text-base-content/50 py-4 text-center min-w-[200px]">
+                        No data for {viewersBarFilter}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {pieChartDataByCount.length > 0 && (
+                  <div className="flex flex-col items-center">
+                    <span className="text-xs font-medium text-base-content/80 mb-1">By embeds (WebSocket)</span>
+                    <PieChartSvg data={pieChartDataByCount} fallbackColor="#888" size={180} outerRadius={60} />
+                    <div className="text-xs text-base-content/60 text-center mt-1">
+                      {pieChartDataByCount.reduce((s, d) => s + d.value, 0).toLocaleString()} total
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
