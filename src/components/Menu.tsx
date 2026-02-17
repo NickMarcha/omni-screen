@@ -116,6 +116,28 @@ function useConnectionsPlatforms() {
   }, [config])
 }
 
+const DEFAULT_MENU_TAGLINE_BOTTOM = 'Thanks to Kickstiny for (unwittingly) tolerating my abuse of their script.'
+
+/** Fetch menu taglines from app config (extensions can override via setRendererConfig). */
+function useMenuTaglines() {
+  const [config, setConfig] = useState<{ menuTaglineTop?: string; menuTaglineBottom?: string } | null>(null)
+  const refetch = useCallback(() => {
+    window.ipcRenderer.invoke('get-app-config').then(setConfig).catch(() => {})
+  }, [])
+  useEffect(() => {
+    refetch()
+  }, [refetch])
+  useEffect(() => {
+    const handler = () => refetch()
+    window.ipcRenderer.on('extensions-reloaded', handler)
+    return () => { window.ipcRenderer.off('extensions-reloaded', handler) }
+  }, [refetch])
+  return {
+    menuTaglineTop: config?.menuTaglineTop ?? '',
+    menuTaglineBottom: config?.menuTaglineBottom ?? DEFAULT_MENU_TAGLINE_BOTTOM,
+  }
+}
+
 function formatLastCheckedAgo(ts: number): string {
   const now = Date.now()
   const d = Math.floor((now - ts) / 1000)
@@ -154,6 +176,7 @@ function OmniScreenCard({ onNavigate }: { onNavigate: (page: 'omni-screen') => v
 
 function Menu({ onNavigate }: MenuProps) {
   const CONNECTIONS_PLATFORMS = useConnectionsPlatforms()
+  const { menuTaglineTop, menuTaglineBottom } = useMenuTaglines()
 
   // Scrolling icons for Link Scroller (same set, scrolls upward with pause per image)
   const linkScrollerIcons = [
@@ -489,17 +512,23 @@ function Menu({ onNavigate }: MenuProps) {
       <h1 className="text-5xl font-bold text-center mb-2 text-primary flex items-center justify-center gap-3">
         <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
         Omni Screen
-        <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
+        <span
+          role="button"
+          tabIndex={0}
+          className="cursor-default select-none inline-block"
+          onClick={handleStrawWaffleClick}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleStrawWaffleClick() }}
+        >
+          <img src={yeeCharmGif} alt="" className="w-12 h-12 object-contain" />
+        </span>
       </h1>
-      <p
-        role="button"
-        tabIndex={0}
-        className="text-base-content/60 text-sm mb-12 cursor-default select-none"
-        onClick={handleStrawWaffleClick}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleStrawWaffleClick() }}
-      >
-        Vibed by StrawWaffle
-      </p>
+      {menuTaglineTop ? (
+        <p className="text-base-content/60 text-sm mb-12">
+          {menuTaglineTop}
+        </p>
+      ) : (
+        <div className="mb-12" />
+      )}
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl w-full mb-8">
         {/* Link Scroller - Active */}
@@ -561,7 +590,7 @@ function Menu({ onNavigate }: MenuProps) {
 
       {/* Acknowledgements */}
       <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
-        Thanks to polecat.me, Rustlesearch, and Kickstiny for (unwittingly) tolerating my abuse of their APIs and scripts.
+        {menuTaglineBottom}
       </p>
 
       {/* Update Modal */}

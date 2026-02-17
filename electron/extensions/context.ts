@@ -47,10 +47,14 @@ export interface ConnectionPlatform {
   manualCookieNames?: string[]
 }
 
-/** Renderer config overlay: extensions set chatSources[id] and connectionPlatforms. */
+/** Renderer config overlay: extensions set chatSources[id], connectionPlatforms, menu taglines. */
 export type RendererConfigOverlay = {
   chatSources?: Record<string, ChatSourceRendererConfig>
   connectionPlatforms?: ConnectionPlatform[]
+  /** Override main menu tagline above the cards. Empty = hide. */
+  menuTaglineTop?: string
+  /** Override main menu tagline below the update card. */
+  menuTaglineBottom?: string
   [key: string]: unknown
 }
 

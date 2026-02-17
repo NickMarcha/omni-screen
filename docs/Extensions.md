@@ -73,7 +73,7 @@ If `register` is not a function, the extension is loaded but does nothing. Any e
 |--------|-------------|
 | `registerChatSource(id, registration)` | Register a chat source. `registration.getConfig()` must return a [ChatSourceConfig](#chat-source-config). Optional: `registration.onLiveMessage(message, api)` for the live WebSocket. The first registered source with a valid config becomes the **primary** chat source. |
 | `registerChatSourceApi(chatSourceId, api)` | Register optional APIs for a chat source: `fetchMentions(username, size, offset)` and/or `fetchRustlesearch(filterTerms, searchAfter, size)` for mentions and log search. |
-| `setRendererConfig(partial)` | Merge config for the renderer: `chatSources`, `connectionPlatforms`. See [Renderer config](#renderer-config). |
+| `setRendererConfig(partial)` | Merge config for the renderer: `chatSources`, `connectionPlatforms`, `menuTaglineTop`, `menuTaglineBottom`. See [Renderer config](#renderer-config). |
 | `registerSettings(sections)` | Register settings sections for the Extensions UI. Each section has `id`, `label`, `placement`, and `fields`. |
 | `log(level, message, ...args)` | Log from the extension. `level`: `'info' | 'warn' | 'error' | 'debug'`. Messages are prefixed with `[ext:extensionId]` and written to the app log. |
 
@@ -99,6 +99,8 @@ The app uses the **primary** chat source for the main chat pane, cookie domains 
 ---
 
 ## Connection platforms
+
+Extensions can override the main menu taglines via `setRendererConfig({ menuTaglineTop, menuTaglineBottom })`. `menuTaglineTop` appears above the cards (empty = hidden). `menuTaglineBottom` appears below the update card. Default (no override): top hidden, bottom = "Thanks to Kickstiny for (unwittingly) tolerating my abuse of their script."
 
 Extensions can add entries to the **Connections** (login/cookies) UI via `setRendererConfig({ connectionPlatforms: [...] })`. Each platform has:
 

@@ -70,6 +70,8 @@ export function getAppConfigForRenderer() {
     extensions: getLoadedExtensions().map((e) => ({ id: e.id, name: e.name, version: e.version })),
     extensionSettingsSchemas: getExtensionSettingsSchemas(),
     connectionPlatforms: overlay.connectionPlatforms ?? [],
+    menuTaglineTop: overlay.menuTaglineTop,
+    menuTaglineBottom: overlay.menuTaglineBottom,
   }
 }
 
