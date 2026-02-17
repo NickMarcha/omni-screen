@@ -265,6 +265,20 @@ body {
   80% { transform: translateX(4px); }
 }
 
+/* Embed card video: fit within cell while preserving aspect ratio. No stretch, no crop.
+   Container wider than 16:9 → height-constrained: height 100%, width from aspect.
+   Container narrower than 16:9 → width-constrained: width 100%, height from aspect. */
+/* Embed card video: explicit dimensions from JS; aspect-ratio ensures correct proportions. */
+
+/* Embed title marquee: scroll right-to-left when overflowing */
+.embed-title-marquee {
+  animation: embed-title-marquee 20s linear infinite;
+}
+@keyframes embed-title-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
 /* Watermark line scroll (used only when animated: true) */
 @keyframes watermark-scroll {
   from { transform: translateX(0); }

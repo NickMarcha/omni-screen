@@ -86,6 +86,40 @@ function buildWatermarkLines(text: string, textCase: WatermarkTextCase): string[
 import { Icon } from './Icon'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 
+function EmbedTitleMarquee({ title }: { title: string }) {
+  const containerRef = useRef<HTMLSpanElement>(null)
+  const contentRef = useRef<HTMLSpanElement>(null)
+  const [doesOverflow, setDoesOverflow] = useState(false)
+  useEffect(() => {
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content) return
+    const check = () => {
+      setDoesOverflow(content.scrollWidth > container.clientWidth)
+    }
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [title])
+  return (
+    <span ref={containerRef} className="min-w-0 overflow-hidden flex-1" title={title}>
+      {doesOverflow ? (
+        <span ref={contentRef} className="embed-title-marquee inline-flex whitespace-nowrap font-semibold text-base-content">
+          {title}
+          <span className="text-base-content/40 px-1">|</span>
+          {title}
+          <span className="text-base-content/40 px-1">|</span>
+        </span>
+      ) : (
+        <span ref={contentRef} className="inline-block whitespace-nowrap font-semibold text-base-content truncate min-w-0 max-w-full">
+          {title}
+        </span>
+      )}
+    </span>
+  )
+}
+
 /** Log for bookmarked streamers (settings list: YT/Kick/Twitch poll and results). Not for pinned embeds. */
 function logBookmarked(message: string, detail?: unknown) {
   const line = detail !== undefined ? `${message} ${JSON.stringify(detail)}` : message
@@ -753,6 +787,34 @@ function getBestGridColumns(opts: { count: number; width: number; height: number
   // If nothing fit (very small window), use the max cols to reduce overflow.
   if (bestArea === 0) return maxCols
   return bestCols
+}
+
+/** Parse aspect ratio string (e.g. "16/9", "4/3", "1/1", "9/16") to numeric width/height. */
+function parseAspectRatio(ar: string): number {
+  const m = String(ar || '16/9').trim().match(/^(\d+)\s*\/\s*(\d+)$/)
+  if (!m) return 16 / 9
+  const w = Number(m[1])
+  const h = Number(m[2])
+  return h > 0 ? w / h : 16 / 9
+}
+
+/** Compute card width so the video fits in the cell for a given aspect ratio. Card = header + padding + video. */
+function getEmbedCardWidthForAspectRatio(opts: {
+  cellWidth: number
+  cellHeight: number
+  aspectRatio: number // video width/height
+  headerHeightPx?: number
+  paddingPx?: number
+}): number {
+  const { cellWidth, cellHeight, aspectRatio } = opts
+  const headerAndPadding = opts.headerHeightPx ?? 72
+  const pad = opts.paddingPx ?? 16
+  const videoMaxW = Math.max(0, cellWidth - pad)
+  const videoMaxH = Math.max(0, cellHeight - headerAndPadding - pad)
+  if (videoMaxW <= 0 || videoMaxH <= 0) return Math.max(0, cellWidth)
+  // Largest video that fits: constrain by width and by height
+  const videoW = Math.min(videoMaxW, videoMaxH * aspectRatio)
+  return Math.max(0, videoW + pad)
 }
 
 function buildYouTubeEmbed(id: string) {
@@ -2489,6 +2551,17 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     })
   }, [])
 
+  const [embedAspectRatios, setEmbedAspectRatios] = useState<Record<string, string>>({})
+  const cycleEmbedAspectRatio = useCallback((key: string) => {
+    const options = ['16/9', '4/3', '1/1', '9/16']
+    setEmbedAspectRatios((prev) => {
+      const current = prev[key] ?? '16/9'
+      const idx = options.indexOf(current)
+      const nextIdx = idx < 0 ? 0 : (idx + 1) % options.length
+      return { ...prev, [key]: options[nextIdx] }
+    })
+  }, [])
+
   const toggleEmbedChat = useCallback((key: string) => {
     setSelectedEmbedChatKeys((prev) => {
       const next = new Set(prev)
@@ -2652,6 +2725,25 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     [chatPaneOpen, chatPaneSide, chatPaneWidth],
   )
 
+  const gridCols = useMemo(() => {
+    return getBestGridColumns({
+      count: selectedEmbeds.length,
+      width: gridHostSize.width,
+      height: gridHostSize.height,
+      gapPx: cinemaMode ? 0 : 12,
+      headerHeightPx: cinemaMode ? 0 : 56,
+    })
+  }, [cinemaMode, gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
+
+  const embedGridCellSize = useMemo(() => {
+    if (cinemaMode || selectedEmbeds.length === 0) return { cellWidth: 0, cellHeight: 0 }
+    const gap = 12
+    const rows = Math.max(1, Math.ceil(selectedEmbeds.length / Math.max(1, gridCols)))
+    const cellWidth = (gridHostSize.width - gap * (gridCols - 1)) / gridCols
+    const cellHeight = (gridHostSize.height - gap * (rows - 1)) / rows
+    return { cellWidth, cellHeight }
+  }, [cinemaMode, gridCols, gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
+
   const renderEmbedTile = useCallback(
     (item: { key: string; embed: LiveEmbed }) => {
       const e = item.embed
@@ -2684,40 +2776,74 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       }
 
       const isShaking = shakeEmbedKey != null && canonicalEmbedKey(item.key) === shakeEmbedKey
-      // Single structure so toggling cinema mode only changes wrapper classes/header visibility; embed iframe does not remount.
+      const ar = embedAspectRatios[item.key] ?? '16/9'
+      const cardWidth =
+        cinemaMode || embedGridCellSize.cellWidth <= 0
+          ? 0
+          : getEmbedCardWidthForAspectRatio({
+              cellWidth: embedGridCellSize.cellWidth,
+              cellHeight: embedGridCellSize.cellHeight,
+              aspectRatio: parseAspectRatio(ar),
+              headerHeightPx: 56 + 16, // header + px-2 (8) + pb-2 (8)
+              paddingPx: 16,
+            })
       return (
         <div
           key={item.key}
-          className={`embed-tile ${cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col min-h-0'} ${isShaking ? 'embed-tile-shake' : ''}`}
-          style={{ borderTop: cinemaMode ? undefined : `4px solid ${accent}`, viewTransitionName: makeViewTransitionNameForKey(item.key) } as any}
+          className={`embed-tile ${cinemaMode ? 'w-full h-full min-h-0 min-w-0 overflow-hidden' : 'card bg-base-200 shadow-md overflow-hidden flex flex-col shrink-0'} ${isShaking ? 'embed-tile-shake' : ''}`}
+          style={
+            cinemaMode
+              ? { viewTransitionName: makeViewTransitionNameForKey(item.key) } as any
+              : {
+                  width: cardWidth > 0 ? cardWidth : embedGridCellSize.cellWidth,
+                  borderTop: `4px solid ${accent}`,
+                  viewTransitionName: makeViewTransitionNameForKey(item.key),
+                } as any
+          }
         >
           {!cinemaMode && (
-            <div className="p-2 flex items-center justify-between gap-2" style={{ background: withAlpha(accent, 0.08) }}>
-              <div className="min-w-0">
-                <div className="text-xs uppercase" style={{ color: accent }}>
+            <div className="p-2 flex items-center justify-between gap-2 min-w-0 shrink-0" style={{ background: withAlpha(accent, 0.08) }}>
+              <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
+                <span className="text-xs uppercase shrink-0" style={{ color: accent }}>
                   {platform}
-                </div>
-                <div className="text-sm font-semibold truncate" title={title}>
-                  {title}
-                </div>
-                <div className="text-xs text-base-content/60">
-                  {typeof viewers === 'number' ? `${viewers.toLocaleString()} viewers` : null}
-                  {typeof e.count === 'number' ? `  •  ${e.count} embeds` : null}
-                  {banned ? `  •  BANNED` : null}
-                </div>
+                </span>
+                <span className="text-base-content/60 shrink-0">/</span>
+                <EmbedTitleMarquee title={title} />
+                {(typeof viewers === 'number' || typeof e.count === 'number' || banned) && (
+                  <span className="text-xs text-base-content/60 shrink-0">
+                    {typeof viewers === 'number' ? `${viewers.toLocaleString()} viewers` : ''}
+                    {typeof viewers === 'number' && typeof e.count === 'number' ? ' • ' : ''}
+                    {typeof e.count === 'number' ? `${e.count} embeds` : ''}
+                    {banned ? (typeof viewers === 'number' || typeof e.count === 'number' ? ' • BANNED' : 'BANNED') : ''}
+                  </span>
+                )}
               </div>
-              <button className="btn btn-xs btn-ghost" onClick={() => toggleEmbed(item.key)} title="Remove from grid">
-                ✕
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  className="btn btn-xs btn-ghost px-1.5"
+                  onClick={() => cycleEmbedAspectRatio(item.key)}
+                  title="Cycle aspect ratio"
+                >
+                  {ar}
+                </button>
+                <button className="btn btn-xs btn-ghost" onClick={() => toggleEmbed(item.key)} title="Remove from grid">
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
             </div>
           )}
-          <div className={cinemaMode ? 'w-full h-full min-h-0' : 'px-2 pb-2 flex-1 min-h-0'}>
-            <div className="w-full h-full min-h-0">{content}</div>
+          <div className={cinemaMode ? 'w-full h-full min-h-0' : 'px-2 pb-2 shrink-0 w-full overflow-hidden'}>
+            <div
+              className={cinemaMode ? 'w-full h-full min-h-0 overflow-hidden' : 'w-full overflow-hidden'}
+              style={cinemaMode ? undefined : { aspectRatio: ar }}
+            >
+              {content}
+            </div>
           </div>
         </div>
       )
     },
-    [autoplay, bannedEmbeds, cinemaMode, mute, bookmarkedStreamers, shakeEmbedKey, toggleEmbed, youtubeVideoToStreamerId],
+    [autoplay, bannedEmbeds, cinemaMode, embedAspectRatios, embedGridCellSize, mute, bookmarkedStreamers, cycleEmbedAspectRatio, shakeEmbedKey, toggleEmbed, youtubeVideoToStreamerId],
   )
 
   /** Dock item: merged bookmarked group (same keys = one button) or single embed. */
@@ -3031,16 +3157,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     [selectedEmbedKeys, selectedEmbedChatKeys, preferredPlatformOrder],
   )
 
-  const gridCols = useMemo(() => {
-    return getBestGridColumns({
-      count: selectedEmbeds.length,
-      width: gridHostSize.width,
-      height: gridHostSize.height,
-      gapPx: cinemaMode ? 0 : 12,
-      headerHeightPx: cinemaMode ? 0 : 56,
-    })
-  }, [cinemaMode, gridHostSize.height, gridHostSize.width, selectedEmbeds.length])
-
   // Chat-only mode: external window shows only the combined chat (no grid, dock, etc.)
   const [chatOnlyContainer, setChatOnlyContainer] = useState<HTMLDivElement | null>(null)
   if (chatOnlyMode) {
@@ -3295,15 +3411,22 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               (() => {
                 const rows = Math.max(1, Math.ceil(selectedEmbeds.length / Math.max(1, gridCols)))
                 return (
-                  <div className="embed-grid-layer h-full min-h-0">
+                  <div className={`embed-grid-layer h-full min-h-0 ${cinemaMode ? '' : 'overflow-hidden'}`}>
                     <div
-                      className={`grid h-full min-h-0 ${cinemaMode ? 'gap-0' : 'gap-3'}`}
+                      className={`grid h-full min-h-0 w-full ${cinemaMode ? 'gap-0' : 'gap-3'}`}
                       style={{
                         gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
                         gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
                       }}
                     >
-                      {selectedEmbeds.map(renderEmbedTile)}
+                      {selectedEmbeds.map((item) => (
+                        <div
+                          key={item.key}
+                          className={`min-w-0 min-h-0 overflow-hidden ${cinemaMode ? 'w-full h-full' : 'w-full h-full flex justify-center items-start'}`}
+                        >
+                          {renderEmbedTile(item)}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )

@@ -3592,7 +3592,7 @@ ipcMain.handle('chat-websocket-send-watching', async (_event, payload: { platfor
 })
 
 /** Create live WebSocket if needed and trigger connect. Uses primary chat source config (liveWssUrl from extension). */
-async function ensureLiveWebSocketConnect(): Promise<{ success: boolean; error?: string }> {
+async function ensureLiveWebSocketConnect(): Promise<{ success: boolean; error?: string; socket?: LiveWebSocket | null }> {
   try {
     const primary = getPrimaryChatSource()
     if (!primary) return { success: false, error: 'Chat source extension not installed' }
@@ -3646,7 +3646,7 @@ async function ensureLiveWebSocketConnect(): Promise<{ success: boolean; error?:
     if (!liveWebSocket.isConnected()) {
       const now = Date.now()
       if (!justCreated && now - lastLiveWsConnectAttempt < LIVE_WS_CONNECT_COOLDOWN_MS) {
-        return { success: true }
+        return { success: true, socket: liveWebSocket }
       }
       lastLiveWsConnectAttempt = now
       const cookieStr = await getCookiesForUrl(primary.config.baseUrl)
@@ -3655,7 +3655,7 @@ async function ensureLiveWebSocketConnect(): Promise<{ success: boolean; error?:
       })
     }
 
-    return { success: true }
+    return { success: true, socket: liveWebSocket }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
@@ -3696,26 +3696,28 @@ ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data:
     }
     return { success: false, error: 'Chat source extension not installed' }
   }
-  if (!liveWebSocket) {
+  let ws: LiveWebSocket | null = liveWebSocket
+  if (!ws) {
     try {
       fileLogger.writeLog('info', 'main', '[live-websocket-send] Live WebSocket not created; triggering connect. URL:', [primary.config.liveWssUrl])
     } catch {
       /* ignore */
     }
     const connectResult = await ensureLiveWebSocketConnect()
-    if (!connectResult.success || !liveWebSocket || !liveWebSocket.isConnected()) {
+    ws = connectResult.socket ?? liveWebSocket
+    if (!connectResult.success || !ws || !ws.isConnected()) {
       return { success: false, error: connectResult.error || 'Live WebSocket not connected (connection in progress or failed)' }
     }
   }
-  if (!liveWebSocket.isConnected()) {
+  if (!ws.isConnected()) {
     try {
-      fileLogger.writeLog('warn', 'main', '[live-websocket-send] Live WebSocket not connected; message dropped. URL:', [liveWebSocket.getUrl()])
+      fileLogger.writeLog('warn', 'main', '[live-websocket-send] Live WebSocket not connected; message dropped. URL:', [ws.getUrl()])
     } catch {
       /* ignore */
     }
     return { success: false, error: 'Live WebSocket not connected' }
   }
-  liveWebSocket.send(data as object)
+  ws.send(data as object)
   return { success: true }
 })
 
