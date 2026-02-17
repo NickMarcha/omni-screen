@@ -1214,7 +1214,7 @@ function Menu({ onNavigate }: MenuProps) {
                   <input
                     type="text"
                     className="input input-bordered input-sm flex-1"
-                    placeholder="https://.../manifest.json"
+                    placeholder="https://.../manifest.json or file:///path/to/manifest.json"
                     value={extensionInstallUrl}
                     onChange={(e) => { setExtensionInstallUrl(e.target.value); setExtensionInstallStatus(null) }}
                   />

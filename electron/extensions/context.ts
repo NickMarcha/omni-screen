@@ -68,12 +68,20 @@ export interface LiveMessageHandlerApi {
   ): void
 }
 
+/** Result of getChatCommand: raw protocol command and payload to send instead of MSG. */
+export interface ChatCommandResult {
+  cmd: string
+  payload: object
+}
+
 /** Chat source registration: getConfig is called when the app needs to connect. */
 export interface ChatSourceRegistration {
   id: string
   getConfig: () => ChatSourceConfig
   /** Optional: called for each message from the live WebSocket (URL from getConfig().liveWssUrl). */
   onLiveMessage?: (message: unknown, api: LiveMessageHandlerApi) => void
+  /** Optional: map user input to a raw protocol command (e.g. /die → DIE). Return null to send as MSG. */
+  getChatCommand?: (text: string) => ChatCommandResult | null
 }
 
 /** Optional APIs a chat source extension can provide (e.g. mentions search, log search). */
@@ -100,6 +108,20 @@ export function getPrimaryChatSource(): { id: string; config: ChatSourceConfig }
     try {
       const config = reg.getConfig()
       if (config?.baseUrl) return { id, config }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/** Full registration for the primary chat source (used e.g. for getChatCommand). */
+export function getPrimaryChatSourceRegistration(): ChatSourceRegistration | null {
+  for (const [, reg] of chatSourceRegistry) {
+    if (!reg?.getConfig) continue
+    try {
+      const config = reg.getConfig()
+      if (config?.baseUrl) return reg
     } catch {
       continue
     }

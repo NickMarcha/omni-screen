@@ -7,7 +7,7 @@ import { readFileSync, statSync, writeFileSync, existsSync } from 'fs'
 import { update } from './update'
 import { fileLogger } from './fileLogger'
 import { getPlatformUrls } from './envConfig'
-import { getPrimaryChatSource, getRendererConfigOverlay, getExtensionSettingsSchemas, getLiveMessageHandler, getChatSourceApi } from './extensions/context.js'
+import { getPrimaryChatSource, getPrimaryChatSourceRegistration, getRendererConfigOverlay, getExtensionSettingsSchemas, getLiveMessageHandler, getChatSourceApi } from './extensions/context.js'
 import type { LiveMessageHandlerApi } from './extensions/context.js'
 import { ChatWebSocket } from './chatWebSocket'
 import { LiveWebSocket } from './liveWebSocket'
@@ -3430,6 +3430,12 @@ function sendChatRaw(line: string): boolean {
 ipcMain.handle('chat-websocket-send', async (_event, payload: { data?: string }) => {
   const text = typeof payload?.data === 'string' ? payload.data.trim() : ''
   if (!text) return { success: false, error: 'Empty message' }
+  const reg = getPrimaryChatSourceRegistration()
+  const cmd = reg?.getChatCommand?.(text)
+  if (cmd) {
+    const sent = sendChatRaw(`${cmd.cmd} ${JSON.stringify(cmd.payload)}`)
+    return { success: sent }
+  }
   const sent = sendChatRaw(`MSG ${JSON.stringify({ data: text })}`)
   return { success: sent }
 })

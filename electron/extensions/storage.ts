@@ -1,9 +1,24 @@
 import { app } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import https from 'node:https'
 import http from 'node:http'
 import type { ExtensionManifest, InstalledExtension } from './types.js'
+
+function isFileUrl(url: string): boolean {
+  return typeof url === 'string' && (url.startsWith('file:///') || url.startsWith('file://'))
+}
+
+function pathFromFileUrl(url: string): string {
+  return fileURLToPath(url)
+}
+
+function resolveEntryPath(entry: string, manifestDir: string): string {
+  if (isFileUrl(entry)) return pathFromFileUrl(entry)
+  if (path.isAbsolute(entry)) return path.normalize(entry)
+  return path.resolve(manifestDir, entry)
+}
 
 const EXTENSIONS_DIR_NAME = 'extensions'
 const EXTENSIONS_LIST_FILE = 'extensions.json'
@@ -103,13 +118,22 @@ export function getExtensionDir(extensionId: string): string {
 
 /**
  * Install an extension from a manifest URL (e.g. from omnichat://install?url=...).
- * Fetches the manifest, downloads the entry bundle, and adds to the installed list.
+ * Supports http(s):// and file:// URLs. Entry can be a URL or a path (relative to manifest dir).
  */
 export async function installFromManifestUrl(manifestUrl: string): Promise<{ ok: boolean; id?: string; error?: string }> {
   ensureExtensionsDir()
   let manifest: ExtensionManifest
+  let manifestDir: string
   try {
-    manifest = await fetchJson<ExtensionManifest>(manifestUrl)
+    if (isFileUrl(manifestUrl)) {
+      const manifestPath = pathFromFileUrl(manifestUrl)
+      const raw = fs.readFileSync(manifestPath, 'utf-8')
+      manifest = JSON.parse(raw) as ExtensionManifest
+      manifestDir = path.dirname(manifestPath)
+    } else {
+      manifest = await fetchJson<ExtensionManifest>(manifestUrl)
+      manifestDir = path.dirname(new URL(manifestUrl).pathname || '.')
+    }
   } catch (e) {
     return { ok: false, error: `Failed to fetch manifest: ${e instanceof Error ? e.message : String(e)}` }
   }
@@ -121,14 +145,26 @@ export async function installFromManifestUrl(manifestUrl: string): Promise<{ ok:
     fs.rmSync(extDir, { recursive: true })
   }
   fs.mkdirSync(extDir, { recursive: true })
+  const isEntryRemote = manifest.entry.startsWith('http://') || manifest.entry.startsWith('https://')
   try {
-    const buffer = await fetchBuffer(manifest.entry)
-    const entryBasename = path.basename(new URL(manifest.entry).pathname)
+    let buffer: Buffer
+    let entryBasename: string
+    if (isEntryRemote) {
+      buffer = await fetchBuffer(manifest.entry)
+      entryBasename = path.basename(new URL(manifest.entry).pathname)
+    } else {
+      const entryPath = resolveEntryPath(manifest.entry, manifestDir)
+      if (!fs.existsSync(entryPath)) {
+        throw new Error(`Entry file not found: ${entryPath}`)
+      }
+      buffer = fs.readFileSync(entryPath)
+      entryBasename = path.basename(entryPath)
+    }
     const entryPath = path.join(extDir, entryBasename)
     fs.writeFileSync(entryPath, buffer)
   } catch (e) {
     if (fs.existsSync(extDir)) fs.rmSync(extDir, { recursive: true })
-    return { ok: false, error: `Failed to download extension: ${e instanceof Error ? e.message : String(e)}` }
+    return { ok: false, error: `Failed to load extension: ${e instanceof Error ? e.message : String(e)}` }
   }
   const list = readExtensionsList()
   const existing = list.find((e) => e.id === manifest.id)

@@ -879,7 +879,7 @@ type CombinedItem =
     }
   | {
       source: string
-      eventType: 'giftsub' | 'massgift' | 'donation'
+      eventType: 'giftsub' | 'massgift' | 'donation' | 'death'
       tsMs: number
       nick: string
       content: string
@@ -2058,9 +2058,21 @@ function CombinedChat({
         { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'donation', tsMs: Date.now(), nick: from, content, raw: d, seq: seqRef.current++ },
       ])
     }
+    const handleDeath = (_event: any, payload: { type?: string; death?: { nick?: string; data?: string } } | null) => {
+      if (!alive) return
+      const d = payload?.death
+      if (!d) return
+      const nick = d.nick ?? 'Someone'
+      const data = (d.data ?? '').trim()
+      const content = data ? `${nick} ${data}` : `${nick} died`
+      appendItems([
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'death', tsMs: Date.now(), nick, content, raw: d, seq: seqRef.current++ },
+      ])
+    }
     window.ipcRenderer.on('chat-websocket-giftsub', handleGiftSub)
     window.ipcRenderer.on('chat-websocket-massgift', handleMassGift)
     window.ipcRenderer.on('chat-websocket-donation', handleDonation)
+    window.ipcRenderer.on('chat-websocket-death', handleDeath)
 
     const handleMute = (_event: any, payload: { type?: string; mute?: { data?: string; nick?: string } } | null) => {
       if (!alive) return
@@ -2113,6 +2125,7 @@ function CombinedChat({
       window.ipcRenderer.off('chat-websocket-giftsub', handleGiftSub)
       window.ipcRenderer.off('chat-websocket-massgift', handleMassGift)
       window.ipcRenderer.off('chat-websocket-donation', handleDonation)
+      window.ipcRenderer.off('chat-websocket-death', handleDeath)
       window.ipcRenderer.off('chat-websocket-mute', handleMute)
       window.ipcRenderer.off('chat-websocket-ban', handleBan)
       window.ipcRenderer.off('chat-websocket-unban', handleUnban)
@@ -3243,7 +3256,7 @@ function CombinedChat({
             if (m.source.endsWith('-event')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const eventType = 'eventType' in m ? m.eventType : ''
-              const iconEl = eventType === 'donation' ? <Icon name="dollar-sign" size={16} /> : <Icon name="gift" size={16} />
+              const iconEl = eventType === 'donation' ? <Icon name="dollar-sign" size={16} /> : eventType === 'death' ? <Icon name="info" size={16} className="text-yellow-500" /> : <Icon name="gift" size={16} />
               return (
                 <div
                   key={`msg-primary-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
