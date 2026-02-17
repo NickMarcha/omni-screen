@@ -270,9 +270,10 @@ body {
    Container narrower than 16:9 → width-constrained: width 100%, height from aspect. */
 /* Embed card video: explicit dimensions from JS; aspect-ratio ensures correct proportions. */
 
-/* Embed title marquee: scroll right-to-left when overflowing */
+/* Embed title marquee: scroll right-to-left when overflowing. contain:layout prevents height drift. */
 .embed-title-marquee {
   animation: embed-title-marquee 20s linear infinite;
+  contain: layout;
 }
 @keyframes embed-title-marquee {
   from { transform: translateX(0); }

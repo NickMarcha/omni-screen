@@ -102,17 +102,18 @@ function EmbedTitleMarquee({ title }: { title: string }) {
     ro.observe(container)
     return () => ro.disconnect()
   }, [title])
+  const baseClasses = 'inline-block whitespace-nowrap font-semibold text-base-content leading-tight'
   return (
-    <span ref={containerRef} className="min-w-0 overflow-hidden flex-1" title={title}>
+    <span ref={containerRef} className="min-w-0 overflow-hidden flex-1 leading-tight" title={title}>
       {doesOverflow ? (
-        <span ref={contentRef} className="embed-title-marquee inline-flex whitespace-nowrap font-semibold text-base-content">
+        <span ref={contentRef} className={`embed-title-marquee ${baseClasses}`}>
           {title}
           <span className="text-base-content/40 px-1">|</span>
           {title}
           <span className="text-base-content/40 px-1">|</span>
         </span>
       ) : (
-        <span ref={contentRef} className="inline-block whitespace-nowrap font-semibold text-base-content truncate min-w-0 max-w-full">
+        <span ref={contentRef} className={`${baseClasses} truncate min-w-0 max-w-full`}>
           {title}
         </span>
       )}
@@ -2784,7 +2785,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               cellWidth: embedGridCellSize.cellWidth,
               cellHeight: embedGridCellSize.cellHeight,
               aspectRatio: parseAspectRatio(ar),
-              headerHeightPx: 56 + 16, // header + px-2 (8) + pb-2 (8)
+              headerHeightPx: 56 , // header + px-2 (8) + pb-2 (8) dont think this is needed 
               paddingPx: 16,
             })
       return (
