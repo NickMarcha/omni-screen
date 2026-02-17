@@ -12,7 +12,17 @@ import type { LiveMessageHandlerApi } from './extensions/context.js'
 import { ChatWebSocket } from './chatWebSocket'
 import { LiveWebSocket } from './liveWebSocket'
 import { mentionCache } from './mentionCache'
-import { KickChatManager, fetchKickChannelMe, getKickChatUserCount, sendKickMessage } from './kickChatManager'
+import {
+  KickChatManager,
+  fetchKickChannelMe,
+  fetchKickChatSettings,
+  fetchKickSilencedUsers,
+  fetchKickLeaderboards,
+  fetchKickKicksLeaderboard,
+  fetchKickPinnedGifts,
+  getKickChatUserCount,
+  sendKickMessage,
+} from './kickChatManager'
 import { YouTubeChatManager } from './youtubeChatManager'
 import { TwitchChatManager } from './twitchChatManager'
 import { getChannelIdByLogin, sendChatMessage as sendTwitchChatMessageGql } from './twitchGqlSend'
@@ -3746,6 +3756,10 @@ ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[
       }
 
       kickChatManager.on('message', (msg) => safeSend('kick-chat-message', msg))
+      kickChatManager.on('messageDeleted', (payload) => safeSend('kick-chat-message-deleted', payload))
+      kickChatManager.on('userBanned', (payload) => safeSend('kick-chat-user-banned', payload))
+      kickChatManager.on('userUnbanned', (payload) => safeSend('kick-chat-user-unbanned', payload))
+      kickChatManager.on('pusherError', (payload) => safeSend('kick-chat-pusher-error', payload))
     }
 
     await kickChatManager.setTargets(slugs)
@@ -3822,6 +3836,59 @@ ipcMain.handle('kick-channel-me', async (_event, payload: { slug: string }) => {
     return { success: true, data }
   } catch {
     return { success: false, data: null }
+  }
+})
+
+ipcMain.handle('kick-chat-settings', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return { success: false, data: null }
+    const data = await fetchKickChatSettings(slug)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
+ipcMain.handle('kick-silenced-users', async () => {
+  try {
+    const data = await fetchKickSilencedUsers()
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
+ipcMain.handle('kick-leaderboards', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return { success: false, data: null }
+    const data = await fetchKickLeaderboards(slug)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
+ipcMain.handle('kick-kicks-leaderboard', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return { success: false, data: null }
+    const data = await fetchKickKicksLeaderboard(slug)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+})
+
+ipcMain.handle('kick-pinned-gifts', async (_event, payload: { slug: string }) => {
+  try {
+    const slug = typeof payload?.slug === 'string' ? payload.slug.trim() : ''
+    if (!slug) return { success: false, data: null }
+    const data = await fetchKickPinnedGifts(slug)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
   }
 })
 

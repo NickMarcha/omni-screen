@@ -466,6 +466,104 @@ export async function fetchKickChannelMe(slug: string): Promise<KickChannelMe | 
   }
 }
 
+async function kickRequestTextWebKick(url: string): Promise<{ status: number; bodyText: string }> {
+  const { status, bodyText } = await kickRequestText(url, {
+    accept: 'application/json',
+    origin: 'https://web.kick.com',
+    referer: 'https://web.kick.com/',
+  })
+  return { status, bodyText }
+}
+
+/** GET web.kick.com/api/v1/channels/{channelId}/chat/settings — chat settings (followers-only, slow mode, etc.). */
+export async function fetchKickChatSettings(slug: string): Promise<Record<string, unknown> | null> {
+  try {
+    const info = await fetchKickChannelInfo(slug)
+    const channelId = info.channelId
+    if (!channelId || !Number.isFinite(channelId)) return null
+    const url = `https://web.kick.com/api/v1/channels/${channelId}/chat/settings`
+    const { status, bodyText } = await kickRequestTextWebKick(url)
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<Record<string, unknown>>(bodyText || '')
+    return data
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] chat_settings_fetch_failed', [slug, e instanceof Error ? e.message : String(e)])
+    return null
+  }
+}
+
+/** GET kick.com/api/v2/silenced-users — global silenced users (requires session). */
+export async function fetchKickSilencedUsers(): Promise<{ data: unknown[] } | null> {
+  try {
+    const url = 'https://kick.com/api/v2/silenced-users'
+    const { status, bodyText } = await kickRequestText(url, {
+      accept: 'application/json',
+      origin: 'https://kick.com',
+      referer: 'https://kick.com/',
+    })
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<{ data?: unknown[] }>(bodyText || '')
+    return data ? { data: data.data ?? [] } : null
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] silenced_users_fetch_failed', [e instanceof Error ? e.message : String(e)])
+    return null
+  }
+}
+
+/** GET kick.com/api/v2/channels/{slug}/leaderboards — gifts leaderboards. */
+export async function fetchKickLeaderboards(slug: string): Promise<Record<string, unknown> | null> {
+  try {
+    const s = String(slug || '').trim()
+    if (!s) return null
+    const url = `https://kick.com/api/v2/channels/${encodeURIComponent(s)}/leaderboards`
+    const { status, bodyText } = await kickRequestText(url, {
+      accept: 'application/json',
+      origin: 'https://kick.com',
+      referer: `https://kick.com/${encodeURIComponent(s)}`,
+    })
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<Record<string, unknown>>(bodyText || '')
+    return data
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] leaderboards_fetch_failed', [slug, e instanceof Error ? e.message : String(e)])
+    return null
+  }
+}
+
+/** GET web.kick.com/api/v1/kicks/{channelId}/leaderboard — kicks gifts leaderboard. */
+export async function fetchKickKicksLeaderboard(slug: string): Promise<Record<string, unknown> | null> {
+  try {
+    const info = await fetchKickChannelInfo(slug)
+    const channelId = info.channelId
+    if (!channelId || !Number.isFinite(channelId)) return null
+    const url = `https://web.kick.com/api/v1/kicks/${channelId}/leaderboard`
+    const { status, bodyText } = await kickRequestTextWebKick(url)
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<Record<string, unknown>>(bodyText || '')
+    return data
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] kicks_leaderboard_fetch_failed', [slug, e instanceof Error ? e.message : String(e)])
+    return null
+  }
+}
+
+/** GET web.kick.com/api/v1/kicks/{channelId}/pinned-gifts — pinned gifts. */
+export async function fetchKickPinnedGifts(slug: string): Promise<Record<string, unknown> | null> {
+  try {
+    const info = await fetchKickChannelInfo(slug)
+    const channelId = info.channelId
+    if (!channelId || !Number.isFinite(channelId)) return null
+    const url = `https://web.kick.com/api/v1/kicks/${channelId}/pinned-gifts`
+    const { status, bodyText } = await kickRequestTextWebKick(url)
+    if (status < 200 || status >= 300) return null
+    const data = safeJsonParse<Record<string, unknown>>(bodyText || '')
+    return data
+  } catch (e) {
+    fileLogger.writeLog('warn', 'main', '[Kick] pinned_gifts_fetch_failed', [slug, e instanceof Error ? e.message : String(e)])
+    return null
+  }
+}
+
 async function sendKickMessageToChatroom(
   chatroomId: number,
   slug: string,
@@ -871,10 +969,66 @@ export class KickChatManager extends EventEmitter {
 
   private handlePusherEvent(msg: any): void {
     const ev = String(msg?.event || '')
-    if (ev !== 'App\\Events\\ChatMessageEvent') return
-
     const channel = String(msg?.channel || '')
     const dataRaw = msg?.data
+
+    if (ev === 'pusher:error') {
+      const data = typeof dataRaw === 'object' && dataRaw !== null ? dataRaw : safeJsonParse<any>(String(dataRaw || '{}'))
+      const code = data?.code
+      const message = typeof data?.message === 'string' ? data.message : String(data?.message ?? '')
+      fileLogger.writeLog('warn', 'main', '[Kick] Pusher error', [channel, code, message])
+      this.emit('pusherError', { channel, code, message })
+      return
+    }
+
+    if (ev === 'App\\Events\\MessageDeletedEvent') {
+      const parsed = safeJsonParse<any>(typeof dataRaw === 'string' ? dataRaw : JSON.stringify(dataRaw ?? {}))
+      if (!parsed) return
+      const messageId = parsed?.message?.id ?? parsed?.id
+      const chatroomId = this.channelToChatroomId(channel)
+      const slug = chatroomId ? this.chatroomToSlug.get(chatroomId) || 'unknown' : 'unknown'
+      this.emit('messageDeleted', {
+        slug,
+        chatroomId: chatroomId ?? 0,
+        messageId: typeof messageId === 'string' ? messageId : String(messageId ?? ''),
+        aiModerated: Boolean(parsed?.aiModerated),
+        violatedRules: Array.isArray(parsed?.violatedRules) ? parsed.violatedRules : [],
+      })
+      return
+    }
+
+    if (ev === 'App\\Events\\UserBannedEvent') {
+      const parsed = safeJsonParse<any>(typeof dataRaw === 'string' ? dataRaw : JSON.stringify(dataRaw ?? {}))
+      if (!parsed) return
+      const chatroomId = this.channelToChatroomId(channel)
+      const slug = chatroomId ? this.chatroomToSlug.get(chatroomId) || 'unknown' : 'unknown'
+      this.emit('userBanned', {
+        slug,
+        chatroomId: chatroomId ?? 0,
+        user: parsed?.user ?? {},
+        bannedBy: parsed?.banned_by ?? {},
+        permanent: Boolean(parsed?.permanent),
+      })
+      return
+    }
+
+    if (ev === 'App\\Events\\UserUnbannedEvent') {
+      const parsed = safeJsonParse<any>(typeof dataRaw === 'string' ? dataRaw : JSON.stringify(dataRaw ?? {}))
+      if (!parsed) return
+      const chatroomId = this.channelToChatroomId(channel)
+      const slug = chatroomId ? this.chatroomToSlug.get(chatroomId) || 'unknown' : 'unknown'
+      this.emit('userUnbanned', {
+        slug,
+        chatroomId: chatroomId ?? 0,
+        user: parsed?.user ?? {},
+        unbannedBy: parsed?.unbanned_by ?? {},
+        permanent: Boolean(parsed?.permanent),
+      })
+      return
+    }
+
+    if (ev !== 'App\\Events\\ChatMessageEvent') return
+
     const parsed = safeJsonParse<any>(typeof dataRaw === 'string' ? dataRaw : JSON.stringify(dataRaw ?? {}))
     if (!parsed) {
       fileLogger.writeWsDiscrepancy('kick', 'chat_message_parse_error', { channel, preview: String(dataRaw || '').slice(0, 2000) })
@@ -887,6 +1041,14 @@ export class KickChatManager extends EventEmitter {
     if (!kickMsg) return
     if (this.markSeen(chatroomId, kickMsg.id)) return
     this.emit('message', kickMsg)
+  }
+
+  /** Extract chatroom id from Pusher channel name (e.g. chatrooms.1764849.v2 or chatroom_1764849 -> 1764849). */
+  private channelToChatroomId(channel: string): number | null {
+    const m = channel.match(/chatrooms?\.(\d+)/) || channel.match(/chatroom_(\d+)/)
+    if (!m) return null
+    const n = Number(m[1])
+    return Number.isFinite(n) ? n : null
   }
 }
 
