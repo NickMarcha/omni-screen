@@ -451,6 +451,12 @@ export class YouTubeChatManager extends EventEmitter {
           controller.signal,
         )
 
+        try {
+          fileLogger.writeChatHistory('youtube', JSON.stringify(json))
+        } catch {
+          // ignore
+        }
+
         const actions = json?.continuationContents?.liveChatContinuation?.actions ?? []
         const msgs = extractMessagesFromActions(videoId, actions)
         if (!state.sawAnyMessages && msgs.length > 0) {

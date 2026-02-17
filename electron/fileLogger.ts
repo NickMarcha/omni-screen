@@ -81,6 +81,9 @@ class FileLogger {
   private __dirname = path.dirname(fileURLToPath(import.meta.url))
   private _logLevel: LogLevel = 'normal'
   private _logLevelLoaded = false
+  private _logChatHistory = false
+  private _logChatHistoryLoaded = false
+  private chatHistoryStream: fs.WriteStream | null = null
 
   constructor() {
     // Logs directory will be resolved lazily when initialize() is called
@@ -101,18 +104,22 @@ class FileLogger {
   }
 
   private loadLogLevel(): void {
-    if (this._logLevelLoaded) return
+    if (this._logLevelLoaded && this._logChatHistoryLoaded) return
     this._logLevelLoaded = true
+    this._logChatHistoryLoaded = true
     try {
       const p = this.getLogLevelPath()
       if (!p) return
       const raw = fs.readFileSync(p, 'utf8')
-      const data = JSON.parse(raw) as { logLevel?: string }
+      const data = JSON.parse(raw) as { logLevel?: string; logChatHistory?: boolean }
       if (data.logLevel === 'verbose' || data.logLevel === 'normal' || data.logLevel === 'debug') {
         this._logLevel = data.logLevel
       }
+      if (typeof data.logChatHistory === 'boolean') {
+        this._logChatHistory = data.logChatHistory
+      }
     } catch {
-      // keep default 'normal'
+      // keep defaults
     }
   }
 
@@ -126,7 +133,55 @@ class FileLogger {
     this._logLevel = level
     try {
       const p = this.getLogLevelPath()
-      if (p) fs.writeFileSync(p, JSON.stringify({ logLevel: level }), 'utf8')
+      if (p) {
+        const data = { logLevel: level, logChatHistory: this.getLogChatHistory() }
+        fs.writeFileSync(p, JSON.stringify(data), 'utf8')
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  getLogChatHistory(): boolean {
+    this.loadLogLevel()
+    return this._logChatHistory
+  }
+
+  setLogChatHistory(enabled: boolean): void {
+    this._logChatHistoryLoaded = true
+    this._logChatHistory = enabled
+    if (!enabled && this.chatHistoryStream) {
+      try {
+        this.chatHistoryStream.end()
+      } catch {
+        // ignore
+      }
+      this.chatHistoryStream = null
+    }
+    try {
+      const p = this.getLogLevelPath()
+      if (p) {
+        const data = { logLevel: this.getLogLevel(), logChatHistory: enabled }
+        fs.writeFileSync(p, JSON.stringify(data), 'utf8')
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Log raw chat/websocket message for debug. Only writes when Log chat history is enabled. */
+  writeChatHistory(source: string, raw: string): void {
+    if (!this.getLogChatHistory()) return
+    try {
+      if (!this.chatHistoryStream) {
+        const logsDir = this.getLogsDirectory()
+        const filename = 'chat-history.log'
+        const filePath = path.join(logsDir, filename)
+        this.chatHistoryStream = fs.createWriteStream(filePath, { flags: 'a' })
+      }
+      const ts = new Date().toISOString()
+      const preview = raw.length > 8000 ? raw.slice(0, 8000) + '\n...[truncated]' : raw
+      this.chatHistoryStream.write(`[${ts}] [${source}] ${preview}\n`)
     } catch {
       // ignore
     }
@@ -414,6 +469,14 @@ class FileLogger {
       this.logStream.write(`[${iso}] [INFO] [MAIN] === Application Session Ended ===\n`)
       this.logStream.end()
       this.logStream = null
+    }
+    if (this.chatHistoryStream) {
+      try {
+        this.chatHistoryStream.end()
+      } catch {
+        // ignore
+      }
+      this.chatHistoryStream = null
     }
     if (this.errorStream) {
       // Don't write session-end to error log; it's not an error

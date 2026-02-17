@@ -440,9 +440,12 @@ function createChatHandlers(): Record<string, ChatMessageHandler> {
 
   h.ERR = (ws, message) => {
     try {
-      const data = JSON.parse(message.substring(4)) as { description?: string }
+      const data = JSON.parse(message.substring(4)) as { description?: string; muteTimeLeft?: number }
       if (data?.description === 'alreadyvoted' || data?.description) ws.emit('pollVoteError', { description: data.description })
       if (data?.description) ws.emit('chatErr', { description: data.description })
+      if (data?.description === 'muted' && typeof data.muteTimeLeft === 'number') {
+        ws.emit('muted', { muteTimeLeft: data.muteTimeLeft })
+      }
     } catch (e) {
       console.error('[ChatWebSocket] Failed to parse ERR:', e, 'Message:', message.substring(0, 100))
     }
@@ -824,6 +827,12 @@ export class ChatWebSocket extends EventEmitter {
     } catch (error) {
       console.error('[ChatWebSocket] Failed to convert message data to string:', error)
       return // Exit early if we can't even convert to string
+    }
+
+    try {
+      fileLogger.writeChatHistory('primary-chat', message)
+    } catch {
+      // ignore
     }
 
     // Track raw message types by first token (e.g. MSG, HISTORY, JOIN, ...)

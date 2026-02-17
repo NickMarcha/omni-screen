@@ -104,6 +104,12 @@ export class TwitchChatManager extends EventEmitter {
     })
 
     ws.on('message', (data: WebSocket.Data) => {
+      const raw = data.toString()
+      try {
+        fileLogger.writeChatHistory('twitch', raw)
+      } catch {
+        // ignore
+      }
       for (const line of splitLines(data)) {
         this.handleLine(line)
       }

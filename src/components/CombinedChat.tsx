@@ -1356,6 +1356,8 @@ function CombinedChat({
   const [primaryChatMeUser, setPrimaryChatMeUser] = useState<{ features?: string[]; subscription?: { tier?: number } } | null>(null)
   /** Current user's nick from ME event (for own-message highlight). */
   const [primaryChatMeNick, setPrimaryChatMeNick] = useState<string | null>(null)
+  /** Mute timer: seconds left until we can chat again (from ERR muted, DEATH, or MUTE). */
+  const [muteTimeLeftSeconds, setMuteTimeLeftSeconds] = useState<number | null>(null)
   /** User tooltip (right-click on message): show created date, watching, flairs, Whisper, Rustlesearch; if message is highlighted, which terms matched. */
   const [userTooltip, setUserTooltip] = useState<{
     nick: string
@@ -1548,6 +1550,8 @@ function CombinedChat({
     setItems((prev) => trimToLimit([...prev, ...newItems], wasAtBottomRef.current))
     setUpdateSeq((v) => v + 1)
   }
+  const appendItemsRef = useRef(appendItems)
+  appendItemsRef.current = appendItems
 
   const emotePattern = useMemo(() => {
     if (emotesMap.size === 0) return null
@@ -2114,7 +2118,18 @@ function CombinedChat({
       const desc = data?.description?.trim()
       if (desc && desc !== 'alreadyvoted') setWhisperSendError(desc)
     }
+    const handleMuted = (_event: any, payload: { muteTimeLeft?: number } | null) => {
+      if (!alive) return
+      const s = typeof payload?.muteTimeLeft === 'number' ? Math.max(0, Math.floor(payload.muteTimeLeft)) : null
+      setMuteTimeLeftSeconds(s)
+    }
+    const handleMuteCleared = () => {
+      if (!alive) return
+      setMuteTimeLeftSeconds(null)
+    }
     window.ipcRenderer.on('chat-websocket-err', handleChatErr)
+    window.ipcRenderer.on('chat-websocket-muted', handleMuted)
+    window.ipcRenderer.on('chat-websocket-mute-cleared', handleMuteCleared)
 
     return () => {
       alive = false
@@ -2130,6 +2145,8 @@ function CombinedChat({
       window.ipcRenderer.off('chat-websocket-ban', handleBan)
       window.ipcRenderer.off('chat-websocket-unban', handleUnban)
       window.ipcRenderer.off('chat-websocket-err', handleChatErr)
+      window.ipcRenderer.off('chat-websocket-muted', handleMuted)
+      window.ipcRenderer.off('chat-websocket-mute-cleared', handleMuteCleared)
       setPrimaryChatAuthenticated(false)
       window.ipcRenderer.off('chat-websocket-privmsg', handlePrivmsg)
       window.ipcRenderer.off('chat-websocket-connected', handleConnected)
@@ -2777,6 +2794,18 @@ function CombinedChat({
     setPrimaryChatPublicSendError(null)
   }, [primaryChatInputValue])
 
+  // Mute countdown: decrement every second when muted
+  useEffect(() => {
+    if (muteTimeLeftSeconds == null || muteTimeLeftSeconds <= 0) return
+    const id = setInterval(() => {
+      setMuteTimeLeftSeconds((prev) => {
+        if (prev == null || prev <= 1) return null
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [muteTimeLeftSeconds])
+
   const sendToActiveChannel = useCallback(() => {
     const text = primaryChatInputValue.trim()
     if (!text) return
@@ -2841,6 +2870,19 @@ function CombinedChat({
     },
     [sendToActiveChannel, chatChannels.length, channelSwitchKeybind]
   )
+
+  const handleSendToActiveChannel = useCallback(() => {
+    const mutedInPrimaryPublic = (muteTimeLeftSeconds ?? 0) > 0 && activeChannel?.type === primaryChatSourceId && !privViewOpen
+    if (mutedInPrimaryPublic) {
+      const s = muteTimeLeftSeconds ?? 0
+      const content = s > 60 ? `You are muted. You can chat again in ${Math.ceil(s / 60)} minutes.` : `You are muted. You can chat again in ${s} seconds.`
+      appendItemsRef.current([
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'mute', tsMs: Date.now(), content, raw: {}, seq: seqRef.current++ },
+      ])
+      return
+    }
+    sendToActiveChannel()
+  }, [sendToActiveChannel, muteTimeLeftSeconds, activeChannel?.type, primaryChatSourceId, privViewOpen])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -2941,7 +2983,7 @@ function CombinedChat({
                 ref={mergedPrimaryChatInputRef}
                 value={primaryChatInputValue}
                 onChange={setPrimaryChatInputValue}
-                onSend={sendToActiveChannel}
+                onSend={handleSendToActiveChannel}
                 onKeyDown={onPrimaryChatInputKeyDown}
                 disabled={
                   activeChannel?.type === 'kick'
@@ -2953,25 +2995,29 @@ function CombinedChat({
                 emotesMap={activeChannelEmotes}
                 primaryChatNicks={activeChannelNicks}
                 placeholder={
-                  activeChannel && 'slug' in activeChannel
-                    ? `Message Kick / ${activeChannel.slug}...`
-                    : activeChannel && 'videoId' in activeChannel && activeChannel.type === 'youtube'
-                      ? (() => {
-                          const key = `youtube:${activeChannel.videoId}`
-                          const name = getEmbedDisplayName(key)?.trim() || activeChannel.videoId
-                          return `Message YouTube / ${name}...`
-                        })()
-                      : activeChannel && 'channel' in activeChannel && activeChannel.type === 'twitch'
-                        ? `Message Twitch / ${activeChannel.channel}...`
-                        : activeWhisperUsername
-                          ? (primaryChatConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
-                          : privViewOpen
-                            ? (primaryChatConnected ? 'whisper message..' : 'Connecting...')
-                            : primaryChatPublicChatDisabled
-                              ? 'Sub only mode — subscribers can type'
-                              : (primaryChatConnected
-                                ? `Message ${(primaryChatSourceLabelText ?? 'chat').trim() || 'chat'}...`
-                                : 'Connecting...')
+                  (muteTimeLeftSeconds ?? 0) > 0 && activeChannel?.type === primaryChatSourceId && !privViewOpen
+                    ? muteTimeLeftSeconds! > 60
+                      ? `${Math.ceil(muteTimeLeftSeconds! / 60)} minutes left`
+                      : `${muteTimeLeftSeconds} seconds left`
+                    : activeChannel && 'slug' in activeChannel
+                      ? `Message Kick / ${activeChannel.slug}...`
+                      : activeChannel && 'videoId' in activeChannel && activeChannel.type === 'youtube'
+                        ? (() => {
+                            const key = `youtube:${activeChannel.videoId}`
+                            const name = getEmbedDisplayName(key)?.trim() || activeChannel.videoId
+                            return `Message YouTube / ${name}...`
+                          })()
+                        : activeChannel && 'channel' in activeChannel && activeChannel.type === 'twitch'
+                          ? `Message Twitch / ${activeChannel.channel}...`
+                          : activeWhisperUsername
+                            ? (primaryChatConnected ? `Whisper ${activeWhisperUsername}...` : 'Connecting...')
+                            : privViewOpen
+                              ? (primaryChatConnected ? 'whisper message..' : 'Connecting...')
+                              : primaryChatPublicChatDisabled
+                                ? 'Sub only mode — subscribers can type'
+                                : (primaryChatConnected
+                                  ? `Message ${(primaryChatSourceLabelText ?? 'chat').trim() || 'chat'}...`
+                                  : 'Connecting...')
                 }
                 shortcutLabel={primaryChatConnected || chatChannels.length > 1 ? focusShortcutLabel : undefined}
                 channelSwitchShortcutLabel={chatChannels.length > 1 ? channelSwitchShortcutLabel : undefined}

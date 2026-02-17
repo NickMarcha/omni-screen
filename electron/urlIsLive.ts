@@ -215,7 +215,10 @@ async function isTwitchChannelLive(login: string): Promise<{ live: boolean; erro
         relevantHeaders[k] = v
       }
     }
-    fileLogger.writeLog('error', 'main', '[url-is-live] Twitch JSON-LD parse failed', [
+    const contentType = Object.entries(headers).find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? ''
+    const isExpectedCase = status === 200 && jsonResult.parseError === 'No application/ld+json script found' && String(contentType).toLowerCase().includes('text/html')
+    const logLevel = isExpectedCase ? 'warn' : 'error'
+    fileLogger.writeLog(logLevel, 'main', '[url-is-live] Twitch JSON-LD parse failed', [
       {
         login,
         url,

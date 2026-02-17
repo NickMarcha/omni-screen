@@ -533,6 +533,11 @@ class KickPusherClient extends EventEmitter {
 
     ws.on('message', (data: WebSocket.Data) => {
       const raw = data.toString()
+      try {
+        fileLogger.writeChatHistory('kick', raw)
+      } catch {
+        // ignore
+      }
       const msg = safeJsonParse<any>(raw)
       if (!msg || typeof msg?.event !== 'string') {
         fileLogger.writeWsDiscrepancy('kick', 'non_json_message', { preview: raw.slice(0, 2000) })

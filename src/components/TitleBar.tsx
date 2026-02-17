@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-const MENU_LABELS = ['File', 'Edit', 'View', 'Window', 'Help'] as const
+const MENU_LABELS = ['File', 'Edit', 'View', 'Debug', 'Window', 'Help'] as const
 
 /** Custom title bar for frameless window: menu, drag region, minimize / maximize / close. */
 export default function TitleBar() {

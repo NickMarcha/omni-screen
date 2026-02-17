@@ -100,6 +100,11 @@ export class LiveWebSocket extends EventEmitter {
       this.ws.on('message', (data: WebSocket.Data) => {
         const raw = data.toString()
         try {
+          fileLogger.writeChatHistory('primary-live', raw)
+        } catch {
+          // ignore
+        }
+        try {
           const parsed = JSON.parse(raw)
           const type = (parsed as any)?.type
           if (typeof type === 'string') {

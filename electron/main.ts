@@ -497,6 +497,35 @@ function createApplicationMenu() {
     {
       label: 'View',
       submenu: [
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Fullscreen' },
+        { type: 'separator' },
+        {
+          label: 'Hide title bar (Alt)',
+          click: () => {
+            win?.webContents.send('title-bar-toggle')
+          }
+        }
+      ]
+    },
+    {
+      label: 'Extensions',
+      submenu: [
+        {
+          label: 'Reload extensions',
+          click: () => {
+            reloadExtensions()
+            if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+          }
+        }
+      ]
+    },
+    {
+      label: 'Debug',
+      submenu: [
         { role: 'reload', label: 'Reload' },
         { role: 'forceReload', label: 'Force Reload' },
         { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
@@ -533,29 +562,13 @@ function createApplicationMenu() {
             }
           ]
         },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Fullscreen' },
-        { type: 'separator' },
         {
-          label: 'Hide title bar (Alt)',
-          click: () => {
-            win?.webContents.send('title-bar-toggle')
-          }
-        }
-      ]
-    },
-    {
-      label: 'Extensions',
-      submenu: [
-        {
-          label: 'Reload extensions',
-          click: () => {
-            reloadExtensions()
-            if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
+          label: 'Log chat history',
+          type: 'checkbox',
+          checked: fileLogger.getLogChatHistory(),
+          click: (menuItem) => {
+            fileLogger.setLogChatHistory(menuItem.checked)
+            createApplicationMenu()
           }
         }
       ]
@@ -3270,14 +3283,16 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
         safeSend('chat-websocket-names', event)
       })
       
-      chatWebSocket.on('mute', (event) => {
+      chatWebSocket.on('mute', (event: { type?: string; mute?: { data?: string; duration?: number } }) => {
         safeSend('chat-websocket-mute', event)
+        const m = event?.mute
+        const targetNick = m?.data?.trim()?.toLowerCase()
+        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+        if (targetNick && meNick && targetNick === meNick && typeof m?.duration === 'number') {
+          safeSend('chat-websocket-muted', { muteTimeLeft: m.duration })
+        }
       })
 
-      chatWebSocket.on('unmute', (event) => {
-        safeSend('chat-websocket-unmute', event)
-      })
-      
       chatWebSocket.on('me', (event) => {
         cachedPrimaryChatMe = event
         safeSend('chat-websocket-me', event)
@@ -3336,8 +3351,27 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
         safeSend('chat-websocket-privmsg', event)
       })
 
-      chatWebSocket.on('death', (event) => {
+      chatWebSocket.on('muted', (event: { muteTimeLeft?: number }) => {
+        safeSend('chat-websocket-muted', event)
+      })
+
+      chatWebSocket.on('death', (event: { type?: string; death?: { nick?: string; duration?: number } }) => {
         safeSend('chat-websocket-death', event)
+        const death = event?.death
+        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+        if (death && meNick && death.nick?.trim()?.toLowerCase() === meNick && typeof death.duration === 'number') {
+          safeSend('chat-websocket-muted', { muteTimeLeft: death.duration })
+        }
+      })
+
+      chatWebSocket.on('unmute', (event: { type?: string; unmute?: { nick?: string; data?: string } }) => {
+        safeSend('chat-websocket-unmute', event)
+        const u = event?.unmute
+        const unmuteNick = (typeof u?.data === 'string' ? u.data : u?.nick)?.trim()?.toLowerCase()
+        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+        if (unmuteNick && meNick && unmuteNick === meNick) {
+          safeSend('chat-websocket-mute-cleared')
+        }
       })
 
       chatWebSocket.on('unban', (event) => {
