@@ -1210,8 +1210,8 @@ function CombinedChat({
   onCountChange?: (count: number) => void
   /** Called when primary chat user count (from NAMES/JOIN/QUIT) changes, for header display. */
   onPrimaryChatUserCountChange?: (count: number) => void
-  /** Called with full breakdown (primary + per Kick slug) for header total/cycle and hover tooltip. */
-  onCombinedUserCountsChange?: (counts: { primary: number; kick: Record<string, number> }) => void
+  /** Called with full breakdown (primary + per Kick slug + per Twitch channel) for header total/cycle and hover tooltip. */
+  onCombinedUserCountsChange?: (counts: { primary: number; kick: Record<string, number>; twitch: Record<string, number> }) => void
   /** When set, called when user clicks a link; otherwise links open in browser. */
   onOpenLink?: (url: string) => void
   /** Optional ref from parent to focus the primary chat input (e.g. for keybind). */
@@ -1306,6 +1306,8 @@ function CombinedChat({
   const [primaryChatUserNicks, setPrimaryChatUserNicks] = useState<string[]>([])
   /** Kick channel user count from API when available (slug -> count). null = API didn't return, use nicks-seen fallback. */
   const [kickUserCountBySlug, setKickUserCountBySlug] = useState<Record<string, number | null>>({})
+  /** Twitch channel nicks from IRC 353/366, JOIN/PART (for autocomplete and chatter count). */
+  const [twitchUserNicksByChannel, setTwitchUserNicksByChannel] = useState<Record<string, string[]>>({})
   const [currentPoll, setCurrentPoll] = useState<PollData | null>(null)
   const [pollOver, setPollOver] = useState(false)
   /** Server time offset (serverNow - clientNow) at POLLSTART; used so timer uses server time. */
@@ -2450,6 +2452,20 @@ function CombinedChat({
     }
   }, [])
 
+  // Twitch chat names (353/366, JOIN/PART) for autocomplete and chatter count
+  useEffect(() => {
+    const handleNames = (_event: unknown, payload: { channel?: string; names?: string[] }) => {
+      const channel = typeof payload?.channel === 'string' ? payload.channel.trim().toLowerCase() : ''
+      const names = Array.isArray(payload?.names) ? payload.names : []
+      if (!channel) return
+      setTwitchUserNicksByChannel((prev) => ({ ...prev, [channel]: names }))
+    }
+    window.ipcRenderer.on('twitch-chat-names', handleNames)
+    return () => {
+      window.ipcRenderer.off('twitch-chat-names', handleNames)
+    }
+  }, [])
+
   /** Primary chat nicks for autocomplete: from NAMES/JOIN/QUIT (primaryChatUserNicks). Falls back to nicks seen in messages if WS list empty. */
   const primaryChatNicks = useMemo(() => {
     if (primaryChatUserNicks.length > 0) return primaryChatUserNicks
@@ -2460,7 +2476,7 @@ function CombinedChat({
     return Array.from(fromItems).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
   }, [primaryChatUserNicks, items])
 
-  /** Nicks for the active channel only (so autocomplete is channel-specific). Primary chat: primaryChatNicks; Kick: nicks from that slug. */
+  /** Nicks for the active channel only (so autocomplete is channel-specific). Primary chat: primaryChatNicks; Kick: nicks from that slug; Twitch: from IRC or messages. */
   const activeChannelNicks = useMemo(() => {
     if (!activeChannel) return []
     if (primaryChatSourceId && activeChannel.type === primaryChatSourceId) return primaryChatNicks
@@ -2474,8 +2490,22 @@ function CombinedChat({
       })
       return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
     }
+    if (activeChannel.type === 'twitch' && 'channel' in activeChannel) {
+      const channel = activeChannel.channel.toLowerCase()
+      const fromIrc = twitchUserNicksByChannel[channel]
+      if (fromIrc && fromIrc.length > 0) {
+        return [...fromIrc].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      }
+      const set = new Set<string>()
+      items.forEach((m) => {
+        if (m.source === 'twitch' && (m as { channel?: string }).channel?.toLowerCase() === channel && 'nick' in m && (m as { nick?: string }).nick?.trim()) {
+          set.add((m as { nick: string }).nick.trim())
+        }
+      })
+      return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    }
     return []
-  }, [activeChannel, primaryChatSourceId, primaryChatNicks, items])
+  }, [activeChannel, primaryChatSourceId, primaryChatNicks, items, twitchUserNicksByChannel])
 
   /** Emotes for the active channel only. Primary chat: full emotesMap; Kick/others: none (no channel-wide emote list in combined chat). */
   const activeChannelEmotes = useMemo(() => {
@@ -2499,6 +2529,26 @@ function CombinedChat({
     return out
   }, [enabledKickSlugs, items])
 
+  /** Per–Twitch-channel nick count (from IRC 353/366 or nicks seen in messages). */
+  const twitchNicksCountByChannel = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const ch of enabledTwitchChannels) {
+      const fromIrc = twitchUserNicksByChannel[ch.toLowerCase()]
+      if (fromIrc && fromIrc.length > 0) {
+        out[ch] = fromIrc.length
+      } else {
+        const set = new Set<string>()
+        items.forEach((m) => {
+          if (m.source === 'twitch' && (m as { channel?: string }).channel?.toLowerCase() === ch.toLowerCase() && 'nick' in m && (m as { nick?: string }).nick?.trim()) {
+            set.add((m as { nick: string }).nick.trim())
+          }
+        })
+        out[ch] = set.size
+      }
+    }
+    return out
+  }, [enabledTwitchChannels, twitchUserNicksByChannel, items])
+
   // Fetch Kick chat user count when active channel is a Kick slug (populates kickUserCountBySlug for breakdown).
   useEffect(() => {
     if (!activeChannel || activeChannel.type !== 'kick' || !('slug' in activeChannel)) return
@@ -2517,8 +2567,12 @@ function CombinedChat({
     for (const slug of enabledKickSlugs) {
       kick[slug] = kickUserCountBySlug[slug] ?? kickNicksCountBySlug[slug] ?? 0
     }
-    return { primary: primaryChatUserNicks.length, kick }
-  }, [enabledKickSlugs, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
+    const twitch: Record<string, number> = {}
+    for (const ch of enabledTwitchChannels) {
+      twitch[ch] = twitchNicksCountByChannel[ch] ?? 0
+    }
+    return { primary: primaryChatUserNicks.length, kick, twitch }
+  }, [enabledKickSlugs, enabledTwitchChannels, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug, twitchNicksCountByChannel])
 
   const prevCombinedUserCountsRef = useRef<typeof combinedUserCounts | null>(null)
   useEffect(() => {
@@ -2527,7 +2581,9 @@ function CombinedChat({
       prev &&
       prev.primary === combinedUserCounts.primary &&
       Object.keys(prev.kick).length === Object.keys(combinedUserCounts.kick).length &&
-      Object.keys(prev.kick).every((k) => prev.kick[k] === combinedUserCounts.kick[k])
+      Object.keys(prev.kick).every((k) => prev.kick[k] === combinedUserCounts.kick[k]) &&
+      Object.keys(prev.twitch).length === Object.keys(combinedUserCounts.twitch).length &&
+      Object.keys(prev.twitch).every((k) => prev.twitch[k] === combinedUserCounts.twitch[k])
     prevCombinedUserCountsRef.current = combinedUserCounts
     if (!same) onCombinedUserCountsChange?.(combinedUserCounts)
   }, [combinedUserCounts, onCombinedUserCountsChange])
@@ -2540,8 +2596,12 @@ function CombinedChat({
       const slug = activeChannel.slug
       return kickUserCountBySlug[slug] ?? kickNicksCountBySlug[slug] ?? 0
     }
+    if (activeChannel.type === 'twitch' && 'channel' in activeChannel) {
+      const channel = activeChannel.channel
+      return twitchUserNicksByChannel[channel.toLowerCase()]?.length ?? twitchNicksCountByChannel[channel] ?? 0
+    }
     return 0
-  }, [activeChannel, primaryChatSourceId, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug])
+  }, [activeChannel, primaryChatSourceId, primaryChatUserNicks.length, kickUserCountBySlug, kickNicksCountBySlug, twitchUserNicksByChannel, twitchNicksCountByChannel])
 
   const prevDisplayUserCountRef = useRef<number | null>(null)
   useEffect(() => {

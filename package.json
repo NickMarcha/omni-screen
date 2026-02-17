@@ -17,6 +17,7 @@
     "test:url-is-live": "npx tsx scripts/test-url-is-live.ts",
     "test:viewer-counts": "npx tsx scripts/test-viewer-counts.ts",
     "test:twitch-gql": "npx tsx scripts/test-twitch-gql.ts",
+    "test:twitch-irc": "npx tsx scripts/test-twitch-irc.ts",
     "check:chat-upstream": "npx tsx scripts/check-chat-upstream.ts"
   },
   "dependencies": {

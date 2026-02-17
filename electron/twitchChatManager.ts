@@ -39,6 +39,13 @@ function splitLines(data: WebSocket.Data): string[] {
   return raw.split('\r\n').filter(Boolean)
 }
 
+/** Strip IRC prefix (@ mod, + voice) from nick. */
+function stripNickPrefix(nick: string): string {
+  const s = String(nick || '').trim()
+  if (s.startsWith('@') || s.startsWith('+')) return s.slice(1)
+  return s
+}
+
 export class TwitchChatManager extends EventEmitter {
   private ws: WebSocket | null = null
   private desiredChannels = new Set<string>()
@@ -48,6 +55,11 @@ export class TwitchChatManager extends EventEmitter {
   private nick: string = `justinfan${randInt(10000, 999999)}`
 
   private url = 'wss://irc-ws.chat.twitch.tv/'
+
+  /** Chatters per channel (from 353/366, JOIN/PART). */
+  private chattersByChannel = new Map<string, Set<string>>()
+  /** Last message type per channel: '353' | '366' - used to detect new NAMES batch. */
+  private lastNamesMsgByChannel = new Map<string, '353' | '366'>()
 
   async setTargets(channels: string[]): Promise<void> {
     const next = new Set(channels.map(safeLower).filter(Boolean))
@@ -128,6 +140,8 @@ export class TwitchChatManager extends EventEmitter {
       const text = reason?.toString?.() || ''
       this.ws = null
       this.joinedChannels.clear()
+      this.chattersByChannel.clear()
+      this.lastNamesMsgByChannel.clear()
       if (!this.intentionallyClosed && this.desiredChannels.size > 0) this.scheduleReconnect()
       this.emit('disconnected', { code, reason: text })
     })
@@ -152,6 +166,8 @@ export class TwitchChatManager extends EventEmitter {
     }
     this.ws = null
     this.joinedChannels.clear()
+    this.chattersByChannel.clear()
+    this.lastNamesMsgByChannel.clear()
   }
 
   private scheduleReconnect(): void {
@@ -226,15 +242,83 @@ export class TwitchChatManager extends EventEmitter {
       }
     }
 
-    // strip optional prefix
+    // strip optional prefix (save for JOIN/PART)
+    let ircPrefix = ''
     if (rest.startsWith(':')) {
       const space = rest.indexOf(' ')
-      if (space > 0) rest = rest.slice(space + 1)
+      if (space > 0) {
+        ircPrefix = rest.slice(1, space)
+        rest = rest.slice(space + 1)
+      }
     }
 
     const firstSpace = rest.indexOf(' ')
     const command = firstSpace > 0 ? rest.slice(0, firstSpace) : rest
     const afterCmd = firstSpace > 0 ? rest.slice(firstSpace + 1) : ''
+
+    if (command === '353') {
+      // NAMES: afterCmd = "nick = #channel :user1 user2 user3"
+      const parts = afterCmd.split(' ')
+      const eqIdx = parts.indexOf('=')
+      if (eqIdx < 0 || eqIdx + 2 > parts.length) return
+      const chan = safeLower(parts[eqIdx + 1]).replace(/^#/, '')
+      const usersStart = afterCmd.indexOf(' :')
+      const usersStr = usersStart >= 0 ? afterCmd.slice(usersStart + 2) : ''
+      const users = usersStr.split(/\s+/).map(stripNickPrefix).filter(Boolean)
+
+      if (this.lastNamesMsgByChannel.get(chan) === '366') {
+        this.chattersByChannel.set(chan, new Set())
+      }
+      this.lastNamesMsgByChannel.set(chan, '353')
+      let set = this.chattersByChannel.get(chan)
+      if (!set) {
+        set = new Set()
+        this.chattersByChannel.set(chan, set)
+      }
+      users.forEach((u) => set!.add(u))
+      return
+    }
+
+    if (command === '366') {
+      // End of NAMES
+      const parts = afterCmd.split(' ')
+      if (parts.length < 2) return
+      const chan = safeLower(parts[1]).replace(/^#/, '')
+      this.lastNamesMsgByChannel.set(chan, '366')
+      const set = this.chattersByChannel.get(chan)
+      const names = Array.from(set ?? [])
+      this.emit('names', { channel: chan, names })
+      return
+    }
+
+    if (command === 'JOIN') {
+      // JOIN #channel - nick from ircPrefix (:nick!nick@host)
+      const nick = ircPrefix.split('!')[0]?.trim() || ''
+      const chan = safeLower(afterCmd.trim()).replace(/^#/, '')
+      if (chan && nick) {
+        let set = this.chattersByChannel.get(chan)
+        if (!set) {
+          set = new Set()
+          this.chattersByChannel.set(chan, set)
+        }
+        set.add(stripNickPrefix(nick))
+        this.emit('names', { channel: chan, names: Array.from(set) })
+      }
+      return
+    }
+
+    if (command === 'PART') {
+      const nick = ircPrefix.split('!')[0]?.trim() || ''
+      const chan = safeLower(afterCmd.trim()).replace(/^#/, '')
+      if (chan && nick) {
+        const set = this.chattersByChannel.get(chan)
+        if (set) {
+          set.delete(stripNickPrefix(nick))
+          this.emit('names', { channel: chan, names: Array.from(set) })
+        }
+      }
+      return
+    }
 
     if (command === 'PRIVMSG') {
       // afterCmd: "#channel :message"

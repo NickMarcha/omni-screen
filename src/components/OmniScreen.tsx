@@ -140,9 +140,10 @@ function CombinedUserCountButton(props: {
   displayedCount: number
   cycleLabel: string | null
   onCycle: () => void
-  counts: { primary: number; kick: Record<string, number> } | null
+  counts: { primary: number; kick: Record<string, number>; twitch: Record<string, number> } | null
   primaryLabel: string
   enabledKickSlugs: string[]
+  enabledTwitchChannels: string[]
 }) {
   const [hover, setHover] = useState(false)
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
@@ -185,14 +186,22 @@ function CombinedUserCountButton(props: {
         <div className="font-medium text-base-content/90 mb-1 whitespace-nowrap">Showing: {props.cycleLabel ?? '—'}</div>
         <div className="text-base-content/60 space-y-0.5">
           <div>
-            Total: {counts.primary + Object.values(counts.kick).reduce((a, b) => a + b, 0)}
+            Total:{' '}
+            {counts.primary +
+              Object.values(counts.kick).reduce((a, b) => a + b, 0) +
+              Object.values(counts.twitch ?? {}).reduce((a, b) => a + b, 0)}
           </div>
           <div>
             {props.primaryLabel || 'Primary'}: {counts.primary}
           </div>
           {props.enabledKickSlugs.map((slug) => (
-            <div key={slug}>
+            <div key={`kick-${slug}`}>
               Kick / {slug}: {counts.kick[slug] ?? 0}
+            </div>
+          ))}
+          {(props.enabledTwitchChannels ?? []).map((ch) => (
+            <div key={`twitch-${ch}`}>
+              Twitch / {ch}: {(counts.twitch ?? {})[ch] ?? 0}
             </div>
           ))}
         </div>
@@ -347,10 +356,11 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
   combinedMsgCount: number
   combinedPrimaryChatUserCount: number
   combinedDisplayedUserCount: number
-  combinedUserCounts: { primary: number; kick: Record<string, number> } | null
+  combinedUserCounts: { primary: number; kick: Record<string, number>; twitch: Record<string, number> } | null
   combinedUserCountCycleLabel: string | null
   onCycleUserCount: () => void
   enabledKickSlugs: string[]
+  enabledTwitchChannels: string[]
   primaryChatSourceLabelText: string
   setOverlayHeaderVisible: (v: boolean | ((prev: boolean) => boolean)) => void
   setCombinedChatOverlayMode: (v: boolean | ((prev: boolean) => boolean)) => void
@@ -426,6 +436,7 @@ const ChatOverlayPanel = memo(function ChatOverlayPanel(props: {
             counts={p.combinedUserCounts}
             primaryLabel={p.primaryChatSourceLabelText}
             enabledKickSlugs={p.enabledKickSlugs}
+            enabledTwitchChannels={p.enabledTwitchChannels}
           />
           <button
             type="button"
@@ -1475,7 +1486,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [combinedMsgCount, setCombinedMsgCount] = useState(0)
   const [combinedPrimaryChatUserCount, setCombinedPrimaryChatUserCount] = useState(0)
   /** Full breakdown for header: total vs per-channel cycle and hover tooltip. */
-  const [combinedUserCounts, setCombinedUserCounts] = useState<{ primary: number; kick: Record<string, number> } | null>(null)
+  const [combinedUserCounts, setCombinedUserCounts] = useState<{
+    primary: number
+    kick: Record<string, number>
+    twitch: Record<string, number>
+  } | null>(null)
   /** 0 = total, 1 = primary, 2+ = Kick by index in enabledKickSlugs. */
   const [combinedUserCountCycle, setCombinedUserCountCycle] = useState(0)
   const pinnedEmbedsRef = useRef<Map<string, LiveEmbed>>(pinnedEmbeds)
@@ -2746,26 +2761,40 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     return Array.from(new Set(chans)).sort()
   }, [selectedEmbedChatKeys])
 
-  /** User count cycle: 0 = total, 1 = primary, 2..n = Kick slugs. */
-  const combinedUserCountCycleSteps = 1 + 1 + enabledKickSlugs.length
+  /** User count cycle: 0 = total, 1 = primary, 2..n = Kick slugs, n+1..m = Twitch channels. */
+  const combinedUserCountCycleSteps =
+    1 + 1 + enabledKickSlugs.length + enabledTwitchChannels.length
   const combinedDisplayedUserCount = useMemo(() => {
     if (!combinedUserCounts) return combinedPrimaryChatUserCount
-    const total = combinedUserCounts.primary + Object.values(combinedUserCounts.kick).reduce((a, b) => a + b, 0)
+    const total =
+      combinedUserCounts.primary +
+      Object.values(combinedUserCounts.kick ?? {}).reduce((a, b) => a + b, 0) +
+      Object.values(combinedUserCounts.twitch ?? {}).reduce((a, b) => a + b, 0)
     if (combinedUserCountCycle === 0) return total
     if (combinedUserCountCycle === 1) return combinedUserCounts.primary
     const kickIdx = combinedUserCountCycle - 2
-    const slug = enabledKickSlugs[kickIdx]
-    return slug != null ? (combinedUserCounts.kick[slug] ?? 0) : total
-  }, [combinedUserCounts, combinedUserCountCycle, enabledKickSlugs, combinedPrimaryChatUserCount])
+    if (kickIdx < enabledKickSlugs.length) {
+      const slug = enabledKickSlugs[kickIdx]
+      return slug != null ? (combinedUserCounts.kick?.[slug] ?? 0) : total
+    }
+    const twitchIdx = kickIdx - enabledKickSlugs.length
+    const ch = enabledTwitchChannels[twitchIdx]
+    return ch != null ? (combinedUserCounts.twitch?.[ch] ?? 0) : total
+  }, [combinedUserCounts, combinedUserCountCycle, enabledKickSlugs, enabledTwitchChannels, combinedPrimaryChatUserCount])
 
   const combinedUserCountCycleLabel = useMemo(() => {
     if (!combinedUserCounts) return null
     if (combinedUserCountCycle === 0) return 'Total'
     if (combinedUserCountCycle === 1) return primaryChatSourceLabelText || 'Primary'
     const kickIdx = combinedUserCountCycle - 2
-    const slug = enabledKickSlugs[kickIdx]
-    return slug != null ? `Kick / ${slug}` : 'Total'
-  }, [combinedUserCountCycle, enabledKickSlugs, primaryChatSourceLabelText])
+    if (kickIdx < enabledKickSlugs.length) {
+      const slug = enabledKickSlugs[kickIdx]
+      return slug != null ? `Kick / ${slug}` : 'Total'
+    }
+    const twitchIdx = kickIdx - enabledKickSlugs.length
+    const ch = enabledTwitchChannels[twitchIdx]
+    return ch != null ? `Twitch / ${ch}` : 'Total'
+  }, [combinedUserCountCycle, enabledKickSlugs, enabledTwitchChannels, primaryChatSourceLabelText])
 
   const cycleCombinedUserCount = useCallback(() => {
     setCombinedUserCountCycle((i) => (i + 1) % combinedUserCountCycleSteps)
@@ -3449,6 +3478,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                         counts={combinedUserCounts}
                         primaryLabel={primaryChatSourceLabelText ?? ''}
                         enabledKickSlugs={enabledKickSlugs}
+                        enabledTwitchChannels={enabledTwitchChannels}
                       />
                       <button
                         type="button"
@@ -3588,6 +3618,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 combinedUserCountCycleLabel={combinedUserCountCycleLabel}
                 onCycleUserCount={cycleCombinedUserCount}
                 enabledKickSlugs={enabledKickSlugs}
+                enabledTwitchChannels={enabledTwitchChannels}
                 primaryChatSourceLabelText={primaryChatSourceLabelText ?? ''}
                 setOverlayHeaderVisible={setOverlayHeaderVisible}
                 setCombinedChatOverlayMode={setCombinedChatOverlayModeTransitioned}
@@ -4536,6 +4567,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                       counts={combinedUserCounts}
                       primaryLabel={primaryChatSourceLabelText ?? ''}
                       enabledKickSlugs={enabledKickSlugs}
+                      enabledTwitchChannels={enabledTwitchChannels}
                     />
                     <button
                       type="button"

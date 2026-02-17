@@ -3898,6 +3898,9 @@ ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: st
       }
 
       twitchChatManager.on('message', (msg) => safeSend('twitch-chat-message', msg))
+      twitchChatManager.on('names', (payload: { channel: string; names: string[] }) =>
+        safeSend('twitch-chat-names', payload),
+      )
     }
 
     await twitchChatManager.setTargets(channels)
