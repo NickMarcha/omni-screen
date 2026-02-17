@@ -3219,7 +3219,7 @@ function CombinedChat({
         )}
         <div
           ref={scrollerRef}
-          className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''} ${overlayMode && overlayCinemaMode === false ? 'rounded-lg' : ''}`}
+          className={`chat-messages-scroll overflow-y-auto p-2 space-y-1 ${overlayMode && overlayHeaderHeight != null ? 'absolute inset-0 z-0' : 'flex-1 min-h-0'} ${scrollbarVisible ? 'chat-messages-scroll-visible' : ''} ${pauseEmoteAnimationsOffScreen ? 'emote-pause-offscreen' : ''} ${overlayMode || chatAreaTransparentBackground ? 'combined-chat-overlay-messages' : ''} ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''} ${overlayMode && overlayCinemaMode === false ? 'rounded-lg' : ''}`}
           style={
             chatAreaTransparentBackground
               ? { background: 'transparent' }
@@ -3516,7 +3516,7 @@ function CombinedChat({
                         >
                           {'nick' in m ? m.nick : ''}
                         </span>
-                        {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
+                        {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon">: </span> : null}
                       </span>
                     </>
                   ) : (
