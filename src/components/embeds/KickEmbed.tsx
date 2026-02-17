@@ -163,13 +163,19 @@ export default function KickEmbed({ url, autoplay = false, mute = false, onError
                   const injected = await el.executeJavaScript(`Boolean(window.${key})`, true)
                   if (injected) return
                   const scriptUrl = 'https://r2cdn.destiny.gg/kickstiny/kickstiny.user.js'
+                  const scriptUrlFresh = scriptUrl + '?t=' + Date.now()
+                  const resp = await fetch(scriptUrlFresh, { cache: 'no-store' })
+                  const text = await resp.text()
+                  const m = text.match(/@version\s+(\S+)/)
+                  const version = m ? m[1] : 'unknown'
+                  console.log('[Omni Screen] Kickstiny loaded, version:', version)
                   const code = `
-(() => {
+(function() {
   try {
     if (window.${key}) return;
     window.${key} = true;
     const s = document.createElement("script");
-    s.src = "${scriptUrl}";
+    s.src = "${scriptUrlFresh}";
     s.async = true;
     (document.head || document.documentElement).appendChild(s);
   } catch (e) {}
