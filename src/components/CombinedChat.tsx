@@ -6,6 +6,7 @@ import PollView, { type PollData } from './PollView'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
+import broadcastIcon from '../assets/icons/broadcast.png'
 
 /** Built-in platform icons (kick, youtube, twitch). Primary chat source icon is provided by the extension via primaryChatSourceIconUrl prop. */
 const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
@@ -85,7 +86,15 @@ interface PrimaryChatBroadcastPayload {
   timestamp: number
   nick: string
   data: string
-  user: { id: number; nick: string; roles: string[]; features: string[]; createdDate: string | null }
+  user: {
+    id: number
+    nick: string
+    roles: string[]
+    features: string[]
+    createdDate: string | null
+    watching?: { platform: string | null; id: string | null } | null
+    subscription?: { tier: number; source: string } | null
+  }
   uuid: string
 }
 type PrimaryChatWsHistory = {
@@ -1774,7 +1783,29 @@ function CombinedChat({
 
   const openUserTooltip = useCallback(
     (e: React.MouseEvent, m: CombinedItem) => {
-      if (m.source.endsWith('-event') || m.source.endsWith('-system') || m.source.endsWith('-broadcast')) return
+      if (m.source.endsWith('-event') || m.source.endsWith('-system')) return
+      if (m.source.endsWith('-broadcast')) {
+        const rawB = m.raw as PrimaryChatBroadcastPayload
+        if ((rawB?.user?.id ?? -1) === -1) return
+        e.preventDefault()
+        e.stopPropagation()
+        const nick = (rawB.user?.nick ?? rawB.nick ?? '').trim()
+        if (!nick) return
+        const colorFlair = usernameColorFlair(flairsList, { features: rawB.user?.features ?? [] })
+        const contentForHighlight = getContentForHighlight(m)
+        const matchingTerms = highlightTerms.filter((term) => term.trim() && contentForHighlight.toLowerCase().includes(term.trim().toLowerCase()))
+        setUserTooltip({
+          nick,
+          source: m.source,
+          createdDate: rawB.user?.createdDate ?? undefined,
+          watching: rawB.user?.watching ?? undefined,
+          features: rawB.user?.features,
+          colorFlairName: colorFlair?.name,
+          matchingTerms: matchingTerms.length > 0 ? matchingTerms : undefined,
+        })
+        setUserTooltipPosition({ x: e.clientX, y: e.clientY })
+        return
+      }
       e.preventDefault()
       e.stopPropagation()
       const raw = m.raw
@@ -3391,19 +3422,106 @@ function CombinedChat({
             }
             if (m.source.endsWith('-broadcast')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
+              const rawB = m.raw as PrimaryChatBroadcastPayload
+              const isSystemBroadcast = (rawB.user?.id ?? -1) === -1
+              const broadcastIconEl = (
+                <img src={broadcastIcon} alt="" className="w-4 h-4 shrink-0" aria-hidden title="Broadcast" />
+              )
+              if (isSystemBroadcast) {
+                return (
+                  <div
+                    key={`msg-primary-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${rawB?.uuid ?? ''}`}
+                    className="msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border"
+                    style={{ borderColor: '#edea12' }}
+                  >
+                    {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
+                    <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0 flex-1">
+                      <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
+                        {renderPrimaryChatMessageContent(m.content ?? '')}
+                      </span>
+                    </span>
+                    <span className="shrink-0 ml-auto" aria-hidden>{broadcastIconEl}</span>
+                  </div>
+                )
+              }
+              const colorKey = primaryChatSourceId ?? 'chat'
+              const displayName = getEmbedDisplayName(colorKey)
+              const accent =
+                primaryChatAccentColor ??
+                (getEmbedColor?.(colorKey, displayName) ?? omniColorForKey(colorKey, { displayName, primaryChatSourceId }))
+              const badgeText = textColorOn(accent)
+              const userFeatures = rawB.user?.features ?? []
+              const primaryChatColorFlair =
+                showPrimaryChatSourceFlairsAndColors ? usernameColorFlair(flairsList, { features: userFeatures }) : undefined
+              const primaryChatFlairFeatures = userFeatures.filter((f: string) => flairsMapRef.current.has(f))
+              const flairClassNames = primaryChatFlairFeatures
+                .map((f) => flairsMapRef.current.get(f)?.name)
+                .filter(Boolean)
+                .join(' ')
+              const fullDatetime = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleString() : ''
+              const nick = rawB.user?.nick ?? rawB.nick ?? ''
               return (
                 <div
-                  key={`msg-primary-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${(m.raw as { uuid?: string })?.uuid ?? ''}`}
-                  className="msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border"
+                  key={`msg-primary-broadcast-user-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${rawB?.uuid ?? ''}`}
+                  className="msg-chat text-sm px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border msg-user"
                   style={{ borderColor: '#edea12' }}
+                  {...(nick.trim().toLowerCase() ? { 'data-username': nick.trim().toLowerCase() } : {})}
                 >
-                  {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
-                  <span className="msg-chat-content whitespace-pre-wrap break-words min-w-0 flex-1">
+                  <time
+                    className={`time shrink-0 ${showTimestamps ? 'text-xs text-base-content/50' : 'sr-only'}`}
+                    title={fullDatetime}
+                    data-unixtimestamp={m.tsMs}
+                  >
+                    {ts}
+                  </time>
+                  {showSourceLabels && (primaryChatSourceLabelText != null && primaryChatSourceLabelText.trim() !== '') ? (
+                    <span
+                      className="badge badge-sm shrink-0"
+                      style={{ backgroundColor: accent, borderColor: accent, color: badgeText }}
+                    >
+                      {(primaryChatSourceLabelText ?? '').trim()}
+                    </span>
+                  ) : null}
+                  {showPlatformIcons && getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId) ? (
+                    <img
+                      src={getPlatformIcon(colorKey, primaryChatSourceIconUrl, primaryChatSourceId)}
+                      alt=""
+                      className="w-4 h-4 shrink-0"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <span
+                    className="shrink-0 flex items-center gap-1 cursor-context-menu"
+                    onContextMenu={(e) => openUserTooltip(e, m)}
+                    onMouseUp={(e) => e.stopPropagation()}
+                    onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
+                  >
+                    {primaryChatFlairFeatures.length > 0 ? (
+                      <span className="inline-flex items-center">
+                        {primaryChatFlairFeatures.map((f) => {
+                          const fl = flairsMapRef.current.get(f)!
+                          return (
+                            <i key={f} className={`flair ${fl.name}`} title={fl.label} aria-hidden />
+                          )
+                        })}
+                      </span>
+                    ) : null}
+                    <span className="inline-flex items-center gap-0">
+                      <span
+                        className={`font-semibold hover:underline user ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
+                        style={primaryChatColorFlair ? undefined : { color: accent }}
+                      >
+                        {nick}
+                      </span>
+                      {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon">: </span> : null}
+                    </span>
+                  </span>
+                  <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0 flex-1">
                     <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
                       {renderPrimaryChatMessageContent(m.content ?? '')}
                     </span>
                   </span>
-                  <span className="shrink-0 ml-auto" aria-hidden title="Broadcast">📢</span>
+                  <span className="shrink-0 ml-auto" aria-hidden>{broadcastIconEl}</span>
                 </div>
               )
             }
