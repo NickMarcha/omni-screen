@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.16.0] - 2026-02-18
+
+### Added
+- **Changelog view**: Changelog button in menu (next to update) opens a modal with full changelog fetched from GitHub; markdown rendered with Tailwind Typography.
+- **Loading screen**: New loading screen for the app.
+
+### Changed
+- **Update modal**: Release notes excerpt now renders as markdown; fallback to plain text if parsing fails so users can still update.
+- **Omni screen layout**: Layout polish.
+
 ## [1.15.0] - 2026-02-18
 
 ### Added
@@ -348,11 +358,17 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/NickMarcha/omni-screen/compare/v1.15.0...v1.16.0
+[1.15.0]: https://github.com/NickMarcha/omni-screen/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/NickMarcha/omni-screen/compare/v1.13.1...v1.14.0
 [1.13.1]: https://github.com/NickMarcha/omni-screen/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/NickMarcha/omni-screen/compare/v1.12.0...v1.13.0
+[1.12.0]: https://github.com/NickMarcha/omni-screen/compare/v1.11.0...v1.12.0
+[1.11.0]: https://github.com/NickMarcha/omni-screen/compare/v1.10.0...v1.11.0
+[1.10.0]: https://github.com/NickMarcha/omni-screen/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/NickMarcha/omni-screen/compare/v1.8.1...v1.9.0
+[1.8.1]: https://github.com/NickMarcha/omni-screen/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/NickMarcha/omni-screen/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/NickMarcha/omni-screen/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/NickMarcha/omni-screen/compare/v1.7.0...v1.7.1
