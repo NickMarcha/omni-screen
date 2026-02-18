@@ -29,6 +29,8 @@ import infoSvg from '../assets/icons/feathericons/info.svg?raw'
 import copySvg from '../assets/icons/feathericons/copy.svg?raw'
 import edit3Svg from '../assets/icons/feathericons/edit-3.svg?raw'
 import deleteSvg from '../assets/icons/feathericons/delete.svg?raw'
+import chevronRightSvg from '../assets/icons/feathericons/chevron-right.svg?raw'
+import chevronDownSvg from '../assets/icons/feathericons/chevron-down.svg?raw'
 
 const ICONS: Record<string, string> = {
   'pie-chart': pieChartSvg,
@@ -62,6 +64,8 @@ const ICONS: Record<string, string> = {
   copy: copySvg,
   'edit-3': edit3Svg,
   delete: deleteSvg,
+  'chevron-right': chevronRightSvg,
+  'chevron-down': chevronDownSvg,
 }
 
 export type IconName = keyof typeof ICONS

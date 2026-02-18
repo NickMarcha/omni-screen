@@ -224,6 +224,8 @@ function Menu({ onNavigate }: MenuProps) {
   const [communityManifests, setCommunityManifests] = useState<Record<string, { id: string; name: string; description?: string; icon?: string; tags?: string[] } | null>>({})
   const [extensionActionStatus, setExtensionActionStatus] = useState<string | null>(null)
   const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
+  const [themeSectionExpanded, setThemeSectionExpanded] = useState(false)
+  const [userscriptsSectionExpanded, setUserscriptsSectionExpanded] = useState(false)
 
   // Connections: pasted cookie strings per platform (local state only; Save sends to main). Extension platforms get keys when CONNECTIONS_PLATFORMS includes them; use ?? '' when reading.
   const [connectionsDraft, setConnectionsDraft] = useState<Record<string, string>>({
@@ -497,10 +499,10 @@ function Menu({ onNavigate }: MenuProps) {
     setPrefsDraft(getAppPreferences())
   }, [settingsOpen])
 
-  const saveSettings = useCallback(() => {
+  // Apply changes immediately when prefs change
+  useEffect(() => {
     setAppPreferences(prefsDraft)
     applyThemeToDocument(prefsDraft.theme)
-    setSettingsOpen(false)
   }, [prefsDraft])
 
   const resetSettings = useCallback(() => {
@@ -664,122 +666,178 @@ function Menu({ onNavigate }: MenuProps) {
             <h3 className="font-bold text-lg mb-6">App Settings</h3>
 
             <div className="space-y-6">
-              <div className="border border-base-200 rounded-lg p-5">
-                <div className="font-semibold mb-4">Theme</div>
+              <div className="border border-base-200 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-base-200/50 transition-colors"
+                  onClick={() => setThemeSectionExpanded((e) => !e)}
+                >
+                  <Icon name={themeSectionExpanded ? 'chevron-down' : 'chevron-right'} size={18} className="shrink-0 text-base-content/60" />
+                  <span className="font-semibold">Theme</span>
+                  <div className="flex gap-1.5 ml-auto shrink-0" aria-hidden>
+                    <span className="w-5 h-5 rounded border border-base-300 bg-primary" title="Primary" />
+                    <span className="w-5 h-5 rounded border border-base-300 bg-secondary" title="Secondary" />
+                    <span className="w-5 h-5 rounded border border-base-300 bg-accent" title="Accent" />
+                  </div>
+                </button>
+                {themeSectionExpanded && (
+                  <div className="px-4 pb-4 pt-0 space-y-4 border-t border-base-200">
+                    <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-4 items-center pt-4">
+                      <label className="label py-0 pr-0">
+                        <span className="label-text">Mode</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-48"
+                        value={prefsDraft.theme.mode}
+                        onChange={(e) =>
+                          setPrefsDraft((p) => ({
+                            ...p,
+                            theme: { ...p.theme, mode: e.target.value as any },
+                          }))
+                        }
+                      >
+                        <option value="system">System</option>
+                        <option value="light">Light</option>
+                        <option value="dark">Dark</option>
+                      </select>
 
-                <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-4 items-center">
-                  <label className="label py-0 pr-0">
-                    <span className="label-text">Mode</span>
-                  </label>
-                  <select
-                    className="select select-bordered w-48"
-                    value={prefsDraft.theme.mode}
-                    onChange={(e) =>
-                      setPrefsDraft((p) => ({
-                        ...p,
-                        theme: { ...p.theme, mode: e.target.value as any },
-                      }))
-                    }
-                  >
-                    <option value="system">System</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                  </select>
+                      <label className="label py-0 pr-0">
+                        <span className="label-text">Light theme</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-48"
+                        value={prefsDraft.theme.lightTheme}
+                        disabled={prefsDraft.theme.mode === 'dark'}
+                        onChange={(e) =>
+                          setPrefsDraft((p) => ({
+                            ...p,
+                            theme: { ...p.theme, lightTheme: e.target.value as any },
+                          }))
+                        }
+                      >
+                        {lightThemes.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
 
-                  <label className="label py-0 pr-0">
-                    <span className="label-text">Light theme</span>
-                  </label>
-                  <select
-                    className="select select-bordered w-48"
-                    value={prefsDraft.theme.lightTheme}
-                    disabled={prefsDraft.theme.mode === 'dark'}
-                    onChange={(e) =>
-                      setPrefsDraft((p) => ({
-                        ...p,
-                        theme: { ...p.theme, lightTheme: e.target.value as any },
-                      }))
-                    }
-                  >
-                    {lightThemes.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                      <label className="label py-0 pr-0">
+                        <span className="label-text">Dark theme</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-48"
+                        value={prefsDraft.theme.darkTheme}
+                        disabled={prefsDraft.theme.mode === 'light'}
+                        onChange={(e) =>
+                          setPrefsDraft((p) => ({
+                            ...p,
+                            theme: { ...p.theme, darkTheme: e.target.value as any },
+                          }))
+                        }
+                      >
+                        {darkThemes.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
 
-                  <label className="label py-0 pr-0">
-                    <span className="label-text">Dark theme</span>
-                  </label>
-                  <select
-                    className="select select-bordered w-48"
-                    value={prefsDraft.theme.darkTheme}
-                    disabled={prefsDraft.theme.mode === 'light'}
-                    onChange={(e) =>
-                      setPrefsDraft((p) => ({
-                        ...p,
-                        theme: { ...p.theme, darkTheme: e.target.value as any },
-                      }))
-                    }
-                  >
-                    {darkThemes.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                      <label className="label py-0 pr-0">
+                        <span className="label-text">Embed theme</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-48"
+                        value={prefsDraft.theme.embedTheme}
+                        onChange={(e) =>
+                          setPrefsDraft((p) => ({
+                            ...p,
+                            theme: { ...p.theme, embedTheme: e.target.value as any },
+                          }))
+                        }
+                      >
+                        <option value="follow">Follow app theme</option>
+                        <option value="light">Light</option>
+                        <option value="dark">Dark</option>
+                      </select>
+                    </div>
 
-                  <label className="label py-0 pr-0">
-                    <span className="label-text">Embed theme</span>
-                  </label>
-                  <select
-                    className="select select-bordered w-48"
-                    value={prefsDraft.theme.embedTheme}
-                    onChange={(e) =>
-                      setPrefsDraft((p) => ({
-                        ...p,
-                        theme: { ...p.theme, embedTheme: e.target.value as any },
-                      }))
-                    }
-                  >
-                    <option value="follow">Follow app theme</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                  </select>
-                </div>
+                    <div className="pt-2 border-t border-base-200">
+                      <div className="text-xs font-medium text-base-content/60 mb-2">Theme colors</div>
+                      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 items-center text-sm">
+                        {[
+                          { label: 'Primary', class: 'bg-primary', title: 'Primary brand color. The main color of your brand.' },
+                          { label: 'Secondary', class: 'bg-secondary', title: 'Secondary brand color. The optional, secondary color of your brand.' },
+                          { label: 'Accent', class: 'bg-accent', title: 'Accent brand color. The optional, accent color of your brand.' },
+                          { label: 'Neutral', class: 'bg-neutral', title: 'Neutral dark color. For not-saturated parts of UI.' },
+                          { label: 'Base 100', class: 'bg-base-100', title: 'Base surface color of page. Used for blank backgrounds.' },
+                          { label: 'Base 200', class: 'bg-base-200', title: 'Base color, darker shade. To create elevations.' },
+                          { label: 'Base 300', class: 'bg-base-300', title: 'Base color, even more darker shade. To create elevations.' },
+                          { label: 'Base content', class: 'bg-base-content', title: 'Foreground content color to use on base color.' },
+                          { label: 'Info', class: 'bg-info', title: 'Info color. For informative/helpful messages.' },
+                          { label: 'Success', class: 'bg-success', title: 'Success color. For success/safe messages.' },
+                          { label: 'Warning', class: 'bg-warning', title: 'Warning color. For warning/caution messages.' },
+                          { label: 'Error', class: 'bg-error', title: 'Error color. For error/danger/destructive messages.' },
+                        ].map(({ label, class: bgClass, title }) => (
+                          <div key={label} className="flex items-center gap-2">
+                            <span className="label-text w-24 shrink-0" title={title}>{label}</span>
+                            <div
+                              className={`w-8 h-6 rounded border border-base-300 ${bgClass}`}
+                              title={title}
+                              aria-hidden
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="border border-base-200 rounded-lg p-5">
-                <div className="font-semibold mb-4">Userscripts</div>
-
-                <div className="space-y-4">
-                  <label className="flex items-start justify-between gap-4 py-1">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium">Kick embeds: Kickstiny</div>
-                      <div className="text-xs text-base-content/60 mt-1">
-                        Injects kickstiny.user.js into Kick player embeds for improved video controls.
-                      </div>
-                      <a
-                        href="https://github.com/destinygg/kickstiny"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="link link-primary text-xs mt-0.5 inline-block"
-                      >
-                        Kickstiny (GitHub)
-                      </a>
+              <div className="border border-base-200 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-base-200/50 transition-colors"
+                  onClick={() => setUserscriptsSectionExpanded((e) => !e)}
+                >
+                  <Icon name={userscriptsSectionExpanded ? 'chevron-down' : 'chevron-right'} size={18} className="shrink-0 text-base-content/60" />
+                  <span className="font-semibold">Userscripts</span>
+                </button>
+                {userscriptsSectionExpanded && (
+                  <div className="px-4 pb-4 pt-0 space-y-4 border-t border-base-200">
+                    <div className="space-y-4 pt-4">
+                      <label className="flex items-start justify-between gap-4 py-1">
+                        <div className="min-w-0 flex-1">
+                          <div className={`font-medium ${prefsDraft.userscripts.kickstiny ? 'text-success' : 'text-error'}`}>
+                            Kick embeds: Kickstiny
+                          </div>
+                          <div className="text-xs text-base-content/60 mt-1">
+                            Injects kickstiny.user.js into Kick player embeds for improved video controls.
+                          </div>
+                          <a
+                            href="https://github.com/destinygg/kickstiny"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="link link-primary text-xs mt-0.5 inline-block"
+                          >
+                            Kickstiny (GitHub)
+                          </a>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className={`toggle toggle-sm flex-shrink-0 mt-0.5 ${prefsDraft.userscripts.kickstiny ? 'toggle-success' : 'toggle-error'}`}
+                          checked={prefsDraft.userscripts.kickstiny}
+                          onChange={(e) =>
+                            setPrefsDraft((p) => ({
+                              ...p,
+                              userscripts: { ...p.userscripts, kickstiny: e.target.checked },
+                            }))
+                          }
+                        />
+                      </label>
                     </div>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm flex-shrink-0 mt-0.5"
-                      checked={prefsDraft.userscripts.kickstiny}
-                      onChange={(e) =>
-                        setPrefsDraft((p) => ({
-                          ...p,
-                          userscripts: { ...p.userscripts, kickstiny: e.target.checked },
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -787,11 +845,8 @@ function Menu({ onNavigate }: MenuProps) {
               <button className="btn btn-ghost" onClick={resetSettings}>
                 Reset
               </button>
-              <button className="btn btn-outline" onClick={() => setSettingsOpen(false)}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" onClick={saveSettings}>
-                Save
+              <button className="btn btn-primary" onClick={() => setSettingsOpen(false)}>
+                Close
               </button>
             </div>
           </div>

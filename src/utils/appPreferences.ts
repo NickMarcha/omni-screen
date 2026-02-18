@@ -31,7 +31,6 @@ export type DarkTheme =
   | 'luxury'
   | 'dracula'
   | 'business'
-  | 'acid'
   | 'night'
   | 'coffee'
   | 'dim'
@@ -92,7 +91,6 @@ export const darkThemes: DarkTheme[] = [
   'luxury',
   'dracula',
   'business',
-  'acid',
   'night',
   'coffee',
   'dim',

@@ -275,7 +275,7 @@ interface Keybind {
 // Theme settings
 type ThemeMode = 'system' | 'light' | 'dark'
 type LightTheme = 'light' | 'cupcake' | 'bumblebee' | 'emerald' | 'corporate' | 'retro' | 'cyberpunk' | 'valentine' | 'garden' | 'lofi' | 'pastel' | 'fantasy' | 'wireframe' | 'cmyk' | 'autumn' | 'acid' | 'lemonade' | 'winter' | 'nord' | 'caramellatte' | 'silk'
-type DarkTheme = 'dark' | 'synthwave' | 'halloween' | 'forest' | 'aqua' | 'black' | 'luxury' | 'dracula' | 'business' | 'acid' | 'night' | 'coffee' | 'dim' | 'sunset' | 'abyss'
+type DarkTheme = 'dark' | 'synthwave' | 'halloween' | 'forest' | 'aqua' | 'black' | 'luxury' | 'dracula' | 'business' | 'night' | 'coffee' | 'dim' | 'sunset' | 'abyss'
 type EmbedThemeMode = 'follow' | 'light' | 'dark'
 
 // Link opening behavior
@@ -1589,7 +1589,7 @@ export function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThe
   
   const darkThemes: DarkTheme[] = [
     'dark', 'synthwave', 'halloween', 'forest', 'aqua', 'black', 'luxury', 
-    'dracula', 'business', 'acid', 'night', 'coffee', 'dim', 'sunset', 'abyss'
+    'dracula', 'business', 'night', 'coffee', 'dim', 'sunset', 'abyss'
   ]
   
   return (
