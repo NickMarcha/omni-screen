@@ -1505,7 +1505,7 @@ async function createChatWindow(loadUrl: string): Promise<void> {
     icon: path.join(process.env.VITE_PUBLIC!, 'icon.png'),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
-    backgroundColor: '#1a1a1a',
+    ...(chatWindowTransparentBackground ? {} : { backgroundColor: '#1a1a1a' }),
     transparent: chatWindowTransparentBackground,
     resizable: !chatWindowTransparentBackground,
     webPreferences: {
