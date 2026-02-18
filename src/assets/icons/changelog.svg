@@ -1,0 +1,26 @@
+<svg viewBox="40 30 170 176" xmlns="http://www.w3.org/2000/svg">
+  <g fill="currentColor">
+    
+    <!-- Top square -->
+    <rect x="40" y="40" width="20" height="24"/>
+    
+    <!-- Top shaft -->
+    <rect x="70" y="44" width="100" height="16"/>
+    
+    <!-- Top arrowhead -->
+    <polygon points="170,30 210,52 170,74 185,52"/>
+    
+    <!-- Middle square -->
+    <rect x="40" y="106" width="20" height="24"/>
+    
+    <!-- Middle line -->
+    <rect x="70" y="110" width="140" height="16"/>
+    
+    <!-- Bottom shaft -->
+    <rect x="86" y="176" width="124" height="16"/>
+    
+    <!-- Bottom arrowhead -->
+    <polygon points="86,162 46,184 86,206 71,184"/>
+    
+  </g>
+</svg>

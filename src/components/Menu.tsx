@@ -10,6 +10,7 @@ import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
 import noHopePng from '../assets/media/NoHope.png'
 import whickedSteinPng from '../assets/media/WhickedStein.png'
 import { Icon } from './Icon'
+import { marked } from 'marked'
 import {
   applyThemeToDocument,
   darkThemes,
@@ -21,6 +22,7 @@ import {
 } from '../utils/appPreferences'
 
 const STORAGE_KEY_UPDATE_LAST_CHECKED = 'omni-screen:update-last-checked'
+const CHANGELOG_URL = 'https://raw.githubusercontent.com/NickMarcha/omni-screen/main/CHANGELOG.md'
 
 /** Base platform list; chat source platforms come from extensions via connectionPlatforms. loginUrl may be overridden from get-app-config. */
 const CONNECTIONS_PLATFORMS_BASE: Array<{
@@ -213,6 +215,10 @@ function Menu({ onNavigate }: MenuProps) {
     onOk: () => window.ipcRenderer.invoke('start-download'),
   })
 
+  const [changelogOpen, setChangelogOpen] = useState(false)
+  const [changelogContent, setChangelogContent] = useState<string | null>(null)
+  const [changelogLoading, setChangelogLoading] = useState(false)
+  const [changelogError, setChangelogError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
   const [extensionsOpen, setExtensionsOpen] = useState(false)
@@ -488,6 +494,35 @@ function Menu({ onNavigate }: MenuProps) {
     checkUpdate(true)
   }, [])
 
+  // Fetch changelog from GitHub when modal opens
+  useEffect(() => {
+    if (!changelogOpen) return
+    setChangelogContent(null)
+    setChangelogError(null)
+    setChangelogLoading(true)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15_000)
+    fetch(CHANGELOG_URL, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load: ${res.status}`)
+        return res.text()
+      })
+      .then((text) => {
+        setChangelogContent(text)
+      })
+      .catch((err) => {
+        setChangelogError(err instanceof Error ? err.message : 'Failed to load changelog')
+      })
+      .finally(() => {
+        clearTimeout(timeoutId)
+        setChangelogLoading(false)
+      })
+    return () => {
+      clearTimeout(timeoutId)
+      controller.abort()
+    }
+  }, [changelogOpen])
+
   useEffect(() => {
     if (lastCheckedAt == null) return
     const id = setInterval(() => setTick((t) => t + 1), 60_000)
@@ -570,9 +605,14 @@ function Menu({ onNavigate }: MenuProps) {
       {/* Update Button */}
       <div className="card bg-base-200 shadow-xl p-6 max-w-md w-full">
         <div className="flex flex-col gap-3">
-          <button className="btn btn-secondary w-full" disabled={checking} onClick={() => checkUpdate(false)}>
-            {checking ? 'Checking...' : updateAvailable ? 'Update available' : 'Check for Updates'}
-          </button>
+          <div className="flex gap-2 w-full">
+            <button className="btn btn-secondary flex-1 min-w-0" disabled={checking} onClick={() => checkUpdate(false)}>
+              {checking ? 'Checking...' : updateAvailable ? 'Update available' : 'Check for Updates'}
+            </button>
+            <button className="btn btn-outline btn-square shrink-0" title="View Changelog" onClick={() => setChangelogOpen(true)}>
+              <Icon name="changelog" size={20} />
+            </button>
+          </div>
           <p className="text-base-content/50 text-xs text-center">
             {lastCheckedAt == null ? 'Last checked: never' : `Last checked: ${formatLastCheckedAgo(lastCheckedAt)}`}
           </p>
@@ -594,6 +634,48 @@ function Menu({ onNavigate }: MenuProps) {
       <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
         {menuTaglineBottom}
       </p>
+
+      {/* Changelog Modal */}
+      {changelogOpen && (
+        <div className="modal modal-open">
+          <div className="modal-box bg-base-300 text-base-content max-w-2xl max-h-[85vh] flex flex-col">
+            <h3 className="font-bold text-lg mb-4 shrink-0">Changelog</h3>
+            <div className="overflow-y-auto flex-1 min-h-0 -mx-2 px-2">
+              {changelogLoading && (
+                <div className="flex items-center justify-center py-12 text-base-content/60">
+                  <span className="loading loading-spinner loading-md" />
+                  <span className="ml-2">Loading changelog…</span>
+                </div>
+              )}
+              {changelogError && !changelogLoading && (
+                <div className="text-center py-8">
+                  <p className="text-error mb-2">{changelogError}</p>
+                  <a
+                    href="https://github.com/NickMarcha/omni-screen/blob/main/CHANGELOG.md"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="link link-primary"
+                  >
+                    View on GitHub
+                  </a>
+                </div>
+              )}
+              {changelogContent && !changelogLoading && (
+                <div
+                  className="prose prose-sm max-w-none [&_a]:text-primary [&_a]:no-underline hover:[&_a]:underline"
+                  dangerouslySetInnerHTML={{ __html: marked.parse(changelogContent) as string }}
+                />
+              )}
+            </div>
+            <div className="modal-action shrink-0">
+              <button className="btn btn-outline" onClick={() => setChangelogOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => setChangelogOpen(false)} aria-hidden="true" />
+        </div>
+      )}
 
       {/* Update Modal */}
       {modalOpen && (
@@ -620,8 +702,28 @@ function Menu({ onNavigate }: MenuProps) {
                   {(releaseNotesLoading || releaseNotes) && (
                     <div className="mb-4">
                       <div className="text-sm font-semibold mb-1">What&apos;s new</div>
-                      <div className="bg-base-100 rounded border border-base-300 p-2 max-h-40 overflow-y-auto text-xs text-base-content/80 whitespace-pre-wrap">
-                        {releaseNotesLoading ? 'Loading release notes…' : releaseNotes ?? ''}
+                      <div className="bg-base-100 rounded border border-base-300 p-2 max-h-40 overflow-y-auto">
+                        {releaseNotesLoading ? (
+                          <span className="text-base-content/60 text-xs">Loading release notes…</span>
+                        ) : releaseNotes ? (
+                          (() => {
+                            try {
+                              const html = marked.parse(releaseNotes) as string
+                              return (
+                                <div
+                                  className="prose prose-sm max-w-none text-xs [&_a]:text-primary [&_a]:no-underline hover:[&_a]:underline"
+                                  dangerouslySetInnerHTML={{ __html: html }}
+                                />
+                              )
+                            } catch {
+                              return (
+                                <pre className="text-base-content/80 text-xs whitespace-pre-wrap m-0 font-sans">
+                                  {releaseNotes}
+                                </pre>
+                              )
+                            }
+                          })()
+                        ) : null}
                       </div>
                     </div>
                   )}
