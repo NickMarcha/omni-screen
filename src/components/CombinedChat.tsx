@@ -2133,13 +2133,15 @@ function CombinedChat({
         { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'ban', tsMs: Date.now(), content, raw: b, seq: seqRef.current++ },
       ])
     }
-    const handleUnban = (_event: any, payload: { type?: string; unban?: { nick?: string } } | null) => {
+    const handleUnban = (_event: any, payload: { type?: string; unban?: { data?: string; nick?: string } } | null) => {
       if (!alive) return
       const u = payload?.unban
       if (!u) return
-      const target = u.nick?.trim() ?? 'someone'
+      const target = u.data?.trim() ?? 'someone'
+      const by = u.nick?.trim()
+      const content = by ? `${target} unbanned by ${by}.` : `${target} was unbanned.`
       appendItems([
-        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'unmute', tsMs: Date.now(), content: `${target} was unbanned`, raw: u, seq: seqRef.current++ },
+        { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'unmute', tsMs: Date.now(), content, raw: u, seq: seqRef.current++ },
       ])
     }
     window.ipcRenderer.on('chat-websocket-mute', handleMute)
@@ -3408,7 +3410,7 @@ function CombinedChat({
             if (m.source.endsWith('-system')) {
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const kind = 'kind' in m ? m.kind : 'mute'
-              const iconEl = kind === 'ban' ? <span aria-hidden>🔨</span> : kind === 'unmute' ? <Icon name="unlock" size={16} /> : <Icon name="volume-x" size={16} />
+              const iconEl = <Icon name="info" size={16} />
               return (
                 <div
                   key={`msg-primary-system-${(m as CombinedItemWithSeq).seq}-${kind}-${m.tsMs}`}
