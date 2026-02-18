@@ -254,6 +254,7 @@ body {
   position: relative;
   z-index: 0;
   isolation: isolate;
+  align-self: anchor-center;
 }
 .chat-overlay-panel {
   isolation: isolate;

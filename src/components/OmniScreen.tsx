@@ -3621,7 +3621,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         )}
 
         {/* Center column: embeds grid + dock (dock order switches by dockAtTop) */}
-        <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'p-3'} ${cinemaMode ? '' : 'gap-3'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 relative flex flex-col overflow-visible ${cinemaMode ? 'p-0' : 'pt-0 px-3 pb-3'} ${cinemaMode ? '' : 'gap-3'}`}>
           {/* Theme-following background with repeating watermark text (clipped on all edges) */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none bg-base-200">
             {watermarkConfig.enabled && watermarkLines.length > 0 && (
@@ -3837,9 +3837,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               dockAtTop ? 'order-0' : 'order-1',
               cinemaMode
                 ? `embed-dock-cinema mt-0 bg-base-200 rounded-none gap-0 p-0 items-stretch ${dockAtTop ? 'border-b border-base-300 mb-0' : 'border-t border-base-300'}`
-                : dockAtTop
-                  ? 'mb-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2'
-                  : 'mt-3 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
+                : 'mt-0 mb-0 bg-base-200 border border-base-300 rounded-lg gap-2 px-2 py-2',
             ].join(' ')}
             onContextMenu={onDockBarContextMenu}
           >
