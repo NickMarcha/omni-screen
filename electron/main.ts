@@ -838,6 +838,7 @@ function createWindow() {
     icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
+    backgroundColor: '#1a1a1a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       // Use persistent session partition to save cookies between restarts
@@ -1504,6 +1505,7 @@ async function createChatWindow(loadUrl: string): Promise<void> {
     icon: path.join(process.env.VITE_PUBLIC!, 'icon.png'),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
+    backgroundColor: '#1a1a1a',
     transparent: chatWindowTransparentBackground,
     resizable: !chatWindowTransparentBackground,
     webPreferences: {

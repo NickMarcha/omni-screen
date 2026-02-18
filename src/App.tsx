@@ -76,6 +76,22 @@ function App() {
     }
   }, [currentPage, chatWindowTransparentBackground])
 
+  // Hide loading screen once app has mounted
+  useEffect(() => {
+    const el = document.getElementById('loading-screen')
+    if (el) {
+      el.classList.add('hidden')
+      el.setAttribute('aria-hidden', 'true')
+      const remove = () => {
+        el.remove()
+      }
+      el.addEventListener('transitionend', remove, { once: true })
+      // Fallback: remove after transition duration in case transitionend doesn't fire
+      const t = setTimeout(remove, 400)
+      return () => clearTimeout(t)
+    }
+  }, [])
+
   // Apply persisted theme on app load (Menu can edit it).
   useEffect(() => {
     const prefs = getAppPreferences()

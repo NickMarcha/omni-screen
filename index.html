@@ -5,8 +5,27 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Omni Screen</title>
+    <style>
+      html, body { background-color: #1a1a1a; margin: 0; height: 100%; }
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        background-color: #1a1a1a;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        transition: opacity 0.3s ease;
+      }
+      #loading-screen.hidden { opacity: 0; pointer-events: none; }
+      #loading-screen img { width: 128px; height: 128px; object-fit: contain; }
+    </style>
   </head>
   <body>
+    <div id="loading-screen" aria-hidden="false">
+      <img src="/YeeCharm.gif" alt="Loading Omni Screen" />
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
