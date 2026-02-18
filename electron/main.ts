@@ -1645,7 +1645,13 @@ ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBac
       type: 'checkbox',
       checked: isAlwaysOnTop,
       click: (menuItem) => {
-        if (w && !w.isDestroyed()) w.setAlwaysOnTop(menuItem.checked)
+        if (w && !w.isDestroyed()) {
+          const on = menuItem.checked
+          w.setAlwaysOnTop(on, on ? 'screen-saver' : undefined, on && process.platform === 'darwin' ? 1 : undefined)
+          if (process.platform === 'darwin') {
+            w.setVisibleOnAllWorkspaces(on, on ? { visibleOnFullScreen: true } : undefined)
+          }
+        }
       },
     },
     {
