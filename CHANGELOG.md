@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
+## [1.16.1] - 2026-02-18
+
+### Added
+- **External chat window – click through**: Global shortcut (default Ctrl+T) toggles click-through when the external chat window is open. View menu checkbox for click-through; state synced on load.
+
+### Changed
+- **GlobalFocus shortcut**: Chat input shows when focused even if "show chat input" is off; hides again when unfocused. Escape unfocuses the input. Shortcut no longer persists the setting. Works in main and external chat window.
+- **External chat window – always on top**: More persistent on macOS (screen-saver level, visible on fullscreen workspaces).
+
+### Fixed
+- **External chat window**: Transparent background restored; `backgroundColor` only set when not using transparent mode.
+- **Combined chat**: UNBAN messages now display correctly (e.g. "user unbanned by moderator").
+
 ## [1.16.0] - 2026-02-18
 
 ### Added
@@ -358,7 +371,8 @@ _(Release marker; see 1.5.0 for commits in this period.)_
 - Cloned from electron-vite-react-boilerplate.
 - Initial commit.
 
-[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/NickMarcha/omni-screen/compare/v1.16.1...HEAD
+[1.16.1]: https://github.com/NickMarcha/omni-screen/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/NickMarcha/omni-screen/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/NickMarcha/omni-screen/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/NickMarcha/omni-screen/compare/v1.13.1...v1.14.0
