@@ -771,6 +771,62 @@ function createApplicationMenu() {
   Menu.setApplicationMenu(menu)
 }
 
+/** Build context menu items including spellcheck suggestions (from Electron docs). */
+function buildContextMenuItems(
+  webContents: Electron.WebContents,
+  params: Electron.ContextMenuParams
+): Electron.MenuItemConstructorOptions[] {
+  const menuItems: Electron.MenuItemConstructorOptions[] = []
+
+  // Spellcheck suggestions (at top when there's a misspelled word)
+  if (params.misspelledWord && Array.isArray(params.dictionarySuggestions) && params.dictionarySuggestions.length > 0) {
+    for (const suggestion of params.dictionarySuggestions) {
+      menuItems.push({
+        label: suggestion,
+        click: () => webContents.replaceMisspelling(suggestion),
+      })
+    }
+    menuItems.push({ type: 'separator' })
+  }
+  if (params.misspelledWord) {
+    menuItems.push({
+      label: 'Add to dictionary',
+      click: () => webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord!),
+    })
+    menuItems.push({ type: 'separator' })
+  }
+
+  // If right-clicking on a link, show link-specific options
+  if (params.linkURL) {
+    menuItems.push(
+      { label: 'Open Link', click: () => { webContents.loadURL(params.linkURL!) } },
+      { label: 'Copy Link Address', click: () => { clipboard.writeText(params.linkURL!) } },
+      { type: 'separator' }
+    )
+  }
+
+  // If there's selected text, show text editing options
+  if (params.selectionText) {
+    menuItems.push(
+      { role: 'copy', label: 'Copy' },
+      { type: 'separator' }
+    )
+  }
+
+  // Standard editing options
+  menuItems.push(
+    { role: 'cut', label: 'Cut' },
+    { role: 'copy', label: 'Copy' },
+    { role: 'paste', label: 'Paste' },
+    { role: 'pasteAndMatchStyle', label: 'Paste and Match Style' },
+    { role: 'delete', label: 'Delete' },
+    { type: 'separator' },
+    { role: 'selectAll', label: 'Select All' }
+  )
+
+  return menuItems
+}
+
 function createWindow() {
   // Handle external links - open in default browser
   // This will be set on the window after it's created
@@ -1077,38 +1133,9 @@ function createWindow() {
   // Enable auto-update logic
   update(win)
 
-  // Show context menu on right-click
+  // Show context menu on right-click (includes spellcheck suggestions)
   win.webContents.on('context-menu', (_e, params) => {
-    const menuItems: Electron.MenuItemConstructorOptions[] = []
-
-    // If right-clicking on a link, show link-specific options
-    if (params.linkURL) {
-      menuItems.push(
-        { label: 'Open Link', click: () => { win?.webContents.loadURL(params.linkURL!) } },
-        { label: 'Copy Link Address', click: () => { clipboard.writeText(params.linkURL!) } },
-        { type: 'separator' }
-      )
-    }
-
-    // If there's selected text, show text editing options
-    if (params.selectionText) {
-      menuItems.push(
-        { role: 'copy', label: 'Copy' },
-        { type: 'separator' }
-      )
-    }
-
-    // Always show standard editing options
-    menuItems.push(
-      { role: 'cut', label: 'Cut' },
-      { role: 'copy', label: 'Copy' },
-      { role: 'paste', label: 'Paste' },
-      { role: 'pasteAndMatchStyle', label: 'Paste and Match Style' },
-      { role: 'delete', label: 'Delete' },
-      { type: 'separator' },
-      { role: 'selectAll', label: 'Select All' }
-    )
-
+    const menuItems = buildContextMenuItems(win!.webContents, params)
     const contextMenu = Menu.buildFromTemplate(menuItems)
     contextMenu.popup()
   })
@@ -1513,6 +1540,11 @@ async function createChatWindow(loadUrl: string): Promise<void> {
       chatWin?.webContents.toggleDevTools()
       event.preventDefault()
     }
+  })
+  chatWin.webContents.on('context-menu', (_e, params) => {
+    const menuItems = buildContextMenuItems(chatWin!.webContents, params)
+    const contextMenu = Menu.buildFromTemplate(menuItems)
+    contextMenu.popup()
   })
   chatWin.webContents.once('did-finish-load', () => {
     if (chatWin != null && !chatWin.isDestroyed() && chatWin.webContents) {
