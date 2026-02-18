@@ -84,7 +84,18 @@ function buildWatermarkLines(text: string, textCase: WatermarkTextCase): string[
   })
 }
 import { Icon } from './Icon'
+import { ConfirmDialog } from './ConfirmDialog'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
+import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
+import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
+import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
+
+const PLATFORM_ICONS: Record<string, string> = {
+  yt: youtubePlatformIcon,
+  youtube: youtubePlatformIcon,
+  kick: kickPlatformIcon,
+  twitch: twitchPlatformIcon,
+}
 
 function EmbedTitleMarquee({ title }: { title: string }) {
   const containerRef = useRef<HTMLSpanElement>(null)
@@ -1627,6 +1638,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [keybindSearchQuery, setKeybindSearchQuery] = useState('')
   const settingsTabContentRef = useRef<HTMLDivElement>(null)
   const [editingStreamerId, setEditingStreamerId] = useState<string | null>(null)
+  const [deleteBookmarkConfirm, setDeleteBookmarkConfirm] = useState<{ streamerId: string; nickname: string } | null>(null)
   /** YouTube embed key -> bookmarked streamer ids that resolved to this video (multiple streamers can share same stream). */
   const [youtubeVideoToStreamerId, setYoutubeVideoToStreamerId] = useState<Map<string, string[]>>(() => new Map())
   /** Embeds from bookmarked streamer poll only (not in pinned-embeds list, not persisted). "Unpin" does not apply to these. */
@@ -4867,19 +4879,19 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                           <div className="text-xs text-base-content/60 flex items-center gap-x-1.5 shrink-0 flex-wrap">
                             {[
                               s.youtubeChannelId && {
-                                platform: 'YT',
+                                platformKey: 'yt',
                                 label: shortChannelLabel(s.youtubeChannelId, 'yt'),
                                 url: platformChannelUrl(s.youtubeChannelId, 'yt'),
                                 title: s.youtubeChannelId,
                               },
                               s.kickSlug && {
-                                platform: 'Kick',
+                                platformKey: 'kick',
                                 label: shortChannelLabel(s.kickSlug, 'kick'),
                                 url: platformChannelUrl(s.kickSlug, 'kick'),
                                 title: s.kickSlug,
                               },
                               s.twitchLogin && {
-                                platform: 'Twitch',
+                                platformKey: 'twitch',
                                 label: shortChannelLabel(s.twitchLogin, 'twitch'),
                                 url: platformChannelUrl(s.twitchLogin, 'twitch'),
                                 title: s.twitchLogin,
@@ -4887,13 +4899,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                             ]
                               .filter(Boolean)
                               .map((item, i) => (
-                                <span key={i} className="inline-flex items-center">
-                                  {i > 0 && <span className="text-base-content/40 mx-0.5">·</span>}
+                                <span key={i} className="inline-flex items-center gap-1">
+                                  {i > 0 && <span className="text-base-content/40">·</span>}
                                   <a
                                     href={(item as { url: string }).url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="link link-hover text-inherit"
+                                    className="link link-hover text-inherit inline-flex items-center gap-1"
                                     title={(item as { title: string }).title}
                                     onClick={(e) => {
                                       e.preventDefault()
@@ -4907,16 +4919,21 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                                       }
                                     }}
                                   >
-                                    <span className="font-medium text-base-content/70">{(item as { platform: string }).platform}:</span>{' '}
-                                    {(item as { label: string }).label}
+                                    <img
+                                      src={PLATFORM_ICONS[(item as { platformKey: string }).platformKey]}
+                                      alt=""
+                                      className="w-3.5 h-3.5 shrink-0"
+                                      aria-hidden
+                                    />
+                                    <span>{(item as { label: string }).label}</span>
                                   </a>
                                 </span>
                               ))}
                           </div>
                           <div className="flex gap-1 shrink-0 items-center">
                             <div className="dropdown dropdown-end">
-                              <button type="button" className="btn btn-xs btn-ghost" tabIndex={0} title="Share bookmark link">
-                                Share
+                              <button type="button" className="btn btn-xs btn-ghost" tabIndex={0} title="Share bookmark link" aria-label="Share bookmark link">
+                                <Icon name="copy" size={14} />
                               </button>
                               <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow bg-base-100 rounded-box border border-base-300 w-52">
                                 <li>
@@ -4946,19 +4963,20 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                             <button
                               type="button"
                               className="btn btn-xs btn-ghost"
+                              title="Edit"
+                              aria-label="Edit"
                               onClick={() => setEditingStreamerId(editingStreamerId === s.id ? null : s.id)}
                             >
-                              Edit
+                              <Icon name="edit-3" size={14} />
                             </button>
                             <button
                               type="button"
                               className="btn btn-xs btn-ghost text-error"
-                              onClick={() => {
-                                setBookmarkedStreamers((prev) => prev.filter((x) => x.id !== s.id))
-                                if (editingStreamerId === s.id) setEditingStreamerId(null)
-                              }}
+                              title="Remove"
+                              aria-label="Remove"
+                              onClick={() => setDeleteBookmarkConfirm({ streamerId: s.id, nickname: s.nickname || 'Unnamed' })}
                             >
-                              Remove
+                              <Icon name="delete" size={14} />
                             </button>
                           </div>
                         </div>
@@ -5535,6 +5553,27 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         document.body
       )}
 
+      <ConfirmDialog
+        open={deleteBookmarkConfirm != null}
+        title="Remove bookmark"
+        message={
+          deleteBookmarkConfirm ? (
+            <>Remove bookmark &quot;{deleteBookmarkConfirm.nickname}&quot;?</>
+          ) : (
+            ''
+          )
+        }
+        confirmLabel="Remove"
+        confirmVariant="btn-error"
+        onConfirm={() => {
+          if (deleteBookmarkConfirm) {
+            setBookmarkedStreamers((prev) => prev.filter((x) => x.id !== deleteBookmarkConfirm.streamerId))
+            if (editingStreamerId === deleteBookmarkConfirm.streamerId) setEditingStreamerId(null)
+          }
+          setDeleteBookmarkConfirm(null)
+        }}
+        onCancel={() => setDeleteBookmarkConfirm(null)}
+      />
     </div>
   )
 }
