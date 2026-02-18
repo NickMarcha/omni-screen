@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell, globalShortcut } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
@@ -162,6 +162,10 @@ let chatWin: BrowserWindow | null = null
 let cachedEmbedChatsState: { selectedEmbedChatKeys: string[]; selectedEmbedKeys: string[] } | null = null
 /** Chat window: transparent mode (requires window recreate). Stored in main process; synced from renderer on load. */
 let chatWindowTransparentBackground = false
+/** Chat window: click-through (setIgnoreMouseEvents). Synced from renderer on load; toggled by global shortcut or View menu. */
+let chatWindowClickThrough = false
+/** Registered global shortcut for click-through toggle. Unregistered when chat window closes. */
+let chatWindowClickThroughShortcut: string | null = null
 const CHAT_WINDOW_BOUNDS_PATH = path.join(app.getPath('userData'), 'chat-window-bounds.json')
 /** Cached ME event from primary chat WebSocket; sent to chat window on load so it knows auth state after recreate. */
 let cachedPrimaryChatMe: { type?: string; data?: unknown } | null = null
@@ -1525,6 +1529,10 @@ async function createChatWindow(loadUrl: string): Promise<void> {
   chatWin.on('closed', () => {
     if (chatWin === thisChatWin) {
       chatWin = null
+      if (chatWindowClickThroughShortcut) {
+        globalShortcut.unregister(chatWindowClickThroughShortcut)
+        chatWindowClickThroughShortcut = null
+      }
       if (win && !win.isDestroyed()) {
         win.webContents.send('chat-external-window-closed')
       }
@@ -1632,7 +1640,53 @@ ipcMain.handle('chat-window-sync-transparent-preference', (_event, enabled: bool
   chatWindowTransparentBackground = !!enabled
 })
 
-/** Chat window View menu: Always On Top + Transparency + Transparent background + Dev Tools. Opens at cursor. */
+/** Convert keybind to Electron accelerator string (e.g. CommandOrControl+T). */
+function keybindToAccelerator(kb: { key: string; ctrl?: boolean; shift?: boolean; alt?: boolean }): string {
+  const parts: string[] = []
+  if (kb.ctrl) parts.push('CommandOrControl')
+  if (kb.alt) parts.push('Alt')
+  if (kb.shift) parts.push('Shift')
+  const key = kb.key === ' ' ? 'Space' : kb.key.length === 1 ? kb.key.toUpperCase() : kb.key
+  parts.push(key)
+  return parts.join('+')
+}
+
+function applyChatWindowClickThrough() {
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.setIgnoreMouseEvents(chatWindowClickThrough, { forward: false })
+  }
+}
+
+function toggleChatWindowClickThrough() {
+  chatWindowClickThrough = !chatWindowClickThrough
+  applyChatWindowClickThrough()
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.webContents.send('chat-window-click-through-changed', chatWindowClickThrough)
+  }
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('chat-window-click-through-changed', chatWindowClickThrough)
+  }
+}
+
+/** Chat window syncs click-through preference on load; main applies setIgnoreMouseEvents. */
+ipcMain.handle('chat-window-sync-click-through-preference', (_event, enabled: boolean) => {
+  chatWindowClickThrough = !!enabled
+  applyChatWindowClickThrough()
+})
+
+/** Chat window registers global shortcut for click-through toggle. Only active when chat window is open. */
+ipcMain.handle('chat-window-register-click-through-shortcut', (_event, keybind: { key: string; ctrl?: boolean; shift?: boolean; alt?: boolean }) => {
+  if (chatWindowClickThroughShortcut) {
+    globalShortcut.unregister(chatWindowClickThroughShortcut)
+    chatWindowClickThroughShortcut = null
+  }
+  const acc = keybindToAccelerator(keybind ?? { key: 't', ctrl: true, shift: false, alt: false })
+  if (globalShortcut.register(acc, toggleChatWindowClickThrough)) {
+    chatWindowClickThroughShortcut = acc
+  }
+})
+
+/** Chat window View menu: Always On Top + Click through + Transparency + Transparent background + Dev Tools. Opens at cursor. */
 ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBackground?: boolean }) => {
   const w = BrowserWindow.fromWebContents(event.sender)
   if (!w || w.isDestroyed()) return
@@ -1652,6 +1706,14 @@ ipcMain.handle('chat-window-view-menu-popup', (event, payload?: { transparentBac
             w.setVisibleOnAllWorkspaces(on, on ? { visibleOnFullScreen: true } : undefined)
           }
         }
+      },
+    },
+    {
+      label: 'Click through',
+      type: 'checkbox',
+      checked: chatWindowClickThrough,
+      click: () => {
+        toggleChatWindowClickThrough()
       },
     },
     {

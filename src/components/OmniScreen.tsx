@@ -3430,6 +3430,26 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
 
   // Chat-only mode: external window shows only the combined chat (no grid, dock, etc.)
   const [chatOnlyContainer, setChatOnlyContainer] = useState<HTMLDivElement | null>(null)
+
+  // External chat window: sync click-through to main (setIgnoreMouseEvents), register global shortcut, listen for toggle
+  useEffect(() => {
+    if (!chatOnlyMode) return
+    window.ipcRenderer?.invoke('chat-window-sync-click-through-preference', overlayMessagesClickThrough)
+    window.ipcRenderer?.invoke('chat-window-register-click-through-shortcut', keybinds['CombinedChat.Messages.ClickThroughToggle'])
+    const handler = (_: unknown, enabled: boolean) => {
+      setOverlayMessagesClickThrough(enabled)
+      try {
+        localStorage.setItem('omni-screen:overlay-messages-click-through', enabled ? '1' : '0')
+      } catch {
+        /* ignore */
+      }
+    }
+    window.ipcRenderer?.on?.('chat-window-click-through-changed', handler)
+    return () => {
+      window.ipcRenderer?.off?.('chat-window-click-through-changed', handler)
+    }
+  }, [chatOnlyMode, overlayMessagesClickThrough, keybinds])
+
   if (chatOnlyMode) {
     return (
       <div className={`h-full min-h-0 text-base-content flex flex-col overflow-hidden ${chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}>
