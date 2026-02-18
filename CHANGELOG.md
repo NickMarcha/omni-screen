@@ -9,7 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(No changes yet.)_
 
-## [1.14.0] - 2026-02-11
+## [1.15.0] - 2026-02-18
+
+### Added
+- **Broadcast messages**: Two types—system broadcasts (simple layout) and user broadcasts (render like regular chat with username, flairs). Both use broadcast icon; user broadcasts support context menu.
+- **Spellchecker in context menu**: Chat input right-click shows spelling suggestions and "Add to dictionary" (Electron integration). Applies to main and external chat window.
+- **Keybinds – searchable**: Refactored with action IDs (e.g. `CombinedChat.Input.GlobalFocus`, `CombinedChat.Messages.ClickThroughToggle`). Searchable table in Settings → Keybinds. Default Ctrl+T for click-through toggle.
+- **ConfirmDialog**: Reusable DaisyUI-styled confirmation dialog (replaces `window.confirm`).
+- **Animated watermark**: Watermark supports animation.
+- **Extensions – custom tagline**: Extensions can provide a custom menu tagline.
+- **Chat history analysis**: `analyze-chat-history.mjs` script.
+
+### Changed
+- **App settings**: Theme and userscript changes apply immediately; no Save button. Theme and Userscripts sections are collapsible.
+- **Theme settings**: Collapsible section with color swatches (primary, secondary, accent, etc.) and "where to use" tooltips. Acid theme moved from dark to light.
+- **Userscripts**: Kickstiny toggle uses success/error colors for readability.
+- **Bookmarked streamers**: Platform icons instead of text labels; copy/edit/delete icons; delete confirmation.
+- **Chat window**: Improved transparent background behaviour and text rendering.
+- **Combined chat and cards**: Style and layout improvements.
+- **Packages**: Upgraded Electron, Electron-builder, and Vite.
+
+### Fixed
+- **Settings modal**: Gap/layout fix.
+- **Primary chat**: Watching functionality.
+- **Twitch**: More stable viewcounts and live checker; WebSocket enhancements.
+- **Kick**: Enhanced chat manager; Kickstiny fetches fresh script.
+
+## [1.14.0] - 2026-02-17
 
 ### Added
 - **Mute handling**: Combined chat now handles mute state (e.g. when streamer dies); input disabled with timer and placeholder during mute.
