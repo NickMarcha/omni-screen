@@ -84,13 +84,24 @@ body {
   padding: 0;
 }
 
-/* Message input: focus outline renders inset */
+/* Message input: focus outline renders inset with gap from edge */
 .chat-input-bar .input:focus,
 .chat-input-bar .input:focus-within {
-  outline-offset: -1px;
+  /* Inner 2px matches input bg (creates gap); outer 1px is the visible border */
+  box-shadow:
+    inset 0 0 0 2px var(--color-base-200),
+    inset 0 0 0 3px oklch(0.8487 0 0);
 }
 
-/* Message input: regular border 1px inset */
+.chat-input-bar .input{
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+
+
+/*  Message input: regular border 1px inset 
 .chat-input-bar .input {
   box-shadow: inset 0 0 0 1px var(--input-color);
 }
@@ -98,6 +109,8 @@ body {
 .chat-input-bar .input:focus-within {
   box-shadow: inset 0 0 0 1px var(--input-color);
 }
+ */
+
 
 /* Combined chat overlay: messages area has no border/outline; text has black outline for readability; slightly bolder text; message text fully white (greentext and .user flair keep their colors) */
 .combined-chat-overlay-messages {
