@@ -1,0 +1,43 @@
+---
+description: Omni Screen project context – stack, structure, conventions
+alwaysApply: true
+---
+
+# Omni Screen Project
+
+## Stack
+
+- **Desktop**: Electron 40
+- **Frontend**: React 18, TypeScript 5
+- **Build**: Vite 7, vite-plugin-electron
+- **Styling**: Tailwind CSS 4, DaisyUI 5
+- **Other**: D3.js 7, marked, ws
+
+## Structure
+
+- `src/` – React components, utils, assets
+- `electron/` – Main process, preload, chat managers, extensions
+
+## Entry Points
+
+- **Renderer**: `src/main.tsx` → `App.tsx` (routes: menu, link-scroller, omni-screen, debug, chat-window)
+- **Main**: `electron/main.ts` – IPC, chat WebSockets, platform APIs
+
+## Chat Architecture
+
+- **Primary chat**: `electron/chatWebSocket.ts` – WebSocket to extension's chatWssUrl
+- **Platform chats**: `kickChatManager.ts`, `youtubeChatManager.ts`, `twitchChatManager.ts`
+- **Live feed**: `electron/liveWebSocket.ts` – embeds, banned list
+- **IPC**: Main broadcasts to main window + chat window via `safeSend`
+
+## Key Components
+
+- `OmniScreen.tsx` – Main screen, embed grid, combined chat pane/overlay
+- `CombinedChat.tsx` – Combined feed (primary + Kick + YouTube + Twitch)
+- `LinkScroller.tsx` – Link cards from chat
+
+## Conventions
+
+- localStorage keys prefixed `omni-screen:`
+- IPC channels: `platform-chat-action` (e.g. `kick-chat-set-targets`, `youtube-chat-message`)
+- Embed keys: `platform:id` (e.g. `kick:slug`, `youtube:videoId`, `twitch:login`)
