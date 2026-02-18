@@ -166,6 +166,8 @@ let chatWindowTransparentBackground = false
 let chatWindowClickThrough = false
 /** Registered global shortcut for click-through toggle. Unregistered when chat window closes. */
 let chatWindowClickThroughShortcut: string | null = null
+/** Registered global shortcut for chat input focus. */
+let chatGlobalFocusShortcut: string | null = null
 const CHAT_WINDOW_BOUNDS_PATH = path.join(app.getPath('userData'), 'chat-window-bounds.json')
 /** Cached ME event from primary chat WebSocket; sent to chat window on load so it knows auth state after recreate. */
 let cachedPrimaryChatMe: { type?: string; data?: unknown } | null = null
@@ -1672,6 +1674,29 @@ function toggleChatWindowClickThrough() {
 ipcMain.handle('chat-window-sync-click-through-preference', (_event, enabled: boolean) => {
   chatWindowClickThrough = !!enabled
   applyChatWindowClickThrough()
+})
+
+function handleChatGlobalFocus() {
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.focus()
+    chatWin.webContents.send('chat-global-focus')
+  } else if (win && !win.isDestroyed()) {
+    win.focus()
+    win.webContents.send('chat-global-focus')
+  }
+}
+
+/** Main window or OmniScreen registers the GlobalFocus shortcut. Re-registers when keybind changes. */
+ipcMain.handle('register-global-focus-shortcut', (_event, keybind: { key: string; ctrl?: boolean; shift?: boolean; alt?: boolean }) => {
+  if (chatGlobalFocusShortcut) {
+    globalShortcut.unregister(chatGlobalFocusShortcut)
+    chatGlobalFocusShortcut = null
+  }
+  const kb = keybind ?? { key: ' ', ctrl: true, shift: false, alt: false }
+  const acc = keybindToAccelerator(kb)
+  if (globalShortcut.register(acc, handleChatGlobalFocus)) {
+    chatGlobalFocusShortcut = acc
+  }
 })
 
 /** Chat window registers global shortcut for click-through toggle. Only active when chat window is open. */

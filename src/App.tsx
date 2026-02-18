@@ -61,6 +61,33 @@ function App() {
     }
   }, [])
 
+  // Register GlobalFocus as global shortcut (main window only). Read keybind from localStorage.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#chat-window') return
+    try {
+      const raw = localStorage.getItem('omni-screen:keybinds')
+      const parsed = raw ? (JSON.parse(raw) as Record<string, { key?: string; ctrl?: boolean; shift?: boolean; alt?: boolean }>) : null
+      const kb = parsed?.['CombinedChat.Input.GlobalFocus'] ?? { key: ' ', ctrl: true, shift: false, alt: false }
+      window.ipcRenderer?.invoke('register-global-focus-shortcut', kb)
+    } catch {
+      window.ipcRenderer?.invoke('register-global-focus-shortcut', { key: ' ', ctrl: true, shift: false, alt: false })
+    }
+  }, [])
+
+  // Chat global focus: when window receives IPC, navigate to omni-screen (if main window) and dispatch event for OmniScreen to focus input
+  useEffect(() => {
+    const handler = () => {
+      if (window.location.hash !== '#chat-window') {
+        setCurrentPage('omni-screen')
+      }
+      setTimeout(() => window.dispatchEvent(new CustomEvent('chat-global-focus')), 0)
+    }
+    window.ipcRenderer?.on?.('chat-global-focus', handler)
+    return () => {
+      window.ipcRenderer?.off?.('chat-global-focus', handler)
+    }
+  }, [])
+
   // Chat window: sync transparent preference to main process so it can recreate window correctly
   useEffect(() => {
     if (currentPage === 'chat-window') {

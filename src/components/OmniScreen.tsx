@@ -789,7 +789,7 @@ function formatKeybind(kb: KeybindModifiers): string {
 
 const COMBINED_CHAT_KEYBIND_ACTIONS = {
   'CombinedChat.Input.GlobalFocus': {
-    description: 'Focus primary chat input when the chat pane is open',
+    description: 'Focus chat input (shows it when hidden; Escape to unfocus)',
     default: { key: ' ', ctrl: true, shift: false, alt: false } as KeybindModifiers,
   },
   'CombinedChat.Input.SwitchChannelForwards': {
@@ -1419,7 +1419,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     setKeybinds((prev) => ({ ...prev, [id]: kb }))
   }, [])
   const primaryChatInputRef = useRef<HTMLTextAreaElement | null>(null)
-  const primaryChatActionsRef = useRef<{ appendToInput: (text: string) => void } | null>(null)
+  const primaryChatActionsRef = useRef<{ appendToInput: (text: string) => void; focusInput: () => void } | null>(null)
 
   // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
   const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
@@ -2245,16 +2245,31 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       if (settingsModalOpen) return
       const target = e.target as Node
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
-      if (!chatPaneOpen || !combinedIncludePrimaryChat || !showChatInput) return
+      if (!chatPaneOpen || !combinedIncludePrimaryChat) return
       const key = e.key === ' ' ? ' ' : e.key
       const kb = keybinds['CombinedChat.Input.GlobalFocus']
       if (kb.key !== key || kb.ctrl !== e.ctrlKey || kb.shift !== e.shiftKey || kb.alt !== e.altKey) return
       e.preventDefault()
-      primaryChatInputRef.current?.focus()
+      primaryChatActionsRef.current?.focusInput()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [settingsModalOpen, chatPaneOpen, combinedIncludePrimaryChat, showChatInput, keybinds])
+  }, [settingsModalOpen, chatPaneOpen, combinedIncludePrimaryChat, keybinds])
+
+  // Global shortcut (from main process): focus chat input, open pane and unhide input if needed (shows input when focused even if "show chat input" is off)
+  useEffect(() => {
+    const handler = () => {
+      if (!chatOnlyMode) setChatPaneOpen(true)
+      primaryChatActionsRef.current?.focusInput()
+    }
+    window.addEventListener('chat-global-focus', handler)
+    return () => window.removeEventListener('chat-global-focus', handler)
+  }, [chatOnlyMode])
+
+  // Re-register GlobalFocus shortcut when keybinds change (so user's custom keybind is used)
+  useEffect(() => {
+    window.ipcRenderer?.invoke('register-global-focus-shortcut', keybinds['CombinedChat.Input.GlobalFocus'])
+  }, [keybinds])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

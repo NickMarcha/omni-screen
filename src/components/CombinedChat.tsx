@@ -497,6 +497,10 @@ interface PrimaryChatInputBarProps {
   channelSwitchShortcutLabel?: string
   /** When true, render autocomplete dropdown in a portal with fixed position (avoids clipping in overlay mode; keeps dropdown on-screen). */
   dropdownInPortal?: boolean
+  /** Called when input gains focus (e.g. for parent to show input when "show input" setting is off). */
+  onFocusCallback?: () => void
+  /** Called when input loses focus. */
+  onBlurCallback?: () => void
 }
 
 const HISTORY_MAX = 50
@@ -505,7 +509,7 @@ const DROPDOWN_MAX_H = 192
 const DROPDOWN_MARGIN = 8
 
 const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarProps>(function PrimaryChatInputBar(
-  { value, onChange, onSend, onKeyDown, disabled, emotesMap, primaryChatNicks, placeholder, shortcutLabel, channelSwitchShortcutLabel, dropdownInPortal = false },
+  { value, onChange, onSend, onKeyDown, disabled, emotesMap, primaryChatNicks, placeholder, shortcutLabel, channelSwitchShortcutLabel, dropdownInPortal = false, onFocusCallback, onBlurCallback },
   ref
 ) {
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -623,10 +627,15 @@ const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarP
         setHighlightIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1))
         return
       }
-      if (e.key === 'Escape' && showDropdown) {
+      if (e.key === 'Escape') {
+        if (showDropdown) {
+          e.preventDefault()
+          setHighlightIndex(-1)
+          setLastInsertedWord(null)
+          return
+        }
         e.preventDefault()
-        setHighlightIndex(-1)
-        setLastInsertedWord(null)
+        e.currentTarget.blur()
         return
       }
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -740,8 +749,8 @@ const PrimaryChatInputBar = forwardRef<HTMLTextAreaElement, PrimaryChatInputBarP
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         onSelect={() => setCursorPosition(inputRef.current?.selectionStart ?? 0)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onFocus={() => { setFocused(true); onFocusCallback?.() }}
+        onBlur={() => { setFocused(false); onBlurCallback?.() }}
         disabled={disabled}
         rows={1}
         wrap="soft"
@@ -1226,7 +1235,7 @@ function CombinedChat({
   /** Optional ref from parent to focus the primary chat input (e.g. for keybind). */
   primaryChatInputRef?: React.RefObject<HTMLTextAreaElement | null>
   /** Optional ref from parent to get { appendToInput(text) } for pasting into primary chat input (e.g. from dock menu). */
-  primaryChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void } | null>
+  primaryChatActionsRef?: React.RefObject<{ appendToInput: (text: string) => void; focusInput: () => void } | null>
   /** Shortcut label shown when input is not focused (e.g. "Ctrl + Space" to focus the input). */
   focusShortcutLabel?: string
   /** Keybind for switching chat channel (e.g. Ctrl+Tab). Only used when chat input is focused. */
@@ -1271,6 +1280,8 @@ function CombinedChat({
   const [items, setItems] = useState<CombinedItemWithSeq[]>([])
   const [updateSeq, setUpdateSeq] = useState(0)
   const [primaryChatInputValue, setPrimaryChatInputValue] = useState('')
+  /** True when the primary chat input has focus (used to show input when "show chat input" is off). */
+  const [primaryChatInputFocused, setPrimaryChatInputFocused] = useState(false)
   /** Ordered list of chat channels: primary, Kick, YouTube, Twitch. Ctrl+Tab cycles. */
   const chatChannels = useMemo(() => {
     const list: Array<
@@ -1409,13 +1420,19 @@ function CombinedChat({
     },
     [primaryChatInputRefProp]
   )
-  const primaryChatActionsRefInternal = useRef<{ appendToInput: (text: string) => void } | null>(null)
+  const primaryChatActionsRefInternal = useRef<{ appendToInput: (text: string) => void; focusInput: () => void } | null>(null)
   const primaryChatActionsRefMerged = primaryChatActionsRefProp ?? primaryChatActionsRefInternal
   useImperativeHandle(
     primaryChatActionsRefMerged,
     () => ({
       appendToInput: (text: string) => {
         setPrimaryChatInputValue((prev) => (prev ?? '') + text)
+      },
+      focusInput: () => {
+        setPrimaryChatInputFocused(true)
+        requestAnimationFrame(() => {
+          primaryChatInputRefInternal.current?.focus()
+        })
       },
     }),
     []
@@ -3019,7 +3036,7 @@ function CombinedChat({
           Login → Main menu → Connections
         </div>
       )}
-      {((enablePrimaryChat && showPrimaryChatInput && primaryChatAuthenticated) || enabledKickSlugs.length > 0 || enabledYoutubeVideoIds.length > 0 || enabledTwitchChannels.length > 0) && (
+      {((enablePrimaryChat && (showPrimaryChatInput || primaryChatInputFocused) && primaryChatAuthenticated) || enabledKickSlugs.length > 0 || enabledYoutubeVideoIds.length > 0 || enabledTwitchChannels.length > 0) && (
         <div className="flex flex-col gap-1 min-w-0 flex-none">
           {primaryChatSourceId && activeChannel?.type === primaryChatSourceId && privViewOpen && !activeWhisperUsername && (
             <>
@@ -3078,6 +3095,8 @@ function CombinedChat({
                 onChange={setPrimaryChatInputValue}
                 onSend={handleSendToActiveChannel}
                 onKeyDown={onPrimaryChatInputKeyDown}
+                onFocusCallback={() => setPrimaryChatInputFocused(true)}
+                onBlurCallback={() => setPrimaryChatInputFocused(false)}
                 disabled={
                   activeChannel?.type === 'kick'
                     ? false
