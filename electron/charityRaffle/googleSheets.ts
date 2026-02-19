@@ -1,6 +1,6 @@
 import { JWT } from 'google-auth-library'
 import { GoogleSpreadsheet, type GoogleSpreadsheetWorksheet } from 'google-spreadsheet'
-import type { Donation } from './types.js'
+import type { Donation, ProcessedDonation } from './types.js'
 import type { CharityRaffleCredentials } from './types.js'
 import { fileLogger } from '../fileLogger.js'
 
@@ -10,6 +10,9 @@ const SCOPES = [
 ]
 
 const RAW_DATA_OFFSET = 3 // Header rows in RawData sheet
+
+/** Lazy writes: setEntryToPlayed/setEntryTimeStamp only update cache; saveUpdated flushes. Default: lazy=false (immediate). */
+let wasUpdated = { processed: false, rawData: false }
 
 /**
  * Normalize private key for PEM parsing. Handles:
@@ -62,11 +65,14 @@ function log(level: 'info' | 'warn' | 'error', msg: string, args: unknown[] = []
 
 let doc: GoogleSpreadsheet | null = null
 let rawDataSheet: GoogleSpreadsheetWorksheet | null = null
+let processedSheet: GoogleSpreadsheetWorksheet | null = null
+let processedSheetOffset = 2
 
 export async function instantiate(creds: CharityRaffleCredentials): Promise<void> {
   log('info', 'Instantiating Google Sheets', [])
 
   const { googleServiceAccountEmail, googlePrivateKey, sheetsDbId } = creds
+  processedSheetOffset = creds.processedSheetOffset ?? 2
 
   if (!googleServiceAccountEmail || !googlePrivateKey || !sheetsDbId) {
     log('error', 'Missing credentials', [])
@@ -110,8 +116,16 @@ export async function instantiate(creds: CharityRaffleCredentials): Promise<void
   }
   log('info', 'Found RawData sheet', [{ rowCount: rawDataSheet.rowCount, columnCount: rawDataSheet.columnCount }])
 
+  processedSheet = doc.sheetsByTitle['Processed'] ?? doc.sheetsByTitle['Processed ']
+  if (!processedSheet) {
+    log('warn', 'Processed sheet not found; raffle features disabled', [])
+  } else {
+    log('info', 'Found Processed sheet', [{ rowCount: processedSheet.rowCount }])
+  }
+
   await rawDataSheet.loadCells()
-  log('info', 'RawData sheet cells loaded', [])
+  if (processedSheet) await processedSheet.loadCells()
+  log('info', 'Sheet cells loaded', [])
 }
 
 export async function updateLatest(
@@ -148,4 +162,137 @@ export async function updateLatest(
 
   await rawDataSheet.saveUpdatedCells()
   log('info', 'Cells saved to Sheets', [{ rowsWritten: scrapedEntries.length }])
+}
+
+/** Flush lazy updates to Sheets. Default: lazy=false so we usually save immediately. */
+export async function saveUpdated(): Promise<void> {
+  if (wasUpdated.processed && processedSheet) {
+    await processedSheet.saveUpdatedCells()
+    wasUpdated.processed = false
+  }
+  if (wasUpdated.rawData && rawDataSheet) {
+    await rawDataSheet.saveUpdatedCells()
+    wasUpdated.rawData = false
+  }
+}
+
+/** Set entry as played (inRaffle=false). lazy=false by default = save immediately. */
+export async function setEntryToPlayed(nr: number, updatedBy: string, lazy: boolean = false): Promise<void> {
+  if (!processedSheet) throw new Error('Processed sheet not instantiated')
+  const index = nr + processedSheetOffset
+  if (!lazy) await processedSheet.loadCells(`A${index}:L${index}`)
+
+  const inRaffleCell = processedSheet.getCellByA1(`A${index}`)
+  const lastUpdatedCell = processedSheet.getCellByA1(`K${index}`)
+  const updatedByCell = processedSheet.getCellByA1(`L${index}`)
+
+  lastUpdatedCell.value = new Date(Date.now()).toISOString()
+  updatedByCell.value = updatedBy
+  inRaffleCell.value = false
+
+  wasUpdated.processed = true
+  if (!lazy) await saveUpdated()
+}
+
+/** Set timestamp for rolled winner. lazy=false by default. */
+export async function setEntryTimeStamp(nr: number, updatedBy: string, lazy: boolean = false): Promise<void> {
+  if (!processedSheet) throw new Error('Processed sheet not instantiated')
+  const index = nr + processedSheetOffset
+  if (!lazy) await processedSheet.loadCells(`A${index}:L${index}`)
+
+  const lastUpdatedCell = processedSheet.getCellByA1(`K${index}`)
+  const updatedByCell = processedSheet.getCellByA1(`L${index}`)
+
+  lastUpdatedCell.value = new Date(Date.now()).toISOString()
+  updatedByCell.value = updatedBy
+
+  wasUpdated.processed = true
+  if (!lazy) await saveUpdated()
+}
+
+/** Fetch valid raffle entries (inRaffle=true) with rollingSum for weighted selection. */
+export async function fetchValidRaffleEntries(lazy: boolean = false): Promise<{ nr: number; rollingSum: number }[]> {
+  if (!processedSheet) throw new Error('Processed sheet not instantiated')
+  if (!lazy) await processedSheet.loadCells()
+
+  const validRaffleEntries: { nr: number; rollingSum: number }[] = []
+  let i = 1 + processedSheetOffset
+
+  while (processedSheet.getCellByA1(`B${i}`).value !== null) {
+    if (processedSheet.getCellByA1(`A${i}`).value === true) {
+      const prevSum = validRaffleEntries.length > 0 ? validRaffleEntries[validRaffleEntries.length - 1].rollingSum : 0
+      validRaffleEntries.push({
+        nr: processedSheet.getCellByA1(`B${i}`).value as number,
+        rollingSum: (processedSheet.getCellByA1(`H${i}`).value as number) + prevSum,
+      })
+    }
+    i++
+  }
+  return validRaffleEntries
+}
+
+/** Fetch single entry by NR. */
+export async function fetchEntryByID(nr: number, lazy: boolean = false): Promise<ProcessedDonation> {
+  if (!processedSheet) throw new Error('Processed sheet not instantiated')
+  const index = nr + processedSheetOffset
+  if (!lazy) await processedSheet.loadCells(`A${index}:L${index}`)
+
+  const inRaffle = processedSheet.getCellByA1(`A${index}`).value as boolean
+  const trueNR = processedSheet.getCellByA1(`B${index}`).value as number
+  const flag = (processedSheet.getCellByA1(`C${index}`).value as string) ?? ''
+  const sponsor = (processedSheet.getCellByA1(`E${index}`).value as string) ?? ''
+  const date = (processedSheet.getCellByA1(`F${index}`).numberValue as number) ?? 0
+  const location = (processedSheet.getCellByA1(`G${index}`).value as string) ?? ''
+  const amount = (processedSheet.getCellByA1(`H${index}`).numberValue as number) ?? 0
+  const message = (processedSheet.getCellByA1(`I${index}`).value as string) ?? ''
+  const yeeOrPepe = ((processedSheet.getCellByA1(`J${index}`).value as string) ?? 'NONE') as ProcessedDonation['yeeOrPepe']
+
+  const lastUpdatedCell = processedSheet.getCellByA1(`K${index}`)
+  const lastUpdated = lastUpdatedCell.value ? new Date(lastUpdatedCell.value as string) : undefined
+  const updatedByCell = processedSheet.getCellByA1(`L${index}`)
+  const lastUpdatedBy = updatedByCell.value ? (updatedByCell.value as string) : undefined
+
+  return {
+    NR: trueNR,
+    inRaffle,
+    flag,
+    sponsor,
+    date,
+    location,
+    amount,
+    message,
+    yeeOrPepe,
+    lastUpdated,
+    lastUpdatedBy,
+  }
+}
+
+/** Fetch totals from Processed sheet. */
+export async function fetchTotal(lazy: boolean = false): Promise<{
+  donationCount: number
+  donationTotal: number
+  raffleTotal: number
+  raffleDonationCount: number
+}> {
+  if (!processedSheet) throw new Error('Processed sheet not instantiated')
+  if (!lazy) await processedSheet.loadCells()
+
+  let donationCount = 0
+  let donationTotal = 0
+  let raffleTotal = 0
+  let raffleDonationCount = 0
+  let i = 1 + processedSheetOffset
+
+  while (processedSheet.getCellByA1(`B${i}`).value !== null) {
+    donationCount++
+    const amount = (processedSheet.getCellByA1(`H${i}`).value as number) ?? 0
+    donationTotal += amount
+    if (processedSheet.getCellByA1(`A${i}`).value === true) {
+      raffleDonationCount++
+      raffleTotal += amount
+    }
+    i++
+  }
+
+  return { donationCount, donationTotal, raffleTotal, raffleDonationCount }
 }

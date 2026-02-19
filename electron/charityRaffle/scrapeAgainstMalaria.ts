@@ -1,3 +1,14 @@
+/**
+ * Against Malaria donation scraper. Ported from RaffleDashboard.
+ *
+ * Two scrape modes:
+ * 1. Single-page (scrapeJob style): Distribution status changes over time
+ *    (e.g. "En-route to country" → "Arrived in country" → "Distribution complete").
+ *    Running this every 15 minutes overwrites RawData with fresh values so status
+ *    updates are captured.
+ * 2. Multi-page (scrapeNPages style): Loops through all pages until the sheet
+ *    catches up with the full donation list.
+ */
 import type { Element } from 'domhandler'
 import { load, type CheerioAPI, type Cheerio } from 'cheerio'
 import puppeteer, { type Browser, type Page } from 'puppeteer'
@@ -154,6 +165,20 @@ function scrapePageFromCheerio(page: CheerioAPI): Donation[] {
   return allRows
     .map((row) => scrapeDonation(page, row))
     .filter((d): d is Donation => d !== null)
+}
+
+/**
+ * Single-page scrape: fetches first page only. Use for status updates
+ * (distribution status changes over time; overwriting catches updates).
+ */
+export async function scrapeSinglePage(fundraiserId: string): Promise<DonationBatch> {
+  const ds = await DonationsScraper.createScraper(fundraiserId, 1)
+  try {
+    const batch = await ds.donationBatch()
+    return batch
+  } finally {
+    await ds.close()
+  }
 }
 
 export interface DonationBatch {

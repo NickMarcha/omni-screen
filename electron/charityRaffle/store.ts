@@ -9,6 +9,10 @@ const defaultCredentials: CharityRaffleCredentials = {
   sheetsDbId: '',
   fundraiserId: '8960',
   processedSheetOffset: 2,
+  conductorName: '',
+  strawPollApiKey: '',
+  raffleAmount: 3,
+  raffleDeadline: 150,
 }
 
 let store: Store | null = null

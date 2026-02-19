@@ -47,4 +47,25 @@ export type CharityRaffleCredentials = {
   sheetsDbId: string
   fundraiserId: string
   processedSheetOffset: number
+  conductorName: string
+  strawPollApiKey?: string
+  raffleAmount?: number
+  raffleDeadline?: number
+}
+
+export type YeeOrPepe = 'YEE' | 'PEPE' | 'NONE'
+
+/** Processed sheet entry (from RaffleDashboard). Used for raffle rolls. */
+export interface ProcessedDonation {
+  NR: number
+  inRaffle: boolean
+  flag: string
+  sponsor: string
+  date: number
+  location: string
+  amount: number
+  message: string
+  yeeOrPepe: YeeOrPepe
+  lastUpdated?: Date
+  lastUpdatedBy?: string
 }
