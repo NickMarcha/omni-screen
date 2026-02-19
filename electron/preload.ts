@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     return ipcRenderer.invoke(channel as string, ...omit)
   },
 
-  // You can expose other APTs you need here.
-  // ...
+  // Shared store (bookmarked streamers, prefs)
+  store: {
+    getBookmarkedStreamers: () => ipcRenderer.invoke('store-get-bookmarked-streamers'),
+    setBookmarkedStreamers: (streamers: unknown) => ipcRenderer.invoke('store-set-bookmarked-streamers', streamers),
+    getMinimizeToTray: () => ipcRenderer.invoke('store-get-minimize-to-tray'),
+    setMinimizeToTray: (value: boolean) => ipcRenderer.invoke('store-set-minimize-to-tray', value),
+  },
 })

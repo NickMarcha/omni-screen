@@ -7,5 +7,6 @@ declare global {
       webview: any
     }
   }
+
 }
 

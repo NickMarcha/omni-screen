@@ -133,7 +133,7 @@ function App() {
     }
   }, [])
 
-  // Protocol add-streamer: merge into bookmarked streamers, notify OmniScreen, show toast
+  // Protocol add-streamer: merge into bookmarked streamers (shared store), notify OmniScreen, show toast
   useEffect(() => {
     const showToast = (type: 'success' | 'error', message: string) => {
       if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
@@ -143,7 +143,7 @@ function App() {
         toastTimeoutRef.current = null
       }, TOAST_DURATION_MS)
     }
-    const handler = (
+    const handler = async (
       _event: unknown,
       result: { operation?: string; ok?: boolean; message?: string; streamer?: Record<string, unknown> }
     ) => {
@@ -153,22 +153,25 @@ function App() {
         return
       }
       if (!result.streamer) return
+      const streamer = result.streamer as Record<string, unknown>
+      if (typeof streamer.id !== 'string' || typeof streamer.nickname !== 'string') {
+        showToast('error', 'Invalid bookmark data')
+        return
+      }
       try {
-        const key = 'omni-screen:bookmarked-streamers'
-        const raw = localStorage.getItem(key)
-        const list: unknown[] = raw ? JSON.parse(raw) : []
-        if (!Array.isArray(list)) {
-          showToast('error', 'Failed to add bookmark')
+        const store = window.ipcRenderer?.store
+        if (!store) {
+          showToast('error', 'Store not available')
           return
         }
-        const streamer = result.streamer as Record<string, unknown>
-        if (typeof streamer.id !== 'string' || typeof streamer.nickname !== 'string') {
-          showToast('error', 'Invalid bookmark data')
+        const list = (await store.getBookmarkedStreamers()) as unknown[]
+        const arr = Array.isArray(list) ? [...list] : []
+        if (arr.some((x: any) => x?.id === streamer.id)) {
+          showToast('success', 'Bookmark already saved')
           return
         }
-        list.push(streamer)
-        localStorage.setItem(key, JSON.stringify(list))
-        window.dispatchEvent(new CustomEvent('bookmarked-streamers-changed'))
+        arr.push(streamer)
+        await store.setBookmarkedStreamers(arr)
         showToast('success', 'Bookmark saved')
       } catch (e) {
         console.error('[App] protocol add-streamer failed:', e)

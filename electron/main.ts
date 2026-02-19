@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell, globalShortcut } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, clipboard, session, BrowserView, shell, globalShortcut, Tray, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createServer } from 'http'
@@ -33,6 +33,7 @@ import { ChatSubscriptionRegistry } from './chatSubscriptionRegistry'
 import type { ProtocolHandleResult } from './extensions/types.js'
 import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
 import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
+import { getBookmarkedStreamers, setBookmarkedStreamers, getMinimizeToTray, setMinimizeToTray, type BookmarkedStreamer } from './sharedStore'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -87,6 +88,17 @@ export function getAppConfigForRenderer() {
 }
 
 ipcMain.handle('get-app-config', () => getAppConfigForRenderer())
+
+// Shared store (bookmarked streamers, prefs) – main process owns; renderer accesses via IPC
+ipcMain.handle('store-get-bookmarked-streamers', () => getBookmarkedStreamers())
+ipcMain.handle('store-set-bookmarked-streamers', (_event, streamers: BookmarkedStreamer[]) => {
+  setBookmarkedStreamers(Array.isArray(streamers) ? streamers : [])
+  const payload = 'bookmarked-streamers-changed'
+  if (win && !win.isDestroyed()) win.webContents.send(payload)
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(payload)
+})
+ipcMain.handle('store-get-minimize-to-tray', () => getMinimizeToTray())
+ipcMain.handle('store-set-minimize-to-tray', (_event, value: boolean) => setMinimizeToTray(!!value))
 
 ipcMain.handle('get-installed-extensions', () => readExtensionsList())
 
@@ -159,6 +171,7 @@ if (process.argv.includes('--version')) {
 let win: BrowserWindow | null
 let viewerWin: BrowserWindow | null = null
 let chatWin: BrowserWindow | null = null
+let tray: Tray | null = null
 /** Cached embed chat state for syncing to external chat window (main window is source of truth). */
 let cachedEmbedChatsState: { selectedEmbedChatKeys: string[]; selectedEmbedKeys: string[] } | null = null
 /** Chat window: transparent mode (requires window recreate). Stored in main process; synced from renderer on load. */
@@ -835,6 +848,104 @@ function buildContextMenuItems(
   return menuItems
 }
 
+let productionHttpServer: ReturnType<typeof createServer> | null = null
+
+function ensureProductionServer(): Promise<void> {
+  if (productionServerBaseUrl) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const localServer = createServer((req, res) => {
+      let filePath = req.url === '/' ? '/index.html' : req.url || '/index.html'
+      filePath = filePath.split('?')[0]
+      const fullPath = path.join(RENDERER_DIST, filePath)
+      try {
+        const stats = statSync(fullPath)
+        if (stats.isFile()) {
+          const content = readFileSync(fullPath)
+          const ext = path.extname(fullPath).toLowerCase()
+          let contentType = 'text/html'
+          if (ext === '.js') contentType = 'application/javascript'
+          else if (ext === '.css') contentType = 'text/css'
+          else if (ext === '.json') contentType = 'application/json'
+          else if (ext === '.png') contentType = 'image/png'
+          else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg'
+          else if (ext === '.svg') contentType = 'image/svg+xml'
+          else if (ext === '.ico') contentType = 'image/x-icon'
+          res.writeHead(200, { 'Content-Type': contentType })
+          res.end(content)
+        } else {
+          try {
+            const content = readFileSync(path.join(RENDERER_DIST, 'index.html'))
+            res.writeHead(200, { 'Content-Type': 'text/html' })
+            res.end(content)
+          } catch {
+            res.writeHead(404)
+            res.end('Not found')
+          }
+        }
+      } catch {
+        try {
+          const content = readFileSync(path.join(RENDERER_DIST, 'index.html'))
+          res.writeHead(200, { 'Content-Type': 'text/html' })
+          res.end(content)
+        } catch {
+          res.writeHead(404)
+          res.end('Not found')
+        }
+      }
+    })
+    productionHttpServer = localServer
+    const FIXED_PORT = 5173
+    localServer.listen(FIXED_PORT, '127.0.0.1', () => {
+      productionServerBaseUrl = `http://127.0.0.1:${FIXED_PORT}`
+      console.log(`[Main Process] HTTP server for tray/OBS: ${productionServerBaseUrl}`)
+      resolve()
+    }).on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        localServer.listen(0, '127.0.0.1', () => {
+          const port = (localServer.address() as { port: number })?.port || 0
+          productionServerBaseUrl = `http://127.0.0.1:${port}`
+          console.log(`[Main Process] HTTP server fallback port: ${productionServerBaseUrl}`)
+          resolve()
+        })
+      } else {
+        console.error('[Main Process] Failed to start HTTP server:', err)
+        reject(err)
+      }
+    })
+  })
+}
+
+function createTray() {
+  const iconPath = path.join(process.env.APP_ROOT ?? app.getAppPath(), 'build', 'icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  if (icon.isEmpty()) {
+    try { fileLogger.writeLog('warn', 'main', '[Tray] Icon not found', [iconPath]) } catch { /* ignore */ }
+    return
+  }
+  tray = new Tray(icon.resize({ width: 16, height: 16 }))
+  tray.setToolTip('Omni Screen')
+  tray.on('click', () => {
+    if (win && !win.isDestroyed()) {
+      win.show()
+      win.focus()
+    } else {
+      createWindow()
+    }
+  })
+  updateTrayContextMenu()
+}
+
+function updateTrayContextMenu() {
+  if (!tray) return
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Show Omni Screen', click: () => { if (win && !win.isDestroyed()) win.show(); else createWindow() } },
+    { label: 'Show Chat', click: () => { if (chatWin && !chatWin.isDestroyed()) { chatWin.show(); chatWin.focus() } else if (win && !win.isDestroyed()) { win.show(); win.focus(); win.webContents.send('open-chat-from-tray') } else { createWindow() } } },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { tray?.destroy(); tray = null; app.quit() } },
+  ])
+  tray.setContextMenu(contextMenu)
+}
+
 function createWindow() {
   // Handle external links - open in default browser
   // This will be set on the window after it's created
@@ -1210,6 +1321,8 @@ function createWindow() {
 
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
+  } else if (productionServerBaseUrl) {
+    win.loadURL(productionServerBaseUrl)
   } else {
     // In production, use a local HTTP server instead of file://
     // This makes the environment identical to dev mode and fixes embed issues
@@ -1357,11 +1470,15 @@ function getOrCreateViewerWindow(): BrowserWindow {
   return viewerWin
 }
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// When all windows are closed: on macOS, keep running (dock); otherwise minimize to tray if enabled.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (process.platform === 'darwin') return
+  if (getMinimizeToTray() && tray) {
+    win = null
+    chatWin = null
+    viewerWin = null
+    // App stays running; tray icon remains. User can click tray to show window.
+  } else {
     app.quit()
     win = null
   }
@@ -4305,6 +4422,10 @@ process.on('unhandledRejection', (reason, _promise) => {
 
 // Cleanup on app quit
 app.on('before-quit', () => {
+  if (productionHttpServer) {
+    productionHttpServer.close()
+    productionHttpServer = null
+  }
   if (chatWebSocket) {
     chatWebSocket.destroy()
     chatWebSocket = null
@@ -4420,7 +4541,14 @@ app.whenReady().then(() => {
   // Clear expired cache entries on startup
   mentionCache.clearExpired()
   createApplicationMenu()
-  createWindow()
+  createTray()
+
+  // In production, start HTTP server early so OBS/tray mode can load the app when windows are closed
+  if (!VITE_DEV_SERVER_URL) {
+    ensureProductionServer().then(() => createWindow()).catch(() => createWindow())
+  } else {
+    createWindow()
+  }
 
   // First launch with protocol URL (e.g. Windows): argv may contain the URL. Defer send until
   // the main window has loaded so the renderer's protocol-result listener is attached.

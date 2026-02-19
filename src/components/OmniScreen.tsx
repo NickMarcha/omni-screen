@@ -1601,38 +1601,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [ytChannelError, setYtChannelError] = useState<string | null>(null)
   const [pasteLinkError, setPasteLinkError] = useState<string | null>(null)
 
-  // ---- Bookmarked streamers (permanent list in Settings; when live appear in dock). Stored separately from pinned embeds (manual, unpinnable). ----
-  const [bookmarkedStreamers, setBookmarkedStreamers] = useState<BookmarkedStreamer[]>(() => {
-    try {
-      let raw = localStorage.getItem('omni-screen:bookmarked-streamers')
-      if (!raw) {
-        raw = localStorage.getItem('omni-screen:pinned-streamers')
-        if (raw) {
-          try {
-            localStorage.setItem('omni-screen:bookmarked-streamers', raw)
-          } catch {
-            // ignore
-          }
-        }
-      }
-      if (!raw) return []
-      const arr = JSON.parse(raw)
-      if (!Array.isArray(arr)) return []
-      return arr.filter(
-        (x: any) => x && typeof x.id === 'string'
-      ).map((x: any) => ({
-        ...x,
-        nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
-        color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
-        youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
-        kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
-        twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
-        openWhenLive: x.openWhenLive === true,
-      })) as BookmarkedStreamer[]
-    } catch {
-      return []
-    }
-  })
+  // ---- Bookmarked streamers (permanent list in Settings; when live appear in dock). Stored in shared store (main process); renderer loads via IPC. ----
+  const [bookmarkedStreamers, setBookmarkedStreamers] = useState<BookmarkedStreamer[]>([])
   type SettingsTab = 'bookmarks' | 'chat' | 'liteLinkScroller' | 'extensions' | 'keybinds' | 'watermark'
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('bookmarks')
@@ -1672,40 +1642,83 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   })
 
+  // Load bookmarked streamers from shared store on mount; migrate from localStorage if store is empty
+  const normalizeStreamers = useCallback((raw: unknown): BookmarkedStreamer[] => {
+    if (!Array.isArray(raw)) return []
+    return raw.filter((x: unknown) => x && typeof (x as any).id === 'string').map((x: any) => ({
+      ...x,
+      nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
+      color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
+      youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
+      kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
+      twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
+      openWhenLive: x.openWhenLive === true,
+    })) as BookmarkedStreamer[]
+  }, [])
+
   useEffect(() => {
-    try {
-      localStorage.setItem('omni-screen:bookmarked-streamers', JSON.stringify(bookmarkedStreamers))
-    } catch {
-      // ignore
+    const store = window.ipcRenderer?.store
+    if (!store) return
+    const load = async () => {
+      try {
+        let list = (await store.getBookmarkedStreamers()) as unknown[]
+        if (!Array.isArray(list)) list = []
+        const normalized = normalizeStreamers(list)
+        if (normalized.length > 0) {
+          setBookmarkedStreamers(normalized)
+          return
+        }
+        // Migration: store empty, try localStorage
+        let raw = localStorage.getItem('omni-screen:bookmarked-streamers')
+        if (!raw) raw = localStorage.getItem('omni-screen:pinned-streamers')
+        if (raw) {
+          const migrated = normalizeStreamers(JSON.parse(raw))
+          if (migrated.length > 0) {
+            await store.setBookmarkedStreamers(migrated)
+            setBookmarkedStreamers(migrated)
+            try {
+              localStorage.removeItem('omni-screen:pinned-streamers')
+              localStorage.removeItem('omni-screen:bookmarked-streamers')
+            } catch {
+              // ignore
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
+    load()
+  }, [normalizeStreamers])
+
+  // Persist to shared store when bookmarked streamers change
+  useEffect(() => {
+    const store = window.ipcRenderer?.store
+    if (!store) return
+    store.setBookmarkedStreamers(bookmarkedStreamers).catch(() => {})
   }, [bookmarkedStreamers])
 
-  // Sync from localStorage when protocol add-streamer adds a bookmark (from another window or before OmniScreen mounted)
+  // Sync when protocol add-streamer or another source updates the store (main sends bookmarked-streamers-changed)
   useEffect(() => {
-    const handler = () => {
+    const ipc = window.ipcRenderer
+    if (!ipc) return
+    const handler = async () => {
       try {
-        const raw = localStorage.getItem('omni-screen:bookmarked-streamers')
-        if (!raw) return
-        const arr = JSON.parse(raw)
-        if (!Array.isArray(arr)) return
-        const next = arr.filter((x: any) => x && typeof x.id === 'string').map((x: any) => ({
-          ...x,
-          nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
-          color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
-          youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
-          kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
-          twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
-          openWhenLive: x.openWhenLive === true,
-        })) as BookmarkedStreamer[]
+        const store = ipc.store
+        if (!store) return
+        const list = (await store.getBookmarkedStreamers()) as unknown[]
+        const next = normalizeStreamers(list)
         setBookmarkedStreamers(next)
         setBookmarkedPollRefreshTrigger((t) => t + 1)
       } catch {
         // ignore
       }
     }
-    window.addEventListener('bookmarked-streamers-changed', handler)
-    return () => window.removeEventListener('bookmarked-streamers-changed', handler)
-  }, [])
+    ipc.on('bookmarked-streamers-changed', handler)
+    return () => {
+      ipc.off('bookmarked-streamers-changed', handler)
+    }
+  }, [normalizeStreamers])
 
   useEffect(() => {
     try {
