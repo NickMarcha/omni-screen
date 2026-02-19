@@ -86,6 +86,7 @@ function buildWatermarkLines(text: string, textCase: WatermarkTextCase): string[
 import { Icon } from './Icon'
 import { ConfirmDialog } from './ConfirmDialog'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
+import { parseChatEmbedParams, mergeWithStorageDefaults, buildChatEmbedQuery } from '../utils/chatEmbedUrl'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
@@ -1771,12 +1772,30 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           setChatPaneOpen(false)
           setChatExternalWindowOpen(true)
           const base = `${window.location.origin}${window.location.pathname || '/'}`
-          const url = `${base}#chat-window`
           const chatArr = Array.from(selectedEmbedChatKeys.values())
           const embedArr = Array.from(selectedEmbedKeys.values())
           const transparentBg = typeof localStorage !== 'undefined' && localStorage.getItem('chat-window-transparent-background') === 'true'
+          const embedQueryParams = buildChatEmbedQuery({
+            selectedEmbedChatKeys: chatArr,
+            selectedEmbedKeys: embedArr,
+            chatTransparent: transparentBg,
+            maxLines: combinedMaxLines,
+            maxLinesScroll: combinedMaxLinesScroll,
+            showTimestamps: combinedShowTimestamps,
+            showLabels: combinedShowLabels,
+            showPlatformIcons: combinedShowPlatformIcons,
+            sortMode: combinedSortMode,
+            highlightTerms: combinedHighlightTerms,
+            pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
+            showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
+            includePrimaryChat: combinedIncludePrimaryChat,
+            chatBackgroundColor: undefined,
+            chatBackgroundOpacity: undefined,
+            chatPanelOpacity: combinedChatOverlayOpacity,
+          })
           window.ipcRenderer.invoke('open-chat-external-window', {
-            url,
+            url: base,
+            embedQueryParams: embedQueryParams ? `?${embedQueryParams}` : undefined,
             selectedEmbedChatKeys: chatArr,
             selectedEmbedKeys: embedArr,
             transparentBackground: transparentBg,
@@ -1800,6 +1819,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       chatOnlyMode,
       selectedEmbedChatKeys,
       selectedEmbedKeys,
+      combinedMaxLines,
+      combinedMaxLinesScroll,
+      combinedChatOverlayOpacity,
     ]
   )
 
@@ -2475,82 +2497,50 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [chatOnlyMode])
 
-  // Subscribe Kick chatrooms for "Combined chat" based on per-embed Chat toggles.
-  // When chatOnlyMode (external window), main window handles targets; chat window just receives messages.
+  // Subscribe platform chats via registry – main window and chat window each register; backend computes union.
   useEffect(() => {
-    if (chatOnlyMode) return
-    const shouldRun = chatPaneOpen || chatExternalWindowOpen
+    const consumerId = chatOnlyMode ? 'chat-win' : 'main'
+    const shouldRun = chatOnlyMode || chatPaneOpen || chatExternalWindowOpen
     if (!shouldRun) {
-      window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
+      window.ipcRenderer.invoke('chat-unregister-consumer', { consumerId }).catch(() => {})
       return
     }
-
-    const slugs: string[] = []
-    selectedEmbedChatKeys.forEach((key) => {
-      const parsed = parseEmbedKey(key)
-      if (!parsed) return
-      if (parsed.platform !== 'kick') return
-      slugs.push(String(parsed.id))
-    })
-
-    // De-dupe and keep stable-ish order.
-    const uniq = Array.from(new Set(slugs)).sort()
-    window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: uniq }).catch(() => {})
-  }, [chatOnlyMode, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys])
-
-  // Subscribe YouTube live chat for "Combined chat" based on per-embed Chat toggles.
-  useEffect(() => {
-    if (chatOnlyMode) return
-    const shouldRun = chatPaneOpen || chatExternalWindowOpen
-    if (!shouldRun) {
-      window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: [], opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
-      return
+    const keys = chatOnlyMode
+      ? Array.from(selectedEmbedChatKeys)
+      : (() => {
+          const kickKeys = Array.from(selectedEmbedChatKeys).filter((k) => k.startsWith('kick:'))
+          const ytKeys: string[] = []
+          selectedEmbedChatKeys.forEach((key) => {
+            if (!key.startsWith('youtube:')) return
+            const direct = combinedAvailableEmbeds.get(key)
+            if (direct?.id) {
+              ytKeys.push(`youtube:${direct.id}`)
+              return
+            }
+            const want = key.slice('youtube:'.length)
+            for (const [k, e] of combinedAvailableEmbeds.entries()) {
+              if (!k.startsWith('youtube:')) continue
+              if (String(e?.id || '').toLowerCase() === want.toLowerCase()) {
+                ytKeys.push(`youtube:${e.id}`)
+                return
+              }
+            }
+            ytKeys.push(key)
+          })
+          const twitchKeys = Array.from(selectedEmbedChatKeys).filter((k) => k.startsWith('twitch:'))
+          return [...kickKeys, ...ytKeys, ...twitchKeys]
+        })()
+    window.ipcRenderer.invoke('chat-register-consumer', { consumerId, embedChatKeys: keys }).catch(() => {})
+    return () => {
+      window.ipcRenderer.invoke('chat-unregister-consumer', { consumerId }).catch(() => {})
     }
-
-    const ids: string[] = []
-    selectedEmbedChatKeys.forEach((key) => {
-      const parsed = parseEmbedKey(key)
-      if (!parsed) return
-      if (parsed.platform !== 'youtube') return
-      const direct = combinedAvailableEmbeds.get(key)
-      if (direct?.id) {
-        ids.push(String(direct.id))
-        return
-      }
-      const want = String(parsed.id)
-      for (const [k, e] of combinedAvailableEmbeds.entries()) {
-        if (!k.startsWith('youtube:')) continue
-        if (String(e?.id || '').toLowerCase() === want.toLowerCase()) {
-          ids.push(String(e.id))
-          return
-        }
-      }
-    })
-
-    const uniq = Array.from(new Set(ids)).sort()
-    window.ipcRenderer.invoke('youtube-chat-set-targets', { videoIds: uniq, opts: { delayMultiplier: youTubePollMultiplier } }).catch(() => {})
-  }, [chatOnlyMode, combinedAvailableEmbeds, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys, youTubePollMultiplier])
-
-  // Subscribe Twitch IRC chat for "Combined chat" based on per-embed Chat toggles.
-  useEffect(() => {
-    if (chatOnlyMode) return
-    const shouldRun = chatPaneOpen || chatExternalWindowOpen
-    if (!shouldRun) {
-      window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: [] }).catch(() => {})
-      return
-    }
-
-    const chans: string[] = []
-    selectedEmbedChatKeys.forEach((key) => {
-      const parsed = parseEmbedKey(key)
-      if (!parsed) return
-      if (parsed.platform !== 'twitch') return
-      chans.push(String(parsed.id))
-    })
-
-    const uniq = Array.from(new Set(chans)).sort()
-    window.ipcRenderer.invoke('twitch-chat-set-targets', { channels: uniq }).catch(() => {})
-  }, [chatOnlyMode, chatPaneOpen, chatExternalWindowOpen, selectedEmbedChatKeys])
+  }, [
+    chatOnlyMode,
+    chatPaneOpen,
+    chatExternalWindowOpen,
+    selectedEmbedChatKeys,
+    combinedAvailableEmbeds,
+  ])
 
   // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
   useEffect(() => {
@@ -3465,6 +3455,19 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [chatOnlyMode, overlayMessagesClickThrough, keybinds])
 
+  /** When chatOnlyMode (popout/OBS), derive display config from URL params with storage fallback. */
+  const chatEmbedDisplayConfig = useMemo(() => {
+    if (!chatOnlyMode) return null
+    const urlConfig = parseChatEmbedParams(new URLSearchParams(typeof window !== 'undefined' ? window.location.search : ''))
+    return mergeWithStorageDefaults(urlConfig, (k) => {
+      try {
+        return typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null
+      } catch {
+        return null
+      }
+    })
+  }, [chatOnlyMode])
+
   if (chatOnlyMode) {
     return (
       <div className={`h-full min-h-0 text-base-content flex flex-col overflow-hidden ${chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}>
@@ -3473,7 +3476,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           createPortal(
             <CombinedChat
               primaryChatSourceId={primaryChatSourceId}
-              enablePrimaryChat={combinedIncludePrimaryChat && primaryChatSourceAvailable}
+              enablePrimaryChat={(chatEmbedDisplayConfig?.includePrimaryChat ?? combinedIncludePrimaryChat) && primaryChatSourceAvailable}
               showPrimaryChatInput={showChatInput}
               enabledKickSlugs={enabledKickSlugs}
               enabledYoutubeVideoIds={enabledYoutubeVideoIds}
@@ -3485,15 +3488,15 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               primaryChatSourceLabelText={primaryChatSourceLabelText}
               primaryChatSourceIconUrl={primaryChatSourceIconUrl}
               onOpenLink={handleChatOpenLink}
-              maxLines={combinedMaxLines}
-              maxLinesScroll={combinedMaxLinesScroll}
-              showTimestamps={combinedShowTimestamps}
-              showSourceLabels={combinedShowLabels}
-              showPlatformIcons={combinedShowPlatformIcons}
-              sortMode={combinedSortMode}
-              highlightTerms={combinedHighlightTerms}
-              pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
-              showPrimaryChatSourceFlairsAndColors={!combinedDisablePrimaryChatFlairsAndColors}
+              maxLines={chatEmbedDisplayConfig?.maxLines ?? combinedMaxLines}
+              maxLinesScroll={chatEmbedDisplayConfig?.maxLinesScroll ?? combinedMaxLinesScroll}
+              showTimestamps={chatEmbedDisplayConfig?.showTimestamps ?? combinedShowTimestamps}
+              showSourceLabels={chatEmbedDisplayConfig?.showLabels ?? combinedShowLabels}
+              showPlatformIcons={chatEmbedDisplayConfig?.showPlatformIcons ?? combinedShowPlatformIcons}
+              sortMode={chatEmbedDisplayConfig?.sortMode ?? combinedSortMode}
+              highlightTerms={chatEmbedDisplayConfig?.highlightTerms ?? combinedHighlightTerms}
+              pauseEmoteAnimationsOffScreen={chatEmbedDisplayConfig?.pauseEmoteOffscreen ?? combinedPauseEmoteAnimationsOffScreen}
+              showPrimaryChatSourceFlairsAndColors={chatEmbedDisplayConfig?.showPrimaryChatFlairs ?? !combinedDisablePrimaryChatFlairsAndColors}
               contextMenuConfig={combinedChatContextMenuConfig}
               onCountChange={setCombinedMsgCount}
               onPrimaryChatUserCountChange={setCombinedPrimaryChatUserCount}
@@ -3504,9 +3507,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               channelSwitchKeybind={keybinds['CombinedChat.Input.SwitchChannelForwards']}
               channelSwitchShortcutLabel={formatKeybind(keybinds['CombinedChat.Input.SwitchChannelForwards'])}
               overlayMode={false}
-              overlayOpacity={combinedChatOverlayOpacity}
+              overlayOpacity={chatEmbedDisplayConfig?.chatPanelOpacity ?? combinedChatOverlayOpacity}
               messagesClickThrough={false}
-              chatAreaTransparentBackground={chatWindowTransparentBackground}
+              chatAreaTransparentBackground={chatEmbedDisplayConfig?.chatTransparent ?? chatWindowTransparentBackground}
+              chatBackgroundColor={chatEmbedDisplayConfig?.chatBackgroundColor}
+              chatBackgroundOpacity={chatEmbedDisplayConfig?.chatBackgroundOpacity}
             />,
             chatOnlyContainer
           )}

@@ -29,6 +29,7 @@ import { getChannelIdByLogin, sendChatMessage as sendTwitchChatMessageGql } from
 import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeLiveOrLatest'
 import { checkUrlIsLive } from './urlIsLive'
 import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
+import { ChatSubscriptionRegistry } from './chatSubscriptionRegistry'
 import type { ProtocolHandleResult } from './extensions/types.js'
 import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
 import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
@@ -208,6 +209,7 @@ function getLiveFeedYouTubeVideoIdForStreamer(streamerNickname?: string): string
 let kickChatManager: KickChatManager | null = null
 let youTubeChatManager: YouTubeChatManager | null = null
 let twitchChatManager: TwitchChatManager | null = null
+const chatSubscriptionRegistry = new ChatSubscriptionRegistry()
 
 // Update transparency menu to reflect current opacity
 function updateTransparencyMenu(opacity: number) {
@@ -1531,6 +1533,8 @@ async function createChatWindow(loadUrl: string): Promise<void> {
   chatWin.on('closed', () => {
     if (chatWin === thisChatWin) {
       chatWin = null
+      chatSubscriptionRegistry.unregister('chat-win')
+      applyChatSubscriptionTargets()
       if (chatWindowClickThroughShortcut) {
         globalShortcut.unregister(chatWindowClickThroughShortcut)
         chatWindowClickThroughShortcut = null
@@ -1578,6 +1582,7 @@ async function createChatWindow(loadUrl: string): Promise<void> {
 
 ipcMain.handle('open-chat-external-window', async (_event, payload: {
   url?: string
+  embedQueryParams?: string
   selectedEmbedChatKeys?: string[]
   selectedEmbedKeys?: string[]
   transparentBackground?: boolean
@@ -1603,10 +1608,15 @@ ipcMain.handle('open-chat-external-window', async (_event, payload: {
     return { success: true }
   }
   const [base, hash] = url.split('#')
-  const separator = base.includes('?') ? '&' : '?'
-  let loadUrl = `${base}${separator}embedChats=${encodeURIComponent(JSON.stringify(cachedEmbedChatsState))}`
-  if (chatWindowTransparentBackground) loadUrl += '&chatTransparent=true'
-  if (hash) loadUrl += `#${hash}`
+  const queryPart = typeof payload?.embedQueryParams === 'string' && payload.embedQueryParams.trim()
+    ? (payload.embedQueryParams.startsWith('?') ? payload.embedQueryParams : `?${payload.embedQueryParams}`)
+    : (() => {
+        const separator = base.includes('?') ? '&' : '?'
+        let q = `${separator}embedChats=${encodeURIComponent(JSON.stringify(cachedEmbedChatsState))}`
+        if (chatWindowTransparentBackground) q += '&chatTransparent=true'
+        return q
+      })()
+  const loadUrl = `${base}${queryPart}${hash ? `#${hash}` : '#chat-window'}`
   await createChatWindow(loadUrl)
   return { success: true }
 })
@@ -3868,28 +3878,99 @@ ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data:
   return { success: true }
 })
 
-// Kick (Pusher) chat IPC handlers
+function platformChatSafeSend(ch: string, ...a: unknown[]) {
+  for (const w of [win, chatWin]) {
+    if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
+    try {
+      w.webContents.send(ch, ...a)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Apply subscription registry union to platform chat managers. Creates managers when needed. */
+function applyChatSubscriptionTargets(opts?: { youTubeDelayMultiplier?: number }) {
+  const kickSlugs = chatSubscriptionRegistry.getKickSlugs()
+  const ytIds = chatSubscriptionRegistry.getYouTubeVideoIds()
+  const twitchChans = chatSubscriptionRegistry.getTwitchChannels()
+
+  if (kickSlugs.length > 0 || kickChatManager) {
+    if (!kickChatManager) {
+      kickChatManager = new KickChatManager()
+      kickChatManager.on('message', (msg: { slug?: string }) => {
+        const embedKey = msg?.slug ? `kick:${msg.slug}` : ''
+        if (embedKey) chatSubscriptionRegistry.addToCache(embedKey, 'kick-chat-message', msg)
+        platformChatSafeSend('kick-chat-message', msg)
+      })
+      kickChatManager.on('messageDeleted', (p) => platformChatSafeSend('kick-chat-message-deleted', p))
+      kickChatManager.on('userBanned', (p) => platformChatSafeSend('kick-chat-user-banned', p))
+      kickChatManager.on('userUnbanned', (p) => platformChatSafeSend('kick-chat-user-unbanned', p))
+      kickChatManager.on('pusherError', (p) => platformChatSafeSend('kick-chat-pusher-error', p))
+    }
+    kickChatManager.setTargets(kickSlugs).catch(() => {})
+  }
+
+  if (ytIds.length > 0 || youTubeChatManager) {
+    if (!youTubeChatManager) {
+      youTubeChatManager = new YouTubeChatManager()
+      youTubeChatManager.on('message', (msg: { videoId?: string }) => {
+        const embedKey = msg?.videoId ? `youtube:${msg.videoId}` : ''
+        if (embedKey) chatSubscriptionRegistry.addToCache(embedKey, 'youtube-chat-message', msg)
+        platformChatSafeSend('youtube-chat-message', msg)
+      })
+    }
+    youTubeChatManager.setTargets(ytIds, { delayMultiplier: opts?.youTubeDelayMultiplier ?? 1 }).catch(() => {})
+  }
+
+  if (twitchChans.length > 0 || twitchChatManager) {
+    if (!twitchChatManager) {
+      twitchChatManager = new TwitchChatManager()
+      twitchChatManager.on('message', (msg: { channel?: string }) => {
+        const embedKey = msg?.channel ? `twitch:${msg.channel.toLowerCase()}` : ''
+        if (embedKey) chatSubscriptionRegistry.addToCache(embedKey, 'twitch-chat-message', msg)
+        platformChatSafeSend('twitch-chat-message', msg)
+      })
+      twitchChatManager.on('names', (p: { channel: string; names: string[] }) => platformChatSafeSend('twitch-chat-names', p))
+    }
+    twitchChatManager.setTargets(twitchChans).catch(() => {})
+  }
+}
+
+/** Register a chat consumer and apply union targets. Sends cached messages to new consumers. */
+ipcMain.handle('chat-register-consumer', async (_event, payload: { consumerId: string; embedChatKeys: string[] }) => {
+  const consumerId = typeof payload?.consumerId === 'string' ? payload.consumerId.trim() : ''
+  const keys = Array.isArray(payload?.embedChatKeys) ? payload.embedChatKeys.filter((k): k is string => typeof k === 'string') : []
+  if (!consumerId) return
+  chatSubscriptionRegistry.register(consumerId, keys)
+  applyChatSubscriptionTargets()
+  const cached = chatSubscriptionRegistry.getCachedForKeys(new Set(keys))
+  const target = consumerId === 'chat-win' ? chatWin?.webContents : win?.webContents
+  if (target && !target.isDestroyed() && cached.length > 0) {
+    cached.forEach((m) => {
+      try {
+        target.send(m.channel, m.payload)
+      } catch {
+        /* ignore */
+      }
+    })
+  }
+})
+
+ipcMain.handle('chat-unregister-consumer', async (_event, payload: { consumerId: string }) => {
+  const consumerId = typeof payload?.consumerId === 'string' ? payload.consumerId.trim() : ''
+  if (!consumerId) return
+  chatSubscriptionRegistry.unregister(consumerId)
+  applyChatSubscriptionTargets()
+})
+
+// Kick (Pusher) chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers (e.g. LinkScroller)
 ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[] }) => {
   try {
     const slugs = Array.isArray(payload?.slugs) ? payload.slugs : []
-    if (!kickChatManager) {
-      kickChatManager = new KickChatManager()
-
-      const safeSend = (ch: string, ...a: any[]) => {
-        for (const w of [win, chatWin]) {
-          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
-          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
-        }
-      }
-
-      kickChatManager.on('message', (msg) => safeSend('kick-chat-message', msg))
-      kickChatManager.on('messageDeleted', (payload) => safeSend('kick-chat-message-deleted', payload))
-      kickChatManager.on('userBanned', (payload) => safeSend('kick-chat-user-banned', payload))
-      kickChatManager.on('userUnbanned', (payload) => safeSend('kick-chat-user-unbanned', payload))
-      kickChatManager.on('pusherError', (payload) => safeSend('kick-chat-pusher-error', payload))
-    }
-
-    await kickChatManager.setTargets(slugs)
+    const keys = slugs.map((s) => `kick:${String(s).toLowerCase()}`)
+    chatSubscriptionRegistry.register('legacy-kick', keys)
+    applyChatSubscriptionTargets()
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
@@ -4056,56 +4137,28 @@ ipcMain.handle('youtube-send-message', async (_event, payload: { videoId: string
   }
 })
 
-// YouTube chat IPC handlers (polls youtubei live_chat endpoint)
+// YouTube chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers
 ipcMain.handle(
   'youtube-chat-set-targets',
   async (_event, payload: { videoIds: string[]; opts?: { delayMultiplier?: number } }) => {
   try {
     const videoIds = Array.isArray(payload?.videoIds) ? payload.videoIds : []
-    const opts = payload?.opts
-
-    if (!youTubeChatManager) {
-      youTubeChatManager = new YouTubeChatManager()
-
-      const safeSend = (ch: string, ...a: any[]) => {
-        for (const w of [win, chatWin]) {
-          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
-          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
-        }
-      }
-
-      youTubeChatManager.on('message', (msg) => safeSend('youtube-chat-message', msg))
-    }
-
-    await youTubeChatManager.setTargets(videoIds, opts)
+    const keys = videoIds.map((v) => `youtube:${String(v).trim()}`).filter((k) => k !== 'youtube:')
+    chatSubscriptionRegistry.register('legacy-youtube', keys)
+    applyChatSubscriptionTargets({ youTubeDelayMultiplier: payload?.opts?.delayMultiplier ?? 1 })
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
   }
 })
 
-// Twitch chat IPC handlers (IRC over WebSocket)
+// Twitch chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers
 ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: string[] }) => {
   try {
     const channels = Array.isArray(payload?.channels) ? payload.channels : []
-
-    if (!twitchChatManager) {
-      twitchChatManager = new TwitchChatManager()
-
-      const safeSend = (ch: string, ...a: any[]) => {
-        for (const w of [win, chatWin]) {
-          if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
-          try { w.webContents.send(ch, ...a) } catch { /* ignore */ }
-        }
-      }
-
-      twitchChatManager.on('message', (msg) => safeSend('twitch-chat-message', msg))
-      twitchChatManager.on('names', (payload: { channel: string; names: string[] }) =>
-        safeSend('twitch-chat-names', payload),
-      )
-    }
-
-    await twitchChatManager.setTargets(channels)
+    const keys = channels.map((c) => `twitch:${String(c).toLowerCase()}`).filter((k) => k !== 'twitch:')
+    chatSubscriptionRegistry.register('legacy-twitch', keys)
+    applyChatSubscriptionTargets()
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }

@@ -1191,6 +1191,8 @@ function CombinedChat({
   inputContainerRef,
   contextMenuRef,
   chatAreaTransparentBackground = false,
+  chatBackgroundColor,
+  chatBackgroundOpacity,
 }: {
   /** Id of the primary chat source (from config.chatSources). Used for source badge and message source. */
   primaryChatSourceId: string | null
@@ -1264,6 +1266,10 @@ function CombinedChat({
   contextMenuRef?: React.MutableRefObject<{ openContextMenu: (e: React.MouseEvent) => void } | null>
   /** When true (chat window), messages area background is transparent so window can float over other content. */
   chatAreaTransparentBackground?: boolean
+  /** Optional custom background color (hex, rgba, or CSS var). Used with chatBackgroundOpacity. */
+  chatBackgroundColor?: string
+  /** Opacity of the chat background (0–1). When set with chatBackgroundColor or in overlay/transparent mode. */
+  chatBackgroundOpacity?: number
 }) {
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [flairsList, setFlairsList] = useState<PrimaryChatFlair[]>([])
@@ -3275,12 +3281,20 @@ function CombinedChat({
           style={
             chatAreaTransparentBackground
               ? { background: 'transparent' }
-              : overlayMode
+              : chatBackgroundColor != null || typeof chatBackgroundOpacity === 'number'
                 ? {
-                    background: `color-mix(in oklch, var(--color-base-200) ${(overlayOpacity * 100).toFixed(0)}% , transparent)`,
+                    background:
+                      chatBackgroundColor != null
+                        ? `color-mix(in oklch, ${chatBackgroundColor} ${((chatBackgroundOpacity ?? overlayOpacity ?? 0.85) * 100).toFixed(0)}%, transparent)`
+                        : `color-mix(in oklch, var(--color-base-200) ${((chatBackgroundOpacity ?? overlayOpacity ?? 0.85) * 100).toFixed(0)}%, transparent)`,
                     ...(overlayHeaderHeight != null ? { paddingTop: overlayHeaderHeight } : {}),
                   }
-                : undefined
+                : overlayMode
+                  ? {
+                      background: `color-mix(in oklch, var(--color-base-200) ${((overlayOpacity ?? 0.85) * 100).toFixed(0)}% , transparent)`,
+                      ...(overlayHeaderHeight != null ? { paddingTop: overlayHeaderHeight } : {}),
+                    }
+                  : undefined
           }
           onWheel={() => {
             setScrollbarVisible(true)
