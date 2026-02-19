@@ -137,11 +137,12 @@ export class TwitchChatManager extends EventEmitter {
     })
 
     ws.on('close', (code, reason) => {
-      const text = reason?.toString?.() || ''
+      if (this.ws !== ws) return
       this.ws = null
       this.joinedChannels.clear()
       this.chattersByChannel.clear()
       this.lastNamesMsgByChannel.clear()
+      const text = reason?.toString?.() || ''
       if (!this.intentionallyClosed && this.desiredChannels.size > 0) this.scheduleReconnect()
       this.emit('disconnected', { code, reason: text })
     })
