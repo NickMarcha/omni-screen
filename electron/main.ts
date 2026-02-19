@@ -30,7 +30,7 @@ import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeL
 import { checkUrlIsLive } from './urlIsLive'
 import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
 import { ChatSubscriptionRegistry } from './chatSubscriptionRegistry'
-import { startChatWsServer, broadcastChatMessage, sendCachedToConsumer, stopChatWsServer, getChatWsServerUrl } from './chatServerWs'
+import { startChatWsServer, broadcastChatMessage, sendCachedToConsumer, stopChatWsServer, getChatWsServerUrl, setEmotesProxyConfig } from './chatServerWs'
 import type { ProtocolHandleResult } from './extensions/types.js'
 import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
 import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
@@ -89,6 +89,23 @@ export function getAppConfigForRenderer() {
   }
 }
 
+function syncEmotesProxyConfig() {
+  const overlay = getRendererConfigOverlay()
+  const chatSources = overlay.chatSources ?? {}
+  const primaryId = Object.keys(chatSources)[0]
+  const primary = primaryId ? chatSources[primaryId] : undefined
+  if (primary?.emotesJsonUrl && primary?.emotesCssUrl) {
+    setEmotesProxyConfig({
+      emotesJsonUrl: primary.emotesJsonUrl,
+      emotesCssUrl: primary.emotesCssUrl,
+      flairsJsonUrl: primary.flairsJsonUrl,
+      flairsCssUrl: primary.flairsCssUrl,
+    })
+  } else {
+    setEmotesProxyConfig(null)
+  }
+}
+
 ipcMain.handle('get-app-config', () => getAppConfigForRenderer())
 
 // Shared store (bookmarked streamers, prefs) – main process owns; renderer accesses via IPC
@@ -112,6 +129,7 @@ ipcMain.handle('extension-install-from-url', async (_event, manifestUrl: string)
   const result = await installFromManifestUrl(manifestUrl.trim())
   if (result.ok) {
     reloadExtensions()
+    syncEmotesProxyConfig()
     if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
   }
   return result
@@ -124,6 +142,7 @@ ipcMain.handle('extension-set-enabled', async (_event, payload: { id: string; en
   const updated = setExtensionEnabled(id, enabled)
   if (!updated) return { ok: false, error: 'Extension not found' }
   reloadExtensions()
+  syncEmotesProxyConfig()
   if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
   return { ok: true }
 })
@@ -137,6 +156,7 @@ ipcMain.handle('extension-reinstall', async (_event, extensionId: string) => {
   const result = await installFromManifestUrl(ext.updateUrl)
   if (result.ok) {
     reloadExtensions()
+    syncEmotesProxyConfig()
     if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
   }
   return result
@@ -148,6 +168,7 @@ ipcMain.handle('extension-uninstall', async (_event, extensionId: string) => {
   const result = uninstallExtension(id)
   if (result.ok) {
     reloadExtensions()
+    syncEmotesProxyConfig()
     if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
   }
   return result
@@ -554,6 +575,7 @@ function createApplicationMenu() {
           label: 'Reload extensions',
           click: () => {
             reloadExtensions()
+            syncEmotesProxyConfig()
             if (win && !win.isDestroyed()) win.webContents.send('extensions-reloaded')
           }
         }
@@ -4540,6 +4562,7 @@ app.whenReady().then(() => {
 
   // Load installed extensions (metadata only for now)
   loadExtensions()
+  syncEmotesProxyConfig()
 
   // Clear expired cache entries on startup
   mentionCache.clearExpired()

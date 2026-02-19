@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { logger } from '../utils/logger'
-import { chatWsOn } from '../utils/chatWsClient'
+import { chatWsOn, CHAT_HTTP_PROXY_BASE } from '../utils/chatWsClient'
 import { applyThemeToDocument, getAppPreferences } from '../utils/appPreferences'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import TwitterTimelineEmbed from './embeds/TwitterTimelineEmbed'
@@ -1706,25 +1706,17 @@ export function ThemeTab({ theme, onThemeChange }: { theme: ThemeSettings; onThe
   )
 }
 
-// Load CSS file dynamically
-function loadCSSOnce(href: string, id: string): Promise<void> {
-  // Check if already loaded
-  const existingLink = document.querySelector(`link[href="${href}"]`)
-  if (existingLink) {
-    return Promise.resolve()
-  }
-  
-  return new Promise<void>((resolve, reject) => {
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = href
-    link.id = id
-    
-    link.onload = () => resolve()
-    link.onerror = () => reject(new Error(`Failed to load CSS: ${href}`))
-    
-    document.head.appendChild(link)
-  })
+/** Load CSS via fetch with cache: 'no-store' and inject as style tag. Used for emotes so they are never cached and URLs are proxied. */
+async function loadCSSNoCache(href: string, id: string): Promise<void> {
+  const existing = document.getElementById(id)
+  if (existing) existing.remove()
+  const res = await fetch(href, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to load CSS: ${res.status}`)
+  const css = await res.text()
+  const style = document.createElement('style')
+  style.id = id
+  style.textContent = css
+  document.head.appendChild(style)
 }
 
 // Kick emote: render as img from files.kick.com
@@ -2387,19 +2379,18 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [])
   
-  // Fetch emotes and load CSS on mount (URLs from main process config)
+  // Fetch emotes and load CSS on mount (via proxy so emote image URLs are rewritten for CORS)
   useEffect(() => {
     const fetchEmotes = async () => {
       try {
         const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
         const chatSources = config?.chatSources ?? {}
-        const primaryId = Object.keys(chatSources)[0]
-        const primary = primaryId ? chatSources[primaryId] : undefined
+        const primary = Object.keys(chatSources)[0] ? chatSources[Object.keys(chatSources)[0]] : undefined
         if (!primary?.emotesJsonUrl || !primary?.emotesCssUrl) return
         const cacheKey = Date.now()
-        const cssUrl = `${primary.emotesCssUrl}?_=${cacheKey}`
-        await loadCSSOnce(cssUrl, 'primary-chat-emotes-css')
-        const response = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, { cache: 'no-store' })
+        const cssUrl = `${CHAT_HTTP_PROXY_BASE}/emotes.css?_=${cacheKey}`
+        await loadCSSNoCache(cssUrl, 'primary-chat-emotes-css')
+        const response = await fetch(`${CHAT_HTTP_PROXY_BASE}/emotes.json?_=${cacheKey}`, { cache: 'no-store' })
         if (!response.ok) {
           throw new Error(`Failed to fetch emotes: ${response.status}`)
         }

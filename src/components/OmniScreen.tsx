@@ -1203,7 +1203,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [extensionSettings, setExtensionSettings] = useState<Record<string, Record<string, boolean | string | number>>>({})
   const refetchAppConfig = useCallback(() => {
     window.ipcRenderer.invoke('get-app-config').then((config: {
-      chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string }>
+      chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string; emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }>
       extensions?: InstalledExtensionInfo[]
       extensionSettingsSchemas?: Record<string, ExtensionSettingsSection[]>
     }) => {

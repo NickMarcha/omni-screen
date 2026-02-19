@@ -5,6 +5,9 @@
 
 const CHAT_WS_URL = 'ws://127.0.0.1:5174'
 
+/** HTTP base for emotes/flairs proxy (same host as WebSocket). Use for emotes when CORS would block direct CDN. */
+export const CHAT_HTTP_PROXY_BASE = 'http://127.0.0.1:5174'
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Handler = (...args: any[]) => void
 

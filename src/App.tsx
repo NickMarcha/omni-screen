@@ -243,10 +243,10 @@ function App() {
     <div
       className={`flex flex-col h-full min-h-0 text-base-content ${currentPage === 'chat-window' && chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}
     >
-      {titleBarVisible && currentPage === 'chat-window' && (
+      {titleBarVisible && (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false && currentPage === 'chat-window' && (
         <ChatWindowTitleBar transparentBackground={chatWindowTransparentBackground} />
       )}
-      {titleBarVisible && currentPage !== 'chat-window' && <TitleBar />}
+      {titleBarVisible && (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false && currentPage !== 'chat-window' && <TitleBar />}
       <main className="flex-1 min-h-0 flex flex-col overflow-hidden relative z-0">{pageContent}</main>
       {/* Toast for protocol add-streamer result (DaisyUI toast + alert) */}
       <div className="fixed inset-0 pointer-events-none z-[9999]" aria-hidden>

@@ -38,6 +38,7 @@ alwaysApply: true
 
 ## Conventions
 
+- **No settings migration**: Do not add migration logic for existing user settings. Use new defaults directly; existing users keep their stored values.
 - localStorage keys prefixed `omni-screen:`
 - IPC channels: `platform-chat-action` (e.g. `kick-chat-set-targets`, `youtube-chat-message`)
 - Embed keys: `platform:id` (e.g. `kick:slug`, `youtube:videoId`, `twitch:login`)

@@ -7,7 +7,7 @@ import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
 import broadcastIcon from '../assets/icons/broadcast.png'
-import { chatWsOn } from '../utils/chatWsClient'
+import { chatWsOn, CHAT_HTTP_PROXY_BASE } from '../utils/chatWsClient'
 
 /** Built-in platform icons (kick, youtube, twitch). Primary chat source icon is provided by the extension via primaryChatSourceIconUrl prop. */
 const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
@@ -183,19 +183,17 @@ function usernameColorFlair(flairs: PrimaryChatFlair[], user: { features?: strin
     .find((f) => f.rainbowColor || f.color)
 }
 
-function loadCSSOnceById(href: string, id: string): Promise<void> {
+/** Load CSS via fetch with cache: 'no-store' and inject as style tag. Used for emotes/flairs so they are never cached. */
+async function loadCSSNoCache(href: string, id: string): Promise<void> {
   const existing = document.getElementById(id)
-  if (existing) return Promise.resolve()
-
-  return new Promise<void>((resolve, reject) => {
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = href
-    link.id = id
-    link.onload = () => resolve()
-    link.onerror = () => reject(new Error(`Failed to load CSS: ${href}`))
-    document.head.appendChild(link)
-  })
+  if (existing) existing.remove()
+  const res = await fetch(href, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to load CSS: ${res.status}`)
+  const css = await res.text()
+  const style = document.createElement('style')
+  style.id = id
+  style.textContent = css
+  document.head.appendChild(style)
 }
 
 function escapeRegexLiteral(text: string) {
@@ -1607,24 +1605,64 @@ function CombinedChat({
     }
   }, [emotesMap])
 
-  // Load primary chat source emotes + flairs when a chat source extension is installed (config.chatSources from extension).
+  // Load primary chat source emotes + flairs (from WebSocket chat-emotes-config or get-app-config).
+  const [emotesConfigFromWs, setEmotesConfigFromWs] = useState<{
+    emotesJsonUrl: string
+    emotesCssUrl: string
+    flairsJsonUrl?: string
+    flairsCssUrl?: string
+  } | null>(null)
+  useEffect(() => {
+    const handler = (_e: unknown, payload: unknown) => {
+      const p = payload as { emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }
+      if (p?.emotesJsonUrl && p?.emotesCssUrl) {
+        setEmotesConfigFromWs({
+          emotesJsonUrl: p.emotesJsonUrl,
+          emotesCssUrl: p.emotesCssUrl,
+          flairsJsonUrl: p.flairsJsonUrl,
+          flairsCssUrl: p.flairsCssUrl,
+        })
+      }
+    }
+    const unsub = chatWsOn('chat-emotes-config', handler)
+    return () => unsub()
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     const run = async () => {
-      const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
-      const chatSources = config?.chatSources ?? {}
-      const primaryId = Object.keys(chatSources)[0]
-      const primary = primaryId ? chatSources[primaryId] : undefined
-      if (!primary?.emotesJsonUrl) return
+      let emotesJsonUrl: string | undefined
+      let emotesCssUrl: string | undefined
+      let flairsJsonUrl: string | undefined
+      let flairsCssUrl: string | undefined
+      if (emotesConfigFromWs) {
+        emotesJsonUrl = emotesConfigFromWs.emotesJsonUrl
+        emotesCssUrl = emotesConfigFromWs.emotesCssUrl
+        flairsJsonUrl = emotesConfigFromWs.flairsJsonUrl
+        flairsCssUrl = emotesConfigFromWs.flairsCssUrl
+      } else {
+        const config = (await window.ipcRenderer?.invoke?.('get-app-config').catch(() => null)) as {
+          chatSources?: Record<string, { emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }>
+        } | null
+        const chatSources = config?.chatSources ?? {}
+        const primary = Object.keys(chatSources)[0] ? chatSources[Object.keys(chatSources)[0]] : undefined
+        if (primary?.emotesJsonUrl && primary?.emotesCssUrl) {
+          emotesJsonUrl = `${CHAT_HTTP_PROXY_BASE}/emotes.json`
+          emotesCssUrl = `${CHAT_HTTP_PROXY_BASE}/emotes.css`
+          flairsJsonUrl = primary.flairsJsonUrl ? `${CHAT_HTTP_PROXY_BASE}/flairs.json` : undefined
+          flairsCssUrl = primary.flairsCssUrl ? `${CHAT_HTTP_PROXY_BASE}/flairs.css` : undefined
+        }
+      }
+      if (!emotesJsonUrl || !emotesCssUrl) return
       const cacheKey = Date.now()
       try {
         const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
-        await loadCSSOnceById(
-          `${primary.emotesCssUrl}?_=${cacheKey}`,
+        await loadCSSNoCache(
+          `${emotesCssUrl}?_=${cacheKey}`,
           'primary-chat-emotes-css',
         )
-        const emotesRes = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) throw new Error(`Failed to fetch emotes: ${emotesRes.status}`)
@@ -1639,22 +1677,24 @@ function CombinedChat({
         // Continue without emotes if fetch fails.
       }
 
-      try {
-        const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
-        if (existingFlairsCss) existingFlairsCss.remove()
-        await loadCSSOnceById(
-          `${primary.flairsCssUrl}?_=${cacheKey}`,
-          'primary-chat-flairs-css',
-        )
-        const flairsRes = await fetch(`${primary.flairsJsonUrl}?_=${cacheKey}`, {
-          cache: 'no-store',
-        })
-        if (!flairsRes.ok) return
-        const flairsData: PrimaryChatFlair[] = await flairsRes.json()
-        if (cancelled) return
-        setFlairsList(Array.isArray(flairsData) ? flairsData : [])
-      } catch {
-        // Continue without flairs if fetch fails.
+      if (flairsJsonUrl && flairsCssUrl) {
+        try {
+          const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
+          if (existingFlairsCss) existingFlairsCss.remove()
+          await loadCSSNoCache(
+            `${flairsCssUrl}?_=${cacheKey}`,
+            'primary-chat-flairs-css',
+          )
+          const flairsRes = await fetch(`${flairsJsonUrl}?_=${cacheKey}`, {
+            cache: 'no-store',
+          })
+          if (!flairsRes.ok) return
+          const flairsData: PrimaryChatFlair[] = await flairsRes.json()
+          if (cancelled) return
+          setFlairsList(Array.isArray(flairsData) ? flairsData : [])
+        } catch {
+          // Continue without flairs if fetch fails.
+        }
       }
     }
 
@@ -1662,26 +1702,44 @@ function CombinedChat({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [emotesConfigFromWs])
 
   // RELOAD: server asked to reload emotes/flairs (e.g. new emotes or flairs).
   useEffect(() => {
     if (!enablePrimaryChat) return
     const handleReload = async () => {
-      const config = await window.ipcRenderer.invoke('get-app-config').catch(() => null)
-      const chatSources = config?.chatSources ?? {}
-      const primaryId = Object.keys(chatSources)[0]
-      const primary = primaryId ? chatSources[primaryId] : undefined
-      if (!primary?.emotesJsonUrl) return
+      let emotesJsonUrl: string | undefined
+      let emotesCssUrl: string | undefined
+      let flairsJsonUrl: string | undefined
+      let flairsCssUrl: string | undefined
+      if (emotesConfigFromWs) {
+        emotesJsonUrl = emotesConfigFromWs.emotesJsonUrl
+        emotesCssUrl = emotesConfigFromWs.emotesCssUrl
+        flairsJsonUrl = emotesConfigFromWs.flairsJsonUrl
+        flairsCssUrl = emotesConfigFromWs.flairsCssUrl
+      } else {
+        const config = (await window.ipcRenderer?.invoke?.('get-app-config').catch(() => null)) as {
+          chatSources?: Record<string, { emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }>
+        } | null
+        const chatSources = config?.chatSources ?? {}
+        const primary = Object.keys(chatSources)[0] ? chatSources[Object.keys(chatSources)[0]] : undefined
+        if (primary?.emotesJsonUrl && primary?.emotesCssUrl) {
+          emotesJsonUrl = `${CHAT_HTTP_PROXY_BASE}/emotes.json`
+          emotesCssUrl = `${CHAT_HTTP_PROXY_BASE}/emotes.css`
+          flairsJsonUrl = primary.flairsJsonUrl ? `${CHAT_HTTP_PROXY_BASE}/flairs.json` : undefined
+          flairsCssUrl = primary.flairsCssUrl ? `${CHAT_HTTP_PROXY_BASE}/flairs.css` : undefined
+        }
+      }
+      if (!emotesJsonUrl || !emotesCssUrl) return
       const cacheKey = Date.now()
       try {
         const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
         if (existingEmotesCss) existingEmotesCss.remove()
-        await loadCSSOnceById(
-          `${primary.emotesCssUrl}?_=${cacheKey}`,
+        await loadCSSNoCache(
+          `${emotesCssUrl}?_=${cacheKey}`,
           'primary-chat-emotes-css',
         )
-        const emotesRes = await fetch(`${primary.emotesJsonUrl}?_=${cacheKey}`, {
+        const emotesRes = await fetch(`${emotesJsonUrl}?_=${cacheKey}`, {
           cache: 'no-store',
         })
         if (!emotesRes.ok) return
@@ -1694,26 +1752,28 @@ function CombinedChat({
       } catch {
         // ignore
       }
-      try {
-        const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
-        if (existingFlairsCss) existingFlairsCss.remove()
-        await loadCSSOnceById(
-          `${primary.flairsCssUrl}?_=${cacheKey}`,
-          'primary-chat-flairs-css',
-        )
-        const flairsRes = await fetch(`${primary.flairsJsonUrl}?_=${cacheKey}`, {
-          cache: 'no-store',
-        })
-        if (!flairsRes.ok) return
-        const flairsData: PrimaryChatFlair[] = await flairsRes.json()
-        setFlairsList(Array.isArray(flairsData) ? flairsData : [])
-      } catch {
-        // ignore
+      if (flairsJsonUrl && flairsCssUrl) {
+        try {
+          const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
+          if (existingFlairsCss) existingFlairsCss.remove()
+          await loadCSSNoCache(
+            `${flairsCssUrl}?_=${cacheKey}`,
+            'primary-chat-flairs-css',
+          )
+          const flairsRes = await fetch(`${flairsJsonUrl}?_=${cacheKey}`, {
+            cache: 'no-store',
+          })
+          if (!flairsRes.ok) return
+          const flairsData: PrimaryChatFlair[] = await flairsRes.json()
+          setFlairsList(Array.isArray(flairsData) ? flairsData : [])
+        } catch {
+          // ignore
+        }
       }
     }
     const unsubReload = chatWsOn('chat-websocket-reload', handleReload)
     return () => unsubReload()
-  }, [enablePrimaryChat])
+  }, [enablePrimaryChat, emotesConfigFromWs])
 
   // Track "at bottom" and "user scrolled up" for auto-scroll behavior.
   useEffect(() => {
