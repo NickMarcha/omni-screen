@@ -24,6 +24,7 @@ declare namespace NodeJS {
 // Used in Renderer process, expose in `preload.ts`
 interface Window {
   ipcRenderer: import('electron').IpcRenderer & {
+    isElectron?: boolean
     store?: {
       getBookmarkedStreamers: () => Promise<unknown[]>
       setBookmarkedStreamers: (streamers: unknown) => Promise<void>

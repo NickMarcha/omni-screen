@@ -232,6 +232,7 @@ function Menu({ onNavigate }: MenuProps) {
   const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
   const [themeSectionExpanded, setThemeSectionExpanded] = useState(false)
   const [userscriptsSectionExpanded, setUserscriptsSectionExpanded] = useState(false)
+  const [minimizeToTray, setMinimizeToTray] = useState(false)
 
   // Connections: pasted cookie strings per platform (local state only; Save sends to main). Extension platforms get keys when CONNECTIONS_PLATFORMS includes them; use ?? '' when reading.
   const [connectionsDraft, setConnectionsDraft] = useState<Record<string, string>>({
@@ -306,6 +307,12 @@ function Menu({ onNavigate }: MenuProps) {
   const refreshInstalledExtensions = useCallback(() => {
     window.ipcRenderer.invoke('get-installed-extensions').then((list: InstalledExt[]) => setExtensionsList(Array.isArray(list) ? list : [])).catch(() => setExtensionsList([]))
   }, [])
+
+  // When Settings modal opens, load minimize-to-tray from store
+  useEffect(() => {
+    if (!settingsOpen) return
+    window.ipcRenderer?.store?.getMinimizeToTray().then((v: boolean) => setMinimizeToTray(!!v)).catch(() => {})
+  }, [settingsOpen])
 
   // When Extensions modal opens or extensions-reloaded, refresh installed list
   useEffect(() => {
@@ -894,6 +901,29 @@ function Menu({ onNavigate }: MenuProps) {
                     </div>
                   </div>
                 )}
+              </div>
+
+              <div className="border border-base-200 rounded-lg overflow-hidden">
+                <div className="p-4">
+                  <label className="flex items-start justify-between gap-4 cursor-pointer">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold">Run in system tray</div>
+                      <div className="text-xs text-base-content/60 mt-1">
+                        When enabled, closing all windows keeps the app running in the tray. Required for OBS chat embed and chat notifications when the main window is closed.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                      checked={minimizeToTray}
+                      onChange={(e) => {
+                        const v = e.target.checked
+                        setMinimizeToTray(v)
+                        window.ipcRenderer?.store?.setMinimizeToTray(v).catch(() => {})
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
 
               <div className="border border-base-200 rounded-lg overflow-hidden">

@@ -185,9 +185,9 @@ function App() {
     }
   }, [])
 
-  // File → Copy config: gather localStorage and copy to clipboard
+  // File → Copy config: gather localStorage + shared store, copy to clipboard
   useEffect(() => {
-    const handler = () => {
+    const handler = async () => {
       try {
         const config: Record<string, string> = {}
         for (let i = 0; i < localStorage.length; i++) {
@@ -196,6 +196,15 @@ function App() {
             const value = localStorage.getItem(key)
             if (value != null) config[key] = value
           }
+        }
+        const store = window.ipcRenderer?.store
+        if (store) {
+          const streamers = await store.getBookmarkedStreamers()
+          if (Array.isArray(streamers) && streamers.length > 0) {
+            config['omni-screen:bookmarked-streamers'] = JSON.stringify(streamers)
+          }
+          const minimizeToTray = await store.getMinimizeToTray()
+          config['omni-screen:minimize-to-tray'] = String(minimizeToTray)
         }
         const json = JSON.stringify(config, null, 2)
         window.ipcRenderer?.invoke('copy-config-to-clipboard', json)

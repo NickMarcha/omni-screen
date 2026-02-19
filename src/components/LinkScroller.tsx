@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { logger } from '../utils/logger'
+import { chatWsOn } from '../utils/chatWsClient'
 import { applyThemeToDocument, getAppPreferences } from '../utils/appPreferences'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import TwitterTimelineEmbed from './embeds/TwitterTimelineEmbed'
@@ -3052,23 +3053,19 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       logger.error('Chat WebSocket error:', error)
     }
 
-    // Register event listeners
-    window.ipcRenderer.on('chat-websocket-message', handleMessage)
-    window.ipcRenderer.on('chat-websocket-history', handleHistory)
-    window.ipcRenderer.on('chat-websocket-connected', handleConnected)
-    window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
-    window.ipcRenderer.on('chat-websocket-error', handleError)
+    const unsubMessage = chatWsOn('chat-websocket-message', handleMessage)
+    const unsubHistory = chatWsOn('chat-websocket-history', handleHistory)
+    const unsubConnected = chatWsOn('chat-websocket-connected', handleConnected)
+    const unsubDisconnected = chatWsOn('chat-websocket-disconnected', handleDisconnected)
+    const unsubError = chatWsOn('chat-websocket-error', handleError)
 
-    // Cleanup on unmount
     return () => {
-      window.ipcRenderer.off('chat-websocket-message', handleMessage)
-      window.ipcRenderer.off('chat-websocket-history', handleHistory)
-      window.ipcRenderer.off('chat-websocket-connected', handleConnected)
-      window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
-      window.ipcRenderer.off('chat-websocket-error', handleError)
-      
-      // Disconnect WebSocket when component unmounts
-      window.ipcRenderer.invoke('chat-websocket-disconnect').catch((err) => {
+      unsubMessage()
+      unsubHistory()
+      unsubConnected()
+      unsubDisconnected()
+      unsubError()
+      window.ipcRenderer?.invoke('chat-websocket-disconnect').catch((err) => {
         logger.error('Failed to disconnect chat WebSocket:', err)
       })
       
@@ -3129,11 +3126,11 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
         return [mention, ...prev]
       })
     }
-    window.ipcRenderer.on('kick-chat-message', handleKickMessage)
+    const unsubKick = chatWsOn('kick-chat-message', handleKickMessage)
     return () => {
       window.clearTimeout(refetchTimer)
-      window.ipcRenderer.off('kick-chat-message', handleKickMessage)
-      window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
+      unsubKick()
+      window.ipcRenderer?.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
     }
   }, [kickEnabled, kickSlug, filter])
 

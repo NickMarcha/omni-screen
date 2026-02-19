@@ -23,7 +23,7 @@ const store = new Store({
   name: 'omni-screen',
   defaults: {
     bookmarkedStreamers: [] as BookmarkedStreamer[],
-    minimizeToTray: true,
+    minimizeToTray: false,
   },
 })
 
@@ -41,7 +41,7 @@ export function setBookmarkedStreamers(streamers: BookmarkedStreamer[]) {
 }
 
 export function getMinimizeToTray(): boolean {
-  return store.get('minimizeToTray', true) as boolean
+  return store.get('minimizeToTray', false) as boolean
 }
 
 export function setMinimizeToTray(value: boolean) {

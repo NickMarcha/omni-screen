@@ -8,6 +8,8 @@ export type CombinedSortMode = 'timestamp' | 'arrival'
 export interface ChatEmbedConfig {
   selectedEmbedChatKeys: string[]
   selectedEmbedKeys: string[]
+  /** Primary chat source ID (e.g. extension id) for embed mode when get-app-config unavailable. */
+  primaryChatSourceId?: string
   chatTransparent?: boolean
   maxLines?: number
   maxLinesScroll?: number
@@ -47,7 +49,17 @@ export function parseChatEmbedParams(searchParams: URLSearchParams): Partial<Cha
   const embedChatsRaw = searchParams.get('embedChats')
   if (embedChatsRaw) {
     try {
-      const parsed = JSON.parse(decodeURIComponent(embedChatsRaw)) as {
+      let decoded = embedChatsRaw
+      for (let i = 0; i < 3; i++) {
+        try {
+          const next = decodeURIComponent(decoded)
+          if (next === decoded) break
+          decoded = next
+        } catch {
+          break
+        }
+      }
+      const parsed = JSON.parse(decoded) as {
         selectedEmbedChatKeys?: unknown[]
         selectedEmbedKeys?: unknown[]
       }
@@ -63,6 +75,9 @@ export function parseChatEmbedParams(searchParams: URLSearchParams): Partial<Cha
       /* ignore */
     }
   }
+
+  const primaryChatSourceId = searchParams.get('primaryChatSourceId')
+  if (primaryChatSourceId && primaryChatSourceId.trim()) config.primaryChatSourceId = primaryChatSourceId.trim()
 
   const chatTransparent = searchParams.get('chatTransparent')
   if (chatTransparent === 'true' || chatTransparent === 'false') {
@@ -96,7 +111,17 @@ export function parseChatEmbedParams(searchParams: URLSearchParams): Partial<Cha
   const highlightTermsRaw = searchParams.get('highlightTerms')
   if (highlightTermsRaw) {
     try {
-      const arr = JSON.parse(decodeURIComponent(highlightTermsRaw))
+      let decoded = highlightTermsRaw
+      for (let i = 0; i < 3; i++) {
+        try {
+          const next = decodeURIComponent(decoded)
+          if (next === decoded) break
+          decoded = next
+        } catch {
+          break
+        }
+      }
+      const arr = JSON.parse(decoded)
       config.highlightTerms = Array.isArray(arr) ? arr.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim()) : []
     } catch {
       /* ignore */
@@ -154,6 +179,7 @@ export function mergeWithStorageDefaults(
   return {
     selectedEmbedChatKeys: urlConfig.selectedEmbedChatKeys ?? [],
     selectedEmbedKeys: urlConfig.selectedEmbedKeys ?? [],
+    primaryChatSourceId: urlConfig.primaryChatSourceId,
     chatTransparent: urlConfig.chatTransparent ?? boolFromStorage('chat-window-transparent-background', false),
     maxLines: urlConfig.maxLines ?? numFromStorage('omni-screen:combined-max-lines', DEFAULT_MAX_LINES, 50),
     maxLinesScroll: urlConfig.maxLinesScroll ?? numFromStorage('omni-screen:combined-max-lines-scroll', DEFAULT_MAX_LINES_SCROLL, 50),
@@ -189,9 +215,10 @@ export function buildChatEmbedQuery(config: Partial<ChatEmbedConfig>): string {
       selectedEmbedChatKeys: config.selectedEmbedChatKeys,
       selectedEmbedKeys: config.selectedEmbedKeys ?? [],
     }
-    params.set('embedChats', encodeURIComponent(JSON.stringify(embedChats)))
+    params.set('embedChats', JSON.stringify(embedChats))
   }
 
+  if (config.primaryChatSourceId) params.set('primaryChatSourceId', config.primaryChatSourceId)
   if (typeof config.chatTransparent === 'boolean') params.set('chatTransparent', String(config.chatTransparent))
   if (typeof config.maxLines === 'number' && config.maxLines !== DEFAULT_MAX_LINES) params.set('maxLines', String(config.maxLines))
   if (typeof config.maxLinesScroll === 'number' && config.maxLinesScroll !== DEFAULT_MAX_LINES_SCROLL) params.set('maxLinesScroll', String(config.maxLinesScroll))
@@ -199,7 +226,7 @@ export function buildChatEmbedQuery(config: Partial<ChatEmbedConfig>): string {
   if (typeof config.showLabels === 'boolean') params.set('showLabels', config.showLabels ? '1' : '0')
   if (typeof config.showPlatformIcons === 'boolean') params.set('showPlatformIcons', config.showPlatformIcons ? '1' : '0')
   if (config.sortMode) params.set('sortMode', config.sortMode)
-  if (config.highlightTerms && config.highlightTerms.length > 0) params.set('highlightTerms', encodeURIComponent(JSON.stringify(config.highlightTerms)))
+  if (config.highlightTerms && config.highlightTerms.length > 0) params.set('highlightTerms', JSON.stringify(config.highlightTerms))
   if (typeof config.pauseEmoteOffscreen === 'boolean') params.set('pauseEmoteOffscreen', config.pauseEmoteOffscreen ? '1' : '0')
   if (typeof config.showPrimaryChatFlairs === 'boolean') params.set('showPrimaryChatFlairs', config.showPrimaryChatFlairs ? '1' : '0')
   if (typeof config.includePrimaryChat === 'boolean') params.set('includePrimaryChat', config.includePrimaryChat ? '1' : '0')

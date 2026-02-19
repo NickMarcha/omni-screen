@@ -7,6 +7,7 @@ import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
 import broadcastIcon from '../assets/icons/broadcast.png'
+import { chatWsOn } from '../utils/chatWsClient'
 
 /** Built-in platform icons (kick, youtube, twitch). Primary chat source icon is provided by the extension via primaryChatSourceIconUrl prop. */
 const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
@@ -1134,6 +1135,8 @@ export type CombinedChatContextMenuConfig = {
   removeHighlightTerm?: (term: string) => void
   /** Open combined chat in external Electron window. When set, shows "Open in external window" menu option. */
   openExternalChatWindow?: () => void
+  /** Returns full embed URL with current chat params (for OBS Browser Source). When set, "Copy URL" uses this instead of location.href. */
+  getCopyEmbedUrl?: () => string
 }
 
 /** Parse optional primary chat label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
@@ -1271,6 +1274,10 @@ function CombinedChat({
   /** Opacity of the chat background (0–1). When set with chatBackgroundColor or in overlay/transparent mode. */
   chatBackgroundOpacity?: number
 }) {
+  /** When false (browser/OBS embed), input is never shown – no IPC to send messages. */
+  const hasRealIpc = (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false
+  const effectiveShowPrimaryChatInput = showPrimaryChatInput && hasRealIpc
+
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [flairsList, setFlairsList] = useState<PrimaryChatFlair[]>([])
   const flairsMapRef = useRef<Map<string, PrimaryChatFlair>>(new Map())
@@ -1704,10 +1711,8 @@ function CombinedChat({
         // ignore
       }
     }
-    window.ipcRenderer.on('chat-websocket-reload', handleReload)
-    return () => {
-      window.ipcRenderer.off('chat-websocket-reload', handleReload)
-    }
+    const unsubReload = chatWsOn('chat-websocket-reload', handleReload)
+    return () => unsubReload()
   }, [enablePrimaryChat])
 
   // Track "at bottom" and "user scrolled up" for auto-scroll behavior.
@@ -2032,23 +2037,22 @@ function CombinedChat({
       }
     }
 
-    window.ipcRenderer.invoke('chat-websocket-connect').catch(() => {})
-    window.ipcRenderer.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
+    window.ipcRenderer?.invoke('chat-websocket-connect').catch(() => {})
+    window.ipcRenderer?.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
       if (alive && r?.connected) setPrimaryChatConnected(true)
     }).catch(() => {})
-    window.ipcRenderer.on('chat-websocket-connected', handleConnected)
-    window.ipcRenderer.on('chat-websocket-disconnected', handleDisconnected)
-    window.ipcRenderer.on('chat-websocket-me', handleMe)
-    window.ipcRenderer.on('chat-websocket-message', handleMessage)
-    // Chat window: restore cached ME after recreation (e.g. transparency toggle) so we don't show logged-out UI
-    window.ipcRenderer.invoke('chat-window-get-cached-me').then((me: unknown) => {
+    const unsubConnected = chatWsOn('chat-websocket-connected', handleConnected)
+    const unsubDisconnected = chatWsOn('chat-websocket-disconnected', handleDisconnected)
+    const unsubMe = chatWsOn('chat-websocket-me', handleMe)
+    const unsubMessage = chatWsOn('chat-websocket-message', handleMessage)
+    window.ipcRenderer?.invoke('chat-window-get-cached-me').then((me: unknown) => {
       if (alive && me) handleMe(null, me)
     }).catch(() => {})
-    window.ipcRenderer.on('chat-websocket-history', handleHistory)
-    window.ipcRenderer.on('chat-websocket-broadcast', handleBroadcast)
-    window.ipcRenderer.on('chat-websocket-pin', handlePin)
-    window.ipcRenderer.on('chat-websocket-names', handleNames)
-    window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
+    const unsubHistory = chatWsOn('chat-websocket-history', handleHistory)
+    const unsubBroadcast = chatWsOn('chat-websocket-broadcast', handleBroadcast)
+    const unsubPin = chatWsOn('chat-websocket-pin', handlePin)
+    const unsubNames = chatWsOn('chat-websocket-names', handleNames)
+    const unsubUserEvent = chatWsOn('chat-websocket-user-event', handleUserEvent)
 
     const handlePrivmsg = (_event: any, data: { type?: string; privmsg?: { nick?: string } } | null) => {
       if (!alive) return
@@ -2067,7 +2071,7 @@ function CombinedChat({
       setUnreadCounts((prev) => ({ ...prev, [nick]: (prev[nick] ?? 0) + 1 }))
     }
 
-    window.ipcRenderer.on('chat-websocket-privmsg', handlePrivmsg)
+    const unsubPrivmsg = chatWsOn('chat-websocket-privmsg', handlePrivmsg)
 
     const handleAddPhrase = (_event: any, payload: { type?: string; phrase?: { data?: string } } | null) => {
       if (!alive) return
@@ -2079,9 +2083,9 @@ function CombinedChat({
       const phrase = payload?.phrase?.data?.trim()
       if (phrase) setBannedPhrases((prev) => prev.filter((p) => p !== phrase))
     }
-    window.ipcRenderer.on('chat-websocket-addphrase', handleAddPhrase)
-    window.ipcRenderer.on('chat-websocket-removephrase', handleRemovePhrase)
-    window.ipcRenderer.on('chat-websocket-subonly', handleSubOnly)
+    const unsubAddPhrase = chatWsOn('chat-websocket-addphrase', handleAddPhrase)
+    const unsubRemovePhrase = chatWsOn('chat-websocket-removephrase', handleRemovePhrase)
+    const unsubSubonly = chatWsOn('chat-websocket-subonly', handleSubOnly)
 
     const handleGiftSub = (_event: any, payload: { type?: string; giftSub?: { user?: { nick?: string }; recipient?: { nick?: string }; tierLabel?: string; tier?: number } } | null) => {
       if (!alive) return
@@ -2129,10 +2133,10 @@ function CombinedChat({
         { source: primaryChatSourceId ? `${primaryChatSourceId}-event` : 'chat-event', eventType: 'death', tsMs: Date.now(), nick, content, raw: d, seq: seqRef.current++ },
       ])
     }
-    window.ipcRenderer.on('chat-websocket-giftsub', handleGiftSub)
-    window.ipcRenderer.on('chat-websocket-massgift', handleMassGift)
-    window.ipcRenderer.on('chat-websocket-donation', handleDonation)
-    window.ipcRenderer.on('chat-websocket-death', handleDeath)
+    const unsubGiftSub = chatWsOn('chat-websocket-giftsub', handleGiftSub)
+    const unsubMassGift = chatWsOn('chat-websocket-massgift', handleMassGift)
+    const unsubDonation = chatWsOn('chat-websocket-donation', handleDonation)
+    const unsubDeath = chatWsOn('chat-websocket-death', handleDeath)
 
     const handleMute = (_event: any, payload: { type?: string; mute?: { data?: string; nick?: string } } | null) => {
       if (!alive) return
@@ -2167,9 +2171,9 @@ function CombinedChat({
         { source: primaryChatSourceId ? `${primaryChatSourceId}-system` : 'chat-system', kind: 'unmute', tsMs: Date.now(), content, raw: u, seq: seqRef.current++ },
       ])
     }
-    window.ipcRenderer.on('chat-websocket-mute', handleMute)
-    window.ipcRenderer.on('chat-websocket-ban', handleBan)
-    window.ipcRenderer.on('chat-websocket-unban', handleUnban)
+    const unsubMute = chatWsOn('chat-websocket-mute', handleMute)
+    const unsubBan = chatWsOn('chat-websocket-ban', handleBan)
+    const unsubUnban = chatWsOn('chat-websocket-unban', handleUnban)
 
     const handleChatErr = (_event: any, data: { description?: string } | null) => {
       if (!alive) return
@@ -2185,38 +2189,38 @@ function CombinedChat({
       if (!alive) return
       setMuteTimeLeftSeconds(null)
     }
-    window.ipcRenderer.on('chat-websocket-err', handleChatErr)
-    window.ipcRenderer.on('chat-websocket-muted', handleMuted)
-    window.ipcRenderer.on('chat-websocket-mute-cleared', handleMuteCleared)
+    const unsubErr = chatWsOn('chat-websocket-err', handleChatErr)
+    const unsubMuted = chatWsOn('chat-websocket-muted', handleMuted)
+    const unsubMuteCleared = chatWsOn('chat-websocket-mute-cleared', handleMuteCleared)
 
     return () => {
       alive = false
       setPrimaryChatConnected(false)
-      window.ipcRenderer.off('chat-websocket-addphrase', handleAddPhrase)
-      window.ipcRenderer.off('chat-websocket-removephrase', handleRemovePhrase)
-      window.ipcRenderer.off('chat-websocket-subonly', handleSubOnly)
-      window.ipcRenderer.off('chat-websocket-giftsub', handleGiftSub)
-      window.ipcRenderer.off('chat-websocket-massgift', handleMassGift)
-      window.ipcRenderer.off('chat-websocket-donation', handleDonation)
-      window.ipcRenderer.off('chat-websocket-death', handleDeath)
-      window.ipcRenderer.off('chat-websocket-mute', handleMute)
-      window.ipcRenderer.off('chat-websocket-ban', handleBan)
-      window.ipcRenderer.off('chat-websocket-unban', handleUnban)
-      window.ipcRenderer.off('chat-websocket-err', handleChatErr)
-      window.ipcRenderer.off('chat-websocket-muted', handleMuted)
-      window.ipcRenderer.off('chat-websocket-mute-cleared', handleMuteCleared)
+      unsubAddPhrase()
+      unsubRemovePhrase()
+      unsubSubonly()
+      unsubGiftSub()
+      unsubMassGift()
+      unsubDonation()
+      unsubDeath()
+      unsubMute()
+      unsubBan()
+      unsubUnban()
+      unsubErr()
+      unsubMuted()
+      unsubMuteCleared()
       setPrimaryChatAuthenticated(false)
-      window.ipcRenderer.off('chat-websocket-privmsg', handlePrivmsg)
-      window.ipcRenderer.off('chat-websocket-connected', handleConnected)
-      window.ipcRenderer.off('chat-websocket-disconnected', handleDisconnected)
-      window.ipcRenderer.off('chat-websocket-me', handleMe)
-      window.ipcRenderer.off('chat-websocket-message', handleMessage)
-      window.ipcRenderer.off('chat-websocket-history', handleHistory)
-      window.ipcRenderer.off('chat-websocket-broadcast', handleBroadcast)
-      window.ipcRenderer.off('chat-websocket-pin', handlePin)
-      window.ipcRenderer.off('chat-websocket-names', handleNames)
-      window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
-      window.ipcRenderer.invoke('chat-websocket-disconnect').catch(() => {})
+      unsubPrivmsg()
+      unsubConnected()
+      unsubDisconnected()
+      unsubMe()
+      unsubMessage()
+      unsubHistory()
+      unsubBroadcast()
+      unsubPin()
+      unsubNames()
+      unsubUserEvent()
+      window.ipcRenderer?.invoke('chat-websocket-disconnect').catch(() => {})
     }
   }, [enablePrimaryChat])
 
@@ -2412,17 +2416,17 @@ function CombinedChat({
         // ignore
       }
     }
-    window.ipcRenderer.on('chat-websocket-poll-start', handlePollStart)
-    window.ipcRenderer.on('chat-websocket-vote-cast', handleVoteCast)
-    window.ipcRenderer.on('chat-websocket-poll-stop', handlePollStop)
-    window.ipcRenderer.on('chat-websocket-vote-counted', handleVoteCounted)
-    window.ipcRenderer.on('chat-websocket-poll-vote-error', handlePollVoteError)
+    const unsubPollStart = chatWsOn('chat-websocket-poll-start', handlePollStart)
+    const unsubVoteCast = chatWsOn('chat-websocket-vote-cast', handleVoteCast)
+    const unsubPollStop = chatWsOn('chat-websocket-poll-stop', handlePollStop)
+    const unsubVoteCounted = chatWsOn('chat-websocket-vote-counted', handleVoteCounted)
+    const unsubPollError = chatWsOn('chat-websocket-poll-vote-error', handlePollVoteError)
     return () => {
-      window.ipcRenderer.off('chat-websocket-poll-start', handlePollStart)
-      window.ipcRenderer.off('chat-websocket-vote-cast', handleVoteCast)
-      window.ipcRenderer.off('chat-websocket-poll-stop', handlePollStop)
-      window.ipcRenderer.off('chat-websocket-vote-counted', handleVoteCounted)
-      window.ipcRenderer.off('chat-websocket-poll-vote-error', handlePollVoteError)
+      unsubPollStart()
+      unsubVoteCast()
+      unsubPollStop()
+      unsubVoteCounted()
+      unsubPollError()
     }
   }, [enablePrimaryChat])
 
@@ -2446,10 +2450,10 @@ function CombinedChat({
       ])
     }
 
-    window.ipcRenderer.on('kick-chat-message', handleKick)
+    const unsubKick = chatWsOn('kick-chat-message', handleKick)
     return () => {
       alive = false
-      window.ipcRenderer.off('kick-chat-message', handleKick)
+      unsubKick()
     }
   }, [])
 
@@ -2474,10 +2478,10 @@ function CombinedChat({
       ])
     }
 
-    window.ipcRenderer.on('youtube-chat-message', handleYouTube)
+    const unsubYt = chatWsOn('youtube-chat-message', handleYouTube)
     return () => {
       alive = false
-      window.ipcRenderer.off('youtube-chat-message', handleYouTube)
+      unsubYt()
     }
   }, [])
 
@@ -2501,10 +2505,10 @@ function CombinedChat({
       ])
     }
 
-    window.ipcRenderer.on('twitch-chat-message', handleTwitch)
+    const unsubTwitch = chatWsOn('twitch-chat-message', handleTwitch)
     return () => {
       alive = false
-      window.ipcRenderer.off('twitch-chat-message', handleTwitch)
+      unsubTwitch()
     }
   }, [])
 
@@ -2516,10 +2520,8 @@ function CombinedChat({
       if (!channel) return
       setTwitchUserNicksByChannel((prev) => ({ ...prev, [channel]: names }))
     }
-    window.ipcRenderer.on('twitch-chat-names', handleNames)
-    return () => {
-      window.ipcRenderer.off('twitch-chat-names', handleNames)
-    }
+    const unsubTwitchNames = chatWsOn('twitch-chat-names', handleNames)
+    return () => unsubTwitchNames()
   }, [])
 
   /** Primary chat nicks for autocomplete: from NAMES/JOIN/QUIT (primaryChatUserNicks). Falls back to nicks seen in messages if WS list empty. */
@@ -3037,12 +3039,12 @@ function CombinedChat({
 
   const inputBlock = (
     <>
-      {enablePrimaryChat && showPrimaryChatInput && !primaryChatAuthenticated && enabledKickSlugs.length === 0 && enabledYoutubeVideoIds.length === 0 && enabledTwitchChannels.length === 0 && (
+      {enablePrimaryChat && effectiveShowPrimaryChatInput && !primaryChatAuthenticated && enabledKickSlugs.length === 0 && enabledYoutubeVideoIds.length === 0 && enabledTwitchChannels.length === 0 && (
         <div className="flex-none px-2 py-2 text-sm text-base-content/60 border-t border-base-300">
           Login → Main menu → Connections
         </div>
       )}
-      {((enablePrimaryChat && (showPrimaryChatInput || primaryChatInputFocused) && primaryChatAuthenticated) || enabledKickSlugs.length > 0 || enabledYoutubeVideoIds.length > 0 || enabledTwitchChannels.length > 0) && (
+      {hasRealIpc && ((enablePrimaryChat && (effectiveShowPrimaryChatInput || primaryChatInputFocused) && primaryChatAuthenticated) || enabledKickSlugs.length > 0 || enabledYoutubeVideoIds.length > 0 || enabledTwitchChannels.length > 0) && (
         <div className="flex flex-col gap-1 min-w-0 flex-none">
           {primaryChatSourceId && activeChannel?.type === primaryChatSourceId && privViewOpen && !activeWhisperUsername && (
             <>
@@ -3981,9 +3983,9 @@ function CombinedChat({
                     {contextMenuConfig.primaryChat.showInput && <span aria-hidden>✓</span>}
                   </button>
                 )}
-                {contextMenuConfig.openExternalChatWindow && (
-                  <>
-                    <div className="border-t border-base-300 my-1" />
+                <>
+                  <div className="border-t border-base-300 my-1" />
+                  {contextMenuConfig.openExternalChatWindow && (
                     <button
                       type="button"
                       role="menuitem"
@@ -3996,8 +3998,25 @@ function CombinedChat({
                       <span>Open in external window</span>
                       <Icon name="external-link" size={16} className="shrink-0" aria-hidden />
                     </button>
-                  </>
-                )}
+                  )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="px-3 py-1.5 text-left hover:bg-base-300 w-full flex items-center justify-between gap-2"
+                      onClick={async () => {
+                        try {
+                          const url = contextMenuConfig.getCopyEmbedUrl?.() ?? window.location.href
+                          await navigator.clipboard.writeText(url)
+                          closeContextMenu()
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      <span>Copy URL (for OBS)</span>
+                      <Icon name="copy" size={16} className="shrink-0" aria-hidden />
+                    </button>
+                </>
               </div>
               {contextMenuHover === 'display' && (
                 <div

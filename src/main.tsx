@@ -4,6 +4,23 @@ import App from './App.tsx'
 import './index.css'
 import { logger } from './utils/logger'
 
+// Polyfill for browser (non-Electron) runs – e.g. Vite dev server
+if (typeof window !== 'undefined' && !(window as { ipcRenderer?: unknown }).ipcRenderer) {
+  ;(window as { ipcRenderer: unknown }).ipcRenderer = {
+    isElectron: false,
+    on: () => {},
+    off: () => {},
+    send: () => {},
+    invoke: () => Promise.resolve(undefined),
+    store: {
+      getBookmarkedStreamers: () => Promise.resolve([]),
+      setBookmarkedStreamers: () => Promise.resolve(),
+      getMinimizeToTray: () => Promise.resolve(false),
+      setMinimizeToTray: () => Promise.resolve(),
+    },
+  }
+}
+
 // Apply theme immediately on load (before React renders)
 function applyInitialTheme() {
   try {

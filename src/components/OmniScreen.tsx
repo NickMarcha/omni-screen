@@ -87,6 +87,7 @@ import { Icon } from './Icon'
 import { ConfirmDialog } from './ConfirmDialog'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 import { parseChatEmbedParams, mergeWithStorageDefaults, buildChatEmbedQuery } from '../utils/chatEmbedUrl'
+import { chatWsOn, chatWsSendRegister } from '../utils/chatWsClient'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
@@ -1656,34 +1657,16 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     })) as BookmarkedStreamer[]
   }, [])
 
+  const hasLoadedBookmarkedRef = useRef(false)
   useEffect(() => {
     const store = window.ipcRenderer?.store
     if (!store) return
     const load = async () => {
       try {
-        let list = (await store.getBookmarkedStreamers()) as unknown[]
-        if (!Array.isArray(list)) list = []
-        const normalized = normalizeStreamers(list)
-        if (normalized.length > 0) {
-          setBookmarkedStreamers(normalized)
-          return
-        }
-        // Migration: store empty, try localStorage
-        let raw = localStorage.getItem('omni-screen:bookmarked-streamers')
-        if (!raw) raw = localStorage.getItem('omni-screen:pinned-streamers')
-        if (raw) {
-          const migrated = normalizeStreamers(JSON.parse(raw))
-          if (migrated.length > 0) {
-            await store.setBookmarkedStreamers(migrated)
-            setBookmarkedStreamers(migrated)
-            try {
-              localStorage.removeItem('omni-screen:pinned-streamers')
-              localStorage.removeItem('omni-screen:bookmarked-streamers')
-            } catch {
-              // ignore
-            }
-          }
-        }
+        const list = (await store.getBookmarkedStreamers()) as unknown[]
+        const normalized = normalizeStreamers(Array.isArray(list) ? list : [])
+        setBookmarkedStreamers(normalized)
+        hasLoadedBookmarkedRef.current = true
       } catch {
         // ignore
       }
@@ -1691,10 +1674,10 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     load()
   }, [normalizeStreamers])
 
-  // Persist to shared store when bookmarked streamers change
+  // Persist to shared store when bookmarked streamers change (skip until load completes to avoid overwriting with [])
   useEffect(() => {
     const store = window.ipcRenderer?.store
-    if (!store) return
+    if (!store || !hasLoadedBookmarkedRef.current) return
     store.setBookmarkedStreamers(bookmarkedStreamers).catch(() => {})
   }, [bookmarkedStreamers])
 
@@ -1780,6 +1763,32 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       removeHighlightTerm: (term: string) => {
         setCombinedHighlightTerms((prev) => prev.filter((x) => x !== term))
       },
+      getCopyEmbedUrl: () => {
+        const base = `${window.location.origin}${window.location.pathname || '/'}`
+        const chatArr = Array.from(selectedEmbedChatKeys.values())
+        const embedArr = Array.from(selectedEmbedKeys.values())
+        const transparentBg = typeof localStorage !== 'undefined' && localStorage.getItem('chat-window-transparent-background') === 'true'
+        const query = buildChatEmbedQuery({
+          selectedEmbedChatKeys: chatArr,
+          selectedEmbedKeys: embedArr,
+          primaryChatSourceId: primaryChatSourceId ?? undefined,
+          chatTransparent: transparentBg,
+          maxLines: combinedMaxLines,
+          maxLinesScroll: combinedMaxLinesScroll,
+          showTimestamps: combinedShowTimestamps,
+          showLabels: combinedShowLabels,
+          showPlatformIcons: combinedShowPlatformIcons,
+          sortMode: combinedSortMode,
+          highlightTerms: combinedHighlightTerms,
+          pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
+          showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
+          includePrimaryChat: combinedIncludePrimaryChat,
+          chatBackgroundColor: undefined,
+          chatBackgroundOpacity: undefined,
+          chatPanelOpacity: combinedChatOverlayOpacity,
+        })
+        return query ? `${base}?${query}#chat-window` : `${base}#chat-window`
+      },
       ...(!chatOnlyMode && {
         openExternalChatWindow: () => {
           setChatPaneOpen(false)
@@ -1835,6 +1844,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       combinedMaxLines,
       combinedMaxLinesScroll,
       combinedChatOverlayOpacity,
+      primaryChatSourceId,
     ]
   )
 
@@ -2212,17 +2222,17 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       appendCards(buildLinkCardsFromMessage('twitch', msg.channel ?? 'unknown', msg.displayName ?? 'twitch', tsMs, msg.text ?? ''))
     }
 
-    window.ipcRenderer.on('chat-websocket-message', handleDggMessage)
-    window.ipcRenderer.on('chat-websocket-history', handleDggHistory)
-    window.ipcRenderer.on('kick-chat-message', handleKick)
-    window.ipcRenderer.on('youtube-chat-message', handleYouTube)
-    window.ipcRenderer.on('twitch-chat-message', handleTwitch)
+    const unsubDgg = chatWsOn('chat-websocket-message', handleDggMessage)
+    const unsubHistory = chatWsOn('chat-websocket-history', handleDggHistory)
+    const unsubKick = chatWsOn('kick-chat-message', handleKick)
+    const unsubYt = chatWsOn('youtube-chat-message', handleYouTube)
+    const unsubTwitch = chatWsOn('twitch-chat-message', handleTwitch)
     return () => {
-      window.ipcRenderer.off('chat-websocket-message', handleDggMessage)
-      window.ipcRenderer.off('chat-websocket-history', handleDggHistory)
-      window.ipcRenderer.off('kick-chat-message', handleKick)
-      window.ipcRenderer.off('youtube-chat-message', handleYouTube)
-      window.ipcRenderer.off('twitch-chat-message', handleTwitch)
+      unsubDgg()
+      unsubHistory()
+      unsubKick()
+      unsubYt()
+      unsubTwitch()
     }
   }, [liteLinkScrollerSettings.maxMessages, primaryChatSourceId])
 
@@ -2257,16 +2267,16 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       if (!u || u.id !== primaryChatMeIdRef.current) return
       setWatchedEmbedKey(watchingToKey(u.watching ?? null))
     }
-    window.ipcRenderer.on('chat-websocket-me', handleMe)
-    window.ipcRenderer.on('chat-websocket-names', handleNames)
-    window.ipcRenderer.on('chat-websocket-user-event', handleUserEvent)
-    window.ipcRenderer.invoke('get-cached-primary-chat-me').then((me: unknown) => {
+    const unsubMe = chatWsOn('chat-websocket-me', handleMe)
+    const unsubNames = chatWsOn('chat-websocket-names', handleNames)
+    const unsubUserEvent = chatWsOn('chat-websocket-user-event', handleUserEvent)
+    window.ipcRenderer?.invoke('get-cached-primary-chat-me').then((me: unknown) => {
       if (me) handleMe(null, me as { type?: string; data?: { id?: number; watching?: { platform?: string; id?: string } | null } })
     }).catch(() => {})
     return () => {
-      window.ipcRenderer.off('chat-websocket-me', handleMe)
-      window.ipcRenderer.off('chat-websocket-names', handleNames)
-      window.ipcRenderer.off('chat-websocket-user-event', handleUserEvent)
+      unsubMe()
+      unsubNames()
+      unsubUserEvent()
     }
   }, [])
 
@@ -2543,7 +2553,12 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           const twitchKeys = Array.from(selectedEmbedChatKeys).filter((k) => k.startsWith('twitch:'))
           return [...kickKeys, ...ytKeys, ...twitchKeys]
         })()
-    window.ipcRenderer.invoke('chat-register-consumer', { consumerId, embedChatKeys: keys }).catch(() => {})
+    chatWsSendRegister(consumerId, keys)
+    window.ipcRenderer?.invoke('chat-register-consumer', {
+      consumerId,
+      embedChatKeys: keys,
+      opts: { delayMultiplier: youTubePollMultiplier },
+    }).catch(() => {})
     return () => {
       window.ipcRenderer.invoke('chat-unregister-consumer', { consumerId }).catch(() => {})
     }
@@ -2553,12 +2568,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     chatExternalWindowOpen,
     selectedEmbedChatKeys,
     combinedAvailableEmbeds,
+    youTubePollMultiplier,
   ])
 
   // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
   useEffect(() => {
     const withYt = bookmarkedStreamers.filter((s) => s.youtubeChannelId?.trim())
-    logBookmarked('YT poll: bookmarked streamers with YT', { count: withYt.length, streamers: withYt.map((s) => ({ id: s.id, nickname: s.nickname, yt: s.youtubeChannelId })) })
+    if (withYt.length > 0) logBookmarked('YT poll: bookmarked streamers with YT', { count: withYt.length, streamers: withYt.map((s) => ({ id: s.id, nickname: s.nickname, yt: s.youtubeChannelId })) })
     if (withYt.length === 0) {
       setYoutubeVideoToStreamerId((prev) => (prev.size === 0 ? prev : new Map()))
       setBookmarkedOriginatedEmbeds((prev) => {
@@ -2627,7 +2643,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   // On error (rate limit, parse), preserve previous state so open embeds are not removed.
   useEffect(() => {
     const withKick = bookmarkedStreamers.filter((s) => s.kickSlug?.trim())
-    logBookmarked('Kick poll: bookmarked streamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
+    if (withKick.length > 0) logBookmarked('Kick poll: bookmarked streamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
     if (withKick.length === 0) return
     const intervalMs = 60_000
     let cancelled = false
@@ -2683,7 +2699,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   // On error (parse/rate limit), preserve previous state so open embeds are not removed.
   useEffect(() => {
     const withTwitch = bookmarkedStreamers.filter((s) => s.twitchLogin?.trim())
-    logBookmarked('Twitch poll: bookmarked streamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
+    if (withTwitch.length > 0) logBookmarked('Twitch poll: bookmarked streamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
     if (withTwitch.length === 0) return
     const intervalMs = 60_000
     let cancelled = false
@@ -3153,7 +3169,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       const bv = Number(bEmb?.count ?? bEmb?.mediaItem?.metadata?.viewers ?? 0) || 0
       return bv - av
     })
-    logBookmarked('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
+    if (result.length > 0) logBookmarked('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
     return result
   }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId])
 
@@ -3482,14 +3498,17 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [chatOnlyMode])
 
   if (chatOnlyMode) {
+    const effectivePrimaryChatSourceId = primaryChatSourceId ?? chatEmbedDisplayConfig?.primaryChatSourceId ?? null
+    const effectivePrimaryChatSourceAvailable =
+      primaryChatSourceAvailable || (!!chatEmbedDisplayConfig?.primaryChatSourceId && !!(chatEmbedDisplayConfig?.includePrimaryChat ?? combinedIncludePrimaryChat))
     return (
       <div className={`h-full min-h-0 text-base-content flex flex-col overflow-hidden ${chatWindowTransparentBackground ? 'bg-transparent' : 'bg-base-100'}`}>
         <div ref={setChatOnlyContainer} className="flex-1 min-h-0 overflow-hidden" />
         {chatOnlyContainer &&
           createPortal(
             <CombinedChat
-              primaryChatSourceId={primaryChatSourceId}
-              enablePrimaryChat={(chatEmbedDisplayConfig?.includePrimaryChat ?? combinedIncludePrimaryChat) && primaryChatSourceAvailable}
+              primaryChatSourceId={effectivePrimaryChatSourceId}
+              enablePrimaryChat={(chatEmbedDisplayConfig?.includePrimaryChat ?? combinedIncludePrimaryChat) && effectivePrimaryChatSourceAvailable}
               showPrimaryChatInput={showChatInput}
               enabledKickSlugs={enabledKickSlugs}
               enabledYoutubeVideoIds={enabledYoutubeVideoIds}

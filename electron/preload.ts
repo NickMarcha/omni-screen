@@ -2,6 +2,7 @@ import { ipcRenderer, contextBridge } from 'electron'
 
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
+  isElectron: true,
   on(...args: Parameters<typeof ipcRenderer.on>) {
     const [channel, listener] = args
     const wrappedListener = (_event: any, ...args: any[]) => listener(_event, ...args)

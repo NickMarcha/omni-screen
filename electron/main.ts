@@ -30,6 +30,7 @@ import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeL
 import { checkUrlIsLive } from './urlIsLive'
 import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
 import { ChatSubscriptionRegistry } from './chatSubscriptionRegistry'
+import { startChatWsServer, broadcastChatMessage, sendCachedToConsumer, stopChatWsServer, getChatWsServerUrl } from './chatServerWs'
 import type { ProtocolHandleResult } from './extensions/types.js'
 import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
 import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
@@ -79,6 +80,7 @@ export function getAppConfigForRenderer() {
   return {
     chatSources,
     platformUrls: platformUrlsFromOverlay,
+    chatWsUrl: getChatWsServerUrl(),
     extensions: getLoadedExtensions().map((e) => ({ id: e.id, name: e.name, version: e.version })),
     extensionSettingsSchemas: getExtensionSettingsSchemas(),
     connectionPlatforms: overlay.connectionPlatforms ?? [],
@@ -91,11 +93,12 @@ ipcMain.handle('get-app-config', () => getAppConfigForRenderer())
 
 // Shared store (bookmarked streamers, prefs) – main process owns; renderer accesses via IPC
 ipcMain.handle('store-get-bookmarked-streamers', () => getBookmarkedStreamers())
-ipcMain.handle('store-set-bookmarked-streamers', (_event, streamers: BookmarkedStreamer[]) => {
+ipcMain.handle('store-set-bookmarked-streamers', (event, streamers: BookmarkedStreamer[]) => {
   setBookmarkedStreamers(Array.isArray(streamers) ? streamers : [])
   const payload = 'bookmarked-streamers-changed'
-  if (win && !win.isDestroyed()) win.webContents.send(payload)
-  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(payload)
+  const sender = event.sender
+  if (win && !win.isDestroyed() && win.webContents !== sender) win.webContents.send(payload)
+  if (chatWin && !chatWin.isDestroyed() && chatWin.webContents !== sender) chatWin.webContents.send(payload)
 })
 ipcMain.handle('store-get-minimize-to-tray', () => getMinimizeToTray())
 ipcMain.handle('store-set-minimize-to-tray', (_event, value: boolean) => setMinimizeToTray(!!value))
@@ -935,11 +938,38 @@ function createTray() {
   updateTrayContextMenu()
 }
 
+function openChatFromTray() {
+  if (chatWin && !chatWin.isDestroyed()) {
+    chatWin.show()
+    chatWin.focus()
+    return
+  }
+  if (win && !win.isDestroyed()) {
+    win.show()
+    win.focus()
+    win.webContents.send('open-chat-from-tray')
+    return
+  }
+  // No windows: create chat window directly (tray-only mode)
+  let base = (productionServerBaseUrl || VITE_DEV_SERVER_URL || '').trim()
+  if (!base || !base.startsWith('http')) {
+    createWindow()
+    return
+  }
+  if (!base.endsWith('/')) base += '/'
+  const [urlBase] = base.split('#')
+  const separator = urlBase.includes('?') ? '&' : '?'
+  const state = cachedEmbedChatsState ?? { selectedEmbedChatKeys: [], selectedEmbedKeys: [] }
+  const query = `${separator}embedChats=${encodeURIComponent(JSON.stringify(state))}${chatWindowTransparentBackground ? '&chatTransparent=true' : ''}`
+  const loadUrl = `${urlBase}${query}#chat-window`
+  createChatWindow(loadUrl)
+}
+
 function updateTrayContextMenu() {
   if (!tray) return
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show Omni Screen', click: () => { if (win && !win.isDestroyed()) win.show(); else createWindow() } },
-    { label: 'Show Chat', click: () => { if (chatWin && !chatWin.isDestroyed()) { chatWin.show(); chatWin.focus() } else if (win && !win.isDestroyed()) { win.show(); win.focus(); win.webContents.send('open-chat-from-tray') } else { createWindow() } } },
+    { label: 'Show Chat', click: openChatFromTray },
     { type: 'separator' },
     { label: 'Quit', click: () => { tray?.destroy(); tray = null; app.quit() } },
   ])
@@ -3499,22 +3529,8 @@ ipcMain.handle('chat-websocket-connect', async (_event) => {
     if (!chatWebSocket) {
       chatWebSocket = new ChatWebSocket(primary.config.chatWssUrl, primary.config.chatOrigin)
       
-      // Helper function to safely send messages to main window and chat window (when open)
       const safeSend = (channel: string, ...args: any[]) => {
-        const targets: Electron.WebContents[] = []
-        if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-          targets.push(win.webContents)
-        }
-        if (chatWin && !chatWin.isDestroyed() && chatWin.webContents && !chatWin.webContents.isDestroyed()) {
-          targets.push(chatWin.webContents)
-        }
-        for (const wc of targets) {
-          try {
-            wc.send(channel, ...args)
-          } catch {
-            // Window or webContents was destroyed - silently ignore
-          }
-        }
+        broadcastChatMessage(channel, ...args)
       }
       
       // Forward events to renderer
@@ -3996,14 +4012,7 @@ ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data:
 })
 
 function platformChatSafeSend(ch: string, ...a: unknown[]) {
-  for (const w of [win, chatWin]) {
-    if (!w || w.isDestroyed() || !w.webContents || w.webContents.isDestroyed()) continue
-    try {
-      w.webContents.send(ch, ...a)
-    } catch {
-      /* ignore */
-    }
-  }
+  broadcastChatMessage(ch, ...a)
 }
 
 /** Apply subscription registry union to platform chat managers. Creates managers when needed. */
@@ -4054,23 +4063,16 @@ function applyChatSubscriptionTargets(opts?: { youTubeDelayMultiplier?: number }
   }
 }
 
-/** Register a chat consumer and apply union targets. Sends cached messages to new consumers. */
-ipcMain.handle('chat-register-consumer', async (_event, payload: { consumerId: string; embedChatKeys: string[] }) => {
+/** Register a chat consumer and apply union targets. Sends cached messages via WebSocket. */
+ipcMain.handle('chat-register-consumer', async (_event, payload: { consumerId: string; embedChatKeys: string[]; opts?: { delayMultiplier?: number } }) => {
   const consumerId = typeof payload?.consumerId === 'string' ? payload.consumerId.trim() : ''
   const keys = Array.isArray(payload?.embedChatKeys) ? payload.embedChatKeys.filter((k): k is string => typeof k === 'string') : []
   if (!consumerId) return
   chatSubscriptionRegistry.register(consumerId, keys)
-  applyChatSubscriptionTargets()
+  applyChatSubscriptionTargets({ youTubeDelayMultiplier: payload?.opts?.delayMultiplier ?? 1 })
   const cached = chatSubscriptionRegistry.getCachedForKeys(new Set(keys))
-  const target = consumerId === 'chat-win' ? chatWin?.webContents : win?.webContents
-  if (target && !target.isDestroyed() && cached.length > 0) {
-    cached.forEach((m) => {
-      try {
-        target.send(m.channel, m.payload)
-      } catch {
-        /* ignore */
-      }
-    })
+  if (cached.length > 0) {
+    sendCachedToConsumer(consumerId, cached.map((m) => ({ channel: m.channel, payload: m.payload })))
   }
 })
 
@@ -4422,6 +4424,7 @@ process.on('unhandledRejection', (reason, _promise) => {
 
 // Cleanup on app quit
 app.on('before-quit', () => {
+  stopChatWsServer()
   if (productionHttpServer) {
     productionHttpServer.close()
     productionHttpServer = null
@@ -4542,6 +4545,9 @@ app.whenReady().then(() => {
   mentionCache.clearExpired()
   createApplicationMenu()
   createTray()
+
+  // Start chat WebSocket server for unified delivery (main, chat window, OBS)
+  startChatWsServer().catch((e) => console.error('[Main] Chat WS server failed:', e))
 
   // In production, start HTTP server early so OBS/tray mode can load the app when windows are closed
   if (!VITE_DEV_SERVER_URL) {
