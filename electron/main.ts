@@ -1031,6 +1031,7 @@ function createWindow() {
   })
 
   win.setMaxListeners(40) // avoid MaxListenersExceededWarning when multiple listeners attach (e.g. closed, webRequest)
+  win.webContents.setMaxListeners(40) // embeds, webviews, and load handlers can add many did-stop-loading listeners
   win.on('closed', () => {})
 
   // Configure webRequest handlers for YouTube and Reddit embeds
@@ -1502,6 +1503,7 @@ function getOrCreateViewerWindow(): BrowserWindow {
   })
 
   viewerWin.setMaxListeners(20)
+  viewerWin.webContents.setMaxListeners(20)
   viewerWin.on('closed', () => {
     viewerWin = null
   })
@@ -1726,6 +1728,8 @@ async function createChatWindow(loadUrl: string): Promise<void> {
     }
   })
   chatWin.setMenu(null)
+  chatWin.setMaxListeners(20)
+  chatWin.webContents.setMaxListeners(20)
   chatWin.webContents.on('before-input-event', (event, input) => {
     if (input.control && input.shift && input.key.toLowerCase() === 'i') {
       chatWin?.webContents.toggleDevTools()
@@ -3537,6 +3541,7 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
     })
     
     loginWindow.setMaxListeners(20)
+    loginWindow.webContents.setMaxListeners(20)
     // When login window closes, tell renderer to refresh Connections cookie fields (they may have logged in)
     loginWindow.on('closed', () => {
       win?.webContents.send('connections-refresh-cookies')
@@ -4153,6 +4158,7 @@ ipcMain.handle('kick-open-cookie-window', async (_event, payload?: { slug?: stri
     }
 
     w.setMaxListeners(20)
+    w.webContents.setMaxListeners(20)
     // After the user closes the window, re-attempt history fetches.
     w.on('closed', () => {
       try {
