@@ -10,6 +10,7 @@ import manHoldsCatPng from '../assets/media/ManHoldsCat.png'
 import noHopePng from '../assets/media/NoHope.png'
 import whickedSteinPng from '../assets/media/WhickedStein.png'
 import { Icon } from './Icon'
+import againstMalariaPng from '../assets/media/AgainstMalaria.png'
 import { marked } from 'marked'
 import {
   applyThemeToDocument,
@@ -151,7 +152,7 @@ function formatLastCheckedAgo(ts: number): string {
 }
 
 interface MenuProps {
-  onNavigate: (page: 'link-scroller' | 'omni-screen' | 'debug') => void
+  onNavigate: (page: 'link-scroller' | 'omni-screen' | 'debug' | 'charity-raffle') => void
 }
 
 function OmniScreenCard({ onNavigate }: { onNavigate: (page: 'omni-screen') => void }) {
@@ -641,6 +642,18 @@ function Menu({ onNavigate }: MenuProps) {
       <p className="text-base-content/50 text-xs text-center mt-8 max-w-md">
         {menuTaglineBottom}
       </p>
+
+      {/* DGG Against Malaria button (lower-right, feature-flagged) */}
+      {import.meta.env.VITE_CHARITY_RAFFLE && (
+        <button
+          type="button"
+          className="fixed bottom-6 right-6 w-16 h-16 rounded-lg overflow-hidden shadow-lg hover:shadow-xl transition-shadow bg-base-200 border border-base-300 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-primary"
+          onClick={() => onNavigate('charity-raffle')}
+          title="DGG Against Malaria"
+        >
+          <img src={againstMalariaPng} alt="DGG Against Malaria" className="w-full h-full object-contain" />
+        </button>
+      )}
 
       {/* Changelog Modal */}
       {changelogOpen && (

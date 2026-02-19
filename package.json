@@ -7,8 +7,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:charity-raffle": "cross-env CHARITY_RAFFLE_ENABLED=1 vite",
     "dev:no-gpu": "set DISABLE_GPU=1&& vite",
+    "dev:no-gpu:charity-raffle": "cross-env DISABLE_GPU=1 CHARITY_RAFFLE_ENABLED=1 vite",
     "build": "npm run icons && tsc && vite build && electron-builder",
+    "build:charity-raffle": "cross-env CHARITY_RAFFLE_ENABLED=1 npm run build",
     "build:ci": "tsc && vite build",
     "icons": "node scripts/generate-icons.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
@@ -47,6 +50,7 @@
     "electron-builder": "^26.0.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
+    "cross-env": "^7.0.3",
     "eslint-plugin-react-refresh": "^0.4.5",
     "sharp": "^0.33.5",
     "typescript": "^5.2.2",
@@ -54,5 +58,11 @@
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.6"
   },
-  "main": "dist-electron/main.js"
+  "main": "dist-electron/main.js",
+  "optionalDependencies": {
+    "cheerio": "^1.0.0",
+    "google-auth-library": "^9.0.0",
+    "google-spreadsheet": "^4.0.0",
+    "puppeteer": "^24.0.0"
+  }
 }

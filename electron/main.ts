@@ -174,6 +174,12 @@ ipcMain.handle('extension-uninstall', async (_event, extensionId: string) => {
   return result
 })
 
+// Charity raffle (DGG Against Malaria) – build-time feature flag (replaced by Vite define)
+if (__CHARITY_RAFFLE_ENABLED__) {
+  const { registerCharityRaffleHandlers } = await import('./charityRaffle/ipcHandlers.js')
+  registerCharityRaffleHandlers(ipcMain)
+}
+
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')

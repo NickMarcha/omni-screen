@@ -1,5 +1,8 @@
 /// <reference types="vite-plugin-electron/electron-env" />
 
+/** Build-time feature flag for charity raffle. Replaced by Vite define. */
+declare const __CHARITY_RAFFLE_ENABLED__: boolean
+
 declare namespace NodeJS {
   interface ProcessEnv {
     /**

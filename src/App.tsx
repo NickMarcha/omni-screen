@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, lazy, Suspense } from 'react'
 import LinkScroller from './components/LinkScroller'
 import Menu from './components/Menu'
 import OmniScreen from './components/OmniScreen'
@@ -8,7 +8,11 @@ import ChatWindowTitleBar from './components/ChatWindowTitleBar'
 import { applyThemeToDocument, getAppPreferences } from './utils/appPreferences'
 import './App.css'
 
-type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug' | 'chat-window'
+type Page = 'menu' | 'link-scroller' | 'omni-screen' | 'debug' | 'chat-window' | 'charity-raffle'
+
+const CharityRafflePage = import.meta.env.VITE_CHARITY_RAFFLE
+  ? lazy(() => import('./components/charity-raffle'))
+  : () => null
 
 const TOAST_DURATION_MS = 4000
 
@@ -218,7 +222,7 @@ function App() {
     }
   }, [])
 
-  const handleNavigate = (page: 'link-scroller' | 'omni-screen' | 'debug') => {
+  const handleNavigate = (page: 'link-scroller' | 'omni-screen' | 'debug' | 'charity-raffle') => {
     setCurrentPage(page)
   }
 
@@ -235,6 +239,16 @@ function App() {
       <OmniScreen chatOnlyMode chatWindowTransparentBackground={chatWindowTransparentBackground} />
     ) : currentPage === 'debug' ? (
       <DebugPage onBackToMenu={handleBackToMenu} />
+    ) : currentPage === 'charity-raffle' && import.meta.env.VITE_CHARITY_RAFFLE ? (
+      <Suspense fallback={<div className="flex items-center justify-center p-8">Loading...</div>}>
+        <CharityRafflePage onBackToMenu={handleBackToMenu} />
+      </Suspense>
+    ) : currentPage === 'charity-raffle' ? (
+      <div className="flex items-center justify-center p-8">
+        <button type="button" className="btn btn-ghost" onClick={handleBackToMenu}>
+          Back to menu
+        </button>
+      </div>
     ) : (
       <Menu onNavigate={handleNavigate} />
     )
