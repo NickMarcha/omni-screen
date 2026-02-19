@@ -18,9 +18,9 @@ const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
 
 function getPlatformIcon(colorKey: string, primaryChatSourceIconUrl: string | undefined, primaryChatSourceId: string | null): string | undefined {
   if (primaryChatSourceId && colorKey === primaryChatSourceId) return primaryChatSourceIconUrl
-  if (colorKey.startsWith('kick:')) return BUILTIN_PLATFORM_ICONS.kick
-  if (colorKey.startsWith('youtube:')) return BUILTIN_PLATFORM_ICONS.youtube
-  if (colorKey.startsWith('twitch:')) return BUILTIN_PLATFORM_ICONS.twitch
+  if (colorKey === 'kick' || colorKey.startsWith('kick:')) return BUILTIN_PLATFORM_ICONS.kick
+  if (colorKey === 'youtube' || colorKey.startsWith('youtube:')) return BUILTIN_PLATFORM_ICONS.youtube
+  if (colorKey === 'twitch' || colorKey.startsWith('twitch:')) return BUILTIN_PLATFORM_ICONS.twitch
   return undefined
 }
 
@@ -343,9 +343,11 @@ function renderTextWithLinks(
         rel={isHashLink ? undefined : 'noopener noreferrer'}
         className="link link-primary break-words overflow-wrap-anywhere"
         onClick={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          onOpenLink?.(url)
+          if (onOpenLink) {
+            e.preventDefault()
+            e.stopPropagation()
+            onOpenLink(url)
+          }
         }}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
@@ -1124,9 +1126,10 @@ export type CombinedChatContextMenuConfig = {
   }
   order: { sortMode: 'timestamp' | 'arrival'; setSortMode: (v: 'timestamp' | 'arrival') => void }
   emotes: { pauseOffScreen: boolean; setPauseOffScreen: (v: boolean) => void }
-  linkAction: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
-  /** Chat pane side: left or right. */
-  paneSide: { value: 'left' | 'right'; setPaneSide: (v: 'left' | 'right') => void }
+  /** When false (browser/OBS), links submenu is hidden – links use default browser behavior. */
+  linkAction?: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
+  /** Chat pane side: left or right. When undefined (embed mode), submenu is hidden. */
+  paneSide?: { value: 'left' | 'right'; setPaneSide: (v: 'left' | 'right') => void }
   primaryChat?: { showInput: boolean; setShowInput: (v: boolean) => void }
   highlightTerms?: string[]
   addHighlightTerm?: (term: string) => void
@@ -2785,9 +2788,11 @@ function CombinedChat({
     wasAtBottomRef.current = true
   }, [updateSeq])
 
-  const onOpenLink = onOpenLinkProp ?? ((url: string) => {
-    window.ipcRenderer.invoke('link-scroller-handle-link', { url, action: 'browser' }).catch(() => {})
-  })
+  const onOpenLink = onOpenLinkProp ?? (hasRealIpc
+    ? ((url: string) => {
+        window.ipcRenderer!.invoke('link-scroller-handle-link', { url, action: 'browser' }).catch(() => {})
+      })
+    : undefined)
 
   const handleNickDoubleClick = useCallback(
     (nick: string) => {
@@ -3893,8 +3898,10 @@ function CombinedChat({
                 href={`#${userTooltip.watching!.platform}/${userTooltip.watching!.id}`}
                 className="link link-hover"
                 onClick={(e) => {
-                  e.preventDefault()
-                  onOpenLink(`#${userTooltip.watching!.platform}/${userTooltip.watching!.id}`)
+                  if (onOpenLink) {
+                    e.preventDefault()
+                    onOpenLink(`#${userTooltip.watching!.platform}/${userTooltip.watching!.id}`)
+                  }
                   closeUserTooltip()
                 }}
               >
@@ -4012,22 +4019,26 @@ function CombinedChat({
                   <span>Emotes</span>
                   <span aria-hidden className="text-base-content/50">▸</span>
                 </div>
-                <div
-                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
-                  onMouseEnter={() => setContextMenuHover('links')}
-                  role="menuitem"
-                >
-                  <span>Links</span>
-                  <span aria-hidden className="text-base-content/50">▸</span>
-                </div>
-                <div
-                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
-                  onMouseEnter={() => setContextMenuHover('paneSide')}
-                  role="menuitem"
-                >
-                  <span>Chat pane side</span>
-                  <span aria-hidden className="text-base-content/50">▸</span>
-                </div>
+                {contextMenuConfig.linkAction && (
+                  <div
+                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                    onMouseEnter={() => setContextMenuHover('links')}
+                    role="menuitem"
+                  >
+                    <span>Links</span>
+                    <span aria-hidden className="text-base-content/50">▸</span>
+                  </div>
+                )}
+                {contextMenuConfig.paneSide && (
+                  <div
+                    className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
+                    onMouseEnter={() => setContextMenuHover('paneSide')}
+                    role="menuitem"
+                  >
+                    <span>Chat pane side</span>
+                    <span aria-hidden className="text-base-content/50">▸</span>
+                  </div>
+                )}
                 {contextMenuConfig.primaryChat && (
                   <button
                     type="button"
@@ -4129,29 +4140,29 @@ function CombinedChat({
                   </button>
                 </div>
               )}
-              {contextMenuHover === 'links' && (
+              {contextMenuHover === 'links' && contextMenuConfig.linkAction && (
                 <div
                   className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
                   onMouseEnter={() => setContextMenuHover('links')}
                 >
                   {(['none', 'clipboard', 'browser', 'viewer'] as const).map((action) => (
-                    <button key={action} type="button" role="menuitemradio" aria-checked={contextMenuConfig.linkAction.value === action} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.linkAction.setValue(action); closeContextMenu() }}>
+                    <button key={action} type="button" role="menuitemradio" aria-checked={contextMenuConfig.linkAction!.value === action} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.linkAction!.setValue(action); closeContextMenu() }}>
                       <span>{action === 'none' ? "Don't open" : action === 'clipboard' ? 'Copy to clipboard' : action === 'browser' ? 'Open in browser' : 'Open in Viewer'}</span>
-                      {contextMenuConfig.linkAction.value === action && <span aria-hidden>✓</span>}
+                      {contextMenuConfig.linkAction!.value === action && <span aria-hidden>✓</span>}
                     </button>
                   ))}
                 </div>
               )}
-              {contextMenuHover === 'paneSide' && (
+              {contextMenuHover === 'paneSide' && contextMenuConfig.paneSide && (
                 <div
                   className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
                   onMouseEnter={() => setContextMenuHover('paneSide')}
                 >
-                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'left'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide.setPaneSide('left'); closeContextMenu() }}>
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'left'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide!.setPaneSide('left'); closeContextMenu() }}>
                     <span>Left</span>
                     {contextMenuConfig.paneSide.value === 'left' && <span aria-hidden>✓</span>}
                   </button>
-                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'right'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide.setPaneSide('right'); closeContextMenu() }}>
+                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.paneSide.value === 'right'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.paneSide!.setPaneSide('right'); closeContextMenu() }}>
                     <span>Right</span>
                     {contextMenuConfig.paneSide.value === 'right' && <span aria-hidden>✓</span>}
                   </button>

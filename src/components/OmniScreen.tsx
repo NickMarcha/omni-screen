@@ -1114,6 +1114,7 @@ const EMBED_DOCK_ICON_BTN = 'btn btn-sm btn-square btn-ghost min-h-0 p-0'
 const EMBED_DOCK_ICON_BTN_CINEMA = 'rounded-none self-stretch h-full min-h-0'
 
 export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWindowTransparentBackground = false }: { onBackToMenu?: () => void; chatOnlyMode?: boolean; chatWindowTransparentBackground?: boolean }) {
+  const isElectron = (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false
   // ---- Live WS (embeds list) ----
   const [availableEmbeds, setAvailableEmbeds] = useState<Map<string, LiveEmbed>>(new Map())
   const [bannedEmbeds, setBannedEmbeds] = useState<Map<string, BannedEmbed>>(new Map())
@@ -1751,9 +1752,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         pauseOffScreen: combinedPauseEmoteAnimationsOffScreen,
         setPauseOffScreen: setCombinedPauseEmoteAnimationsOffScreen,
       },
-      linkAction: { value: chatLinkOpenAction, setValue: setChatLinkOpenAction },
-      paneSide: { value: chatPaneSide, setPaneSide: setChatPaneSide },
-      primaryChat: combinedIncludePrimaryChat ? { showInput: showChatInput, setShowInput: setShowChatInput } : undefined,
+      ...(isElectron && { linkAction: { value: chatLinkOpenAction, setValue: setChatLinkOpenAction } }),
+      ...(isElectron && !chatOnlyMode && { paneSide: { value: chatPaneSide, setPaneSide: setChatPaneSide } }),
+      primaryChat: isElectron && combinedIncludePrimaryChat ? { showInput: showChatInput, setShowInput: setShowChatInput } : undefined,
       highlightTerms: combinedHighlightTerms,
       addHighlightTerm: (term: string) => {
         const t = term.trim()
@@ -1832,6 +1833,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       combinedDisablePrimaryChatFlairsAndColors,
       combinedSortMode,
       combinedPauseEmoteAnimationsOffScreen,
+      isElectron,
       chatLinkOpenAction,
       chatPaneSide,
       combinedIncludePrimaryChat,
@@ -2168,6 +2170,58 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   useEffect(() => {
     window.ipcRenderer?.invoke('set-chat-link-open-action', chatLinkOpenAction).catch(() => {})
   }, [chatLinkOpenAction])
+
+  // When not Electron and in embed mode (using combinedChatContextMenuConfig), sync React state to URL. When using embed config (chatOnlyMode && !isElectron), setters update URL directly.
+  const skipUrlSyncFromReactState = chatOnlyMode && !isElectron
+  useEffect(() => {
+    if (!chatOnlyMode || isElectron || skipUrlSyncFromReactState) return
+    const base = `${window.location.origin}${window.location.pathname || '/'}`
+    const chatArr = Array.from(selectedEmbedChatKeys.values())
+    const embedArr = Array.from(selectedEmbedKeys.values())
+    const transparentBg = typeof localStorage !== 'undefined' && localStorage.getItem('chat-window-transparent-background') === 'true'
+    const query = buildChatEmbedQuery({
+      selectedEmbedChatKeys: chatArr,
+      selectedEmbedKeys: embedArr,
+      primaryChatSourceId: primaryChatSourceId ?? undefined,
+      chatTransparent: transparentBg,
+      maxLines: combinedMaxLines,
+      maxLinesScroll: combinedMaxLinesScroll,
+      showTimestamps: combinedShowTimestamps,
+      showLabels: combinedShowLabels,
+      showPlatformIcons: combinedShowPlatformIcons,
+      sortMode: combinedSortMode,
+      highlightTerms: combinedHighlightTerms,
+      pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
+      showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
+      includePrimaryChat: combinedIncludePrimaryChat,
+      chatBackgroundColor: undefined,
+      chatBackgroundOpacity: undefined,
+      chatPanelOpacity: combinedChatOverlayOpacity,
+    })
+    const newUrl = query ? `${base}?${query}#chat-window` : `${base}#chat-window`
+    if (window.location.href !== newUrl) {
+      window.history.replaceState(null, '', newUrl)
+      setEmbedConfigKey((k) => k + 1)
+    }
+  }, [
+    chatOnlyMode,
+    isElectron,
+    selectedEmbedChatKeys,
+    selectedEmbedKeys,
+    primaryChatSourceId,
+    combinedMaxLines,
+    combinedMaxLinesScroll,
+    combinedShowTimestamps,
+    combinedShowLabels,
+    combinedShowPlatformIcons,
+    combinedSortMode,
+    combinedHighlightTerms,
+    combinedPauseEmoteAnimationsOffScreen,
+    combinedDisablePrimaryChatFlairsAndColors,
+    combinedIncludePrimaryChat,
+    combinedChatOverlayOpacity,
+    skipUrlSyncFromReactState,
+  ])
 
   // Collect messages with links for lite link scroller (same sources as combined chat)
   useEffect(() => {
@@ -3484,7 +3538,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [chatOnlyMode, overlayMessagesClickThrough, keybinds])
 
-  /** When chatOnlyMode (popout/OBS), derive display config from URL params with storage fallback. */
+  /** When chatOnlyMode (popout/OBS), derive display config from URL params with storage fallback. embedConfigKey triggers re-read when URL is updated by context menu. */
+  const [embedConfigKey, setEmbedConfigKey] = useState(0)
   const chatEmbedDisplayConfig = useMemo(() => {
     if (!chatOnlyMode) return null
     const urlConfig = parseChatEmbedParams(new URLSearchParams(typeof window !== 'undefined' ? window.location.search : ''))
@@ -3495,7 +3550,83 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         return null
       }
     })
-  }, [chatOnlyMode])
+  }, [chatOnlyMode, embedConfigKey])
+
+  const updateEmbedUrl = useCallback(
+    (updates: Partial<Parameters<typeof buildChatEmbedQuery>[0]>) => {
+      if (!chatEmbedDisplayConfig) return
+      const chatArr = Array.from(selectedEmbedChatKeys.values())
+      const embedArr = Array.from(selectedEmbedKeys.values())
+      const transparentBg = typeof localStorage !== 'undefined' && localStorage.getItem('chat-window-transparent-background') === 'true'
+      const query = buildChatEmbedQuery({
+        selectedEmbedChatKeys: chatArr,
+        selectedEmbedKeys: embedArr,
+        primaryChatSourceId: primaryChatSourceId ?? chatEmbedDisplayConfig.primaryChatSourceId ?? undefined,
+        chatTransparent: transparentBg,
+        maxLines: chatEmbedDisplayConfig.maxLines,
+        maxLinesScroll: chatEmbedDisplayConfig.maxLinesScroll,
+        showTimestamps: chatEmbedDisplayConfig.showTimestamps,
+        showLabels: chatEmbedDisplayConfig.showLabels,
+        showPlatformIcons: chatEmbedDisplayConfig.showPlatformIcons,
+        sortMode: chatEmbedDisplayConfig.sortMode,
+        highlightTerms: chatEmbedDisplayConfig.highlightTerms,
+        pauseEmoteOffscreen: chatEmbedDisplayConfig.pauseEmoteOffscreen,
+        showPrimaryChatFlairs: chatEmbedDisplayConfig.showPrimaryChatFlairs,
+        includePrimaryChat: chatEmbedDisplayConfig.includePrimaryChat,
+        chatBackgroundColor: chatEmbedDisplayConfig.chatBackgroundColor,
+        chatBackgroundOpacity: chatEmbedDisplayConfig.chatBackgroundOpacity,
+        chatPanelOpacity: chatEmbedDisplayConfig.chatPanelOpacity,
+        ...updates,
+      })
+      const base = `${window.location.origin}${window.location.pathname || '/'}`
+      const newUrl = query ? `${base}?${query}#chat-window` : `${base}#chat-window`
+      window.history.replaceState(null, '', newUrl)
+      setEmbedConfigKey((k) => k + 1)
+    },
+    [
+      chatEmbedDisplayConfig,
+      selectedEmbedChatKeys,
+      selectedEmbedKeys,
+      primaryChatSourceId,
+    ]
+  )
+
+  /** Context menu for embed mode (chatOnlyMode && !isElectron): uses URL config, setters update URL directly. */
+  const chatOnlyEmbedContextMenuConfig = useMemo<CombinedChatContextMenuConfig | null>(() => {
+    if (!chatOnlyMode || isElectron || !chatEmbedDisplayConfig) return null
+    return {
+      display: {
+        showTimestamps: chatEmbedDisplayConfig.showTimestamps ?? true,
+        setShowTimestamps: (v) => updateEmbedUrl({ showTimestamps: v }),
+        showLabels: chatEmbedDisplayConfig.showLabels ?? true,
+        setShowLabels: (v) => updateEmbedUrl({ showLabels: v }),
+        showPlatformIcons: chatEmbedDisplayConfig.showPlatformIcons ?? false,
+        setShowPlatformIcons: (v) => updateEmbedUrl({ showPlatformIcons: v }),
+        showPrimaryChatSourceFlairsAndColors: chatEmbedDisplayConfig.showPrimaryChatFlairs ?? true,
+        setShowPrimaryChatSourceFlairsAndColors: (v) => updateEmbedUrl({ showPrimaryChatFlairs: v }),
+      },
+      order: {
+        sortMode: chatEmbedDisplayConfig.sortMode ?? 'arrival',
+        setSortMode: (v) => updateEmbedUrl({ sortMode: v }),
+      },
+      emotes: {
+        pauseOffScreen: chatEmbedDisplayConfig.pauseEmoteOffscreen ?? false,
+        setPauseOffScreen: (v) => updateEmbedUrl({ pauseEmoteOffscreen: v }),
+      },
+      highlightTerms: chatEmbedDisplayConfig.highlightTerms,
+      addHighlightTerm: (term: string) => {
+        const t = term.trim()
+        if (!t) return
+        const next = [...(chatEmbedDisplayConfig.highlightTerms || []), t]
+        updateEmbedUrl({ highlightTerms: next })
+      },
+      removeHighlightTerm: (term: string) => {
+        const next = (chatEmbedDisplayConfig.highlightTerms || []).filter((x) => x !== term)
+        updateEmbedUrl({ highlightTerms: next })
+      },
+      getCopyEmbedUrl: () => window.location.href,
+    }
+  }, [chatOnlyMode, isElectron, chatEmbedDisplayConfig, updateEmbedUrl])
 
   if (chatOnlyMode) {
     const effectivePrimaryChatSourceId = primaryChatSourceId ?? chatEmbedDisplayConfig?.primaryChatSourceId ?? null
@@ -3519,7 +3650,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               primaryChatSourceLabelColor={primaryChatSourceLabelColorOverride || undefined}
               primaryChatSourceLabelText={primaryChatSourceLabelText}
               primaryChatSourceIconUrl={primaryChatSourceIconUrl}
-              onOpenLink={handleChatOpenLink}
+              onOpenLink={isElectron ? handleChatOpenLink : undefined}
               maxLines={chatEmbedDisplayConfig?.maxLines ?? combinedMaxLines}
               maxLinesScroll={chatEmbedDisplayConfig?.maxLinesScroll ?? combinedMaxLinesScroll}
               showTimestamps={chatEmbedDisplayConfig?.showTimestamps ?? combinedShowTimestamps}
@@ -3529,7 +3660,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               highlightTerms={chatEmbedDisplayConfig?.highlightTerms ?? combinedHighlightTerms}
               pauseEmoteAnimationsOffScreen={chatEmbedDisplayConfig?.pauseEmoteOffscreen ?? combinedPauseEmoteAnimationsOffScreen}
               showPrimaryChatSourceFlairsAndColors={chatEmbedDisplayConfig?.showPrimaryChatFlairs ?? !combinedDisablePrimaryChatFlairsAndColors}
-              contextMenuConfig={combinedChatContextMenuConfig}
+              contextMenuConfig={chatOnlyEmbedContextMenuConfig ?? combinedChatContextMenuConfig}
               onCountChange={setCombinedMsgCount}
               onPrimaryChatUserCountChange={setCombinedPrimaryChatUserCount}
               onCombinedUserCountsChange={setCombinedUserCounts}
@@ -3573,7 +3704,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               primaryChatSourceLabelColor={primaryChatSourceLabelColorOverride || undefined}
               primaryChatSourceLabelText={primaryChatSourceLabelText}
               primaryChatSourceIconUrl={primaryChatSourceIconUrl}
-              onOpenLink={handleChatOpenLink}
+              onOpenLink={isElectron ? handleChatOpenLink : undefined}
               maxLines={combinedMaxLines}
               maxLinesScroll={combinedMaxLinesScroll}
               showTimestamps={combinedShowTimestamps}

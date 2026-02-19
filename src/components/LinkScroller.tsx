@@ -1050,7 +1050,13 @@ function renderLinkCardOverviewContent(
   const embedAutoplay = cardEmbedOverrides?.autoplay ?? false
   const embedMuted = cardEmbedOverrides?.muted ?? true
   const embedOnEnded = cardEmbedOverrides?.onEnded
-  const handleAnchorClick = (e: React.MouseEvent, url: string) => { e.preventDefault(); e.stopPropagation(); onOpenLink?.(url) }
+  const handleAnchorClick = (e: React.MouseEvent, url: string) => {
+    if (onOpenLink) {
+      e.preventDefault()
+      e.stopPropagation()
+      onOpenLink(url)
+    }
+  }
   const reloadKey = embedReloadKey
   // Check platform display mode (calculate outside IIFE so we can use it for hasEmbed check)
   const youtubeMode = getPlatformDisplayMode('YouTube', platformSettings)
@@ -1106,7 +1112,7 @@ function renderLinkCardOverviewContent(
         ) : card.isTwitterTimeline ? (
           <div className="bg-base-200 rounded-t-lg p-4 text-center">
             <p className="text-sm text-base-content/80 mb-2">Open in expanded mode to see Twitter timeline</p>
-            <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-sm" onClick={(e) => { e.stopPropagation(); onOpenLink?.(card.url) }}>Open on X</a>
+            <a href={card.url} target="_blank" rel="noopener noreferrer" className="link link-primary text-sm" onClick={(e) => { if (onOpenLink) { e.preventDefault(); e.stopPropagation(); onOpenLink(card.url) } }}>Open on X</a>
           </div>
         ) : card.isYouTube && youtubeMode === 'embed' && card.embedUrl ? (
           <YouTubeEmbed key={`yt-${card.id}-${reloadKey}`} url={card.url} embedUrl={card.embedUrl as string} autoplay={embedAutoplay} mute={embedMuted} />
@@ -1990,9 +1996,11 @@ function renderTextWithLinks(text: string, replaceUrl?: string, replaceWith?: st
         rel="noopener noreferrer"
         className="link link-primary break-words overflow-wrap-anywhere"
         onClick={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          onOpenLink?.(url)
+          if (onOpenLink) {
+            e.preventDefault()
+            e.stopPropagation()
+            onOpenLink(url)
+          }
         }}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
