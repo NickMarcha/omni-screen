@@ -309,6 +309,8 @@ export interface RenderPrimaryChatMessageContentParams {
   onEmoteDoubleClick?: (prefix: string) => void
   onNickDoubleClick?: (nick: string) => void
   onUserTooltip?: (e: React.MouseEvent, nick: string) => void
+  /** Left-click to focus/unfocus this user (dim others). */
+  onUserFocusClick?: (nick: string) => void
   options?: ChatFormattingOptions
 }
 
@@ -322,6 +324,7 @@ export function renderPrimaryChatMessageContent(params: RenderPrimaryChatMessage
     onEmoteDoubleClick,
     onNickDoubleClick,
     onUserTooltip,
+    onUserFocusClick,
     options,
   } = params
 
@@ -373,7 +376,15 @@ export function renderPrimaryChatMessageContent(params: RenderPrimaryChatMessage
           lineParts.push(
             <span
               key={`pchat-nick-${key++}`}
-              className="primary-chat-mention hover:underline cursor-context-menu"
+              className={`primary-chat-mention hover:underline ${onUserFocusClick ? 'cursor-pointer' : 'cursor-context-menu'}`}
+              onClick={
+                onUserFocusClick
+                  ? (e) => {
+                      e.stopPropagation()
+                      if (seg.value?.trim()) onUserFocusClick(seg.value.trim())
+                    }
+                  : undefined
+              }
               onContextMenu={onUserTooltip ? (e) => onUserTooltip(e, seg.value) : undefined}
               onDoubleClick={onNickDoubleClick ? () => onNickDoubleClick(seg.value) : undefined}
               onMouseUp={(e) => e.stopPropagation()}

@@ -330,6 +330,19 @@ function getContentForHighlight(m: CombinedItem): string {
   return m.content ?? ''
 }
 
+/** True if content mentions any focused username (whole-word, case-insensitive). */
+function messageMentionsFocusedUser(content: string, focusedSet: Set<string>): boolean {
+  if (!content || focusedSet.size === 0) return false
+  const contentLower = content.toLowerCase()
+  for (const u of focusedSet) {
+    const lower = u.toLowerCase()
+    if (!lower) continue
+    const re = new RegExp(`\\b${escapeRegexLiteral(lower)}\\b`, 'i')
+    if (re.test(contentLower)) return true
+  }
+  return false
+}
+
 const SCROLL_THRESHOLD_PX = 40
 const PRIMARY_CHAT_AUTOCOMPLETE_LIMIT = 20
 /** Base height for YouTube/Kick/Twitch inline emotes. 25% larger than previous 18px for readability. */
@@ -1323,6 +1336,20 @@ function CombinedChat({
   /** Show scrollbar briefly when user scrolls; used for auto-hide scrollbar. */
   const [scrollbarVisible, setScrollbarVisible] = useState(false)
   const scrollbarHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Usernames to focus (left-click): dims all other messages. */
+  const [focusedUsernames, setFocusedUsernames] = useState<string[]>([])
+  const focusedSet = useMemo(
+    () => new Set(focusedUsernames.map((u) => u.toLowerCase())),
+    [focusedUsernames]
+  )
+  const handleUsernameFocusClick = useCallback((nick: string) => {
+    const lower = nick.trim().toLowerCase()
+    if (!lower) return
+    setFocusedUsernames((prev) => {
+      const has = prev.some((u) => u.toLowerCase() === lower)
+      return has ? prev.filter((u) => u.toLowerCase() !== lower) : [...prev, nick.trim()]
+    })
+  }, [])
 
   const totalUnread = useMemo(
     () => Object.values(unreadCounts).reduce((a, b) => a + b, 0),
@@ -2962,9 +2989,10 @@ function CombinedChat({
         onEmoteDoubleClick: handleEmoteDoubleClick,
         onNickDoubleClick: handleNickDoubleClick,
         onUserTooltip: openUserTooltipByNick,
+        onUserFocusClick: handleUsernameFocusClick,
         options: chatFormattingOptions,
       }),
-    [primaryChatNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick, chatFormattingOptions]
+    [primaryChatNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick, handleUsernameFocusClick, chatFormattingOptions]
   )
 
   const sendPrimaryChatMessage = useCallback(() => {
@@ -3531,6 +3559,9 @@ function CombinedChat({
                     }
                   : undefined
           }
+          onClick={() => {
+            if (focusedUsernames.length > 0) setFocusedUsernames([])
+          }}
           onWheel={() => {
             setScrollbarVisible(true)
             if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current)
@@ -3664,10 +3695,13 @@ function CombinedChat({
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const eventType = 'eventType' in m ? m.eventType : ''
               const iconEl = eventType === 'donation' ? <Icon name="dollar-sign" size={16} /> : eventType === 'death' ? <Icon name="info" size={16} className="text-yellow-500" /> : <Icon name="gift" size={16} />
+              const eventContent = getContentForHighlight(m)
+              const mentionsFocused = messageMentionsFocusedUser(eventContent, focusedSet)
+              const dimmed = focusedUsernames.length > 0 && !mentionsFocused
               return (
                 <div
                   key={`msg-primary-event-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
-                  className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/80"
+                  className={`text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/80 ${dimmed ? 'opacity-40' : ''}`}
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                   <span className="mr-1.5 inline-flex items-center" aria-hidden>{iconEl}</span>
@@ -3679,10 +3713,13 @@ function CombinedChat({
               const ts = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleTimeString() : ''
               const kind = 'kind' in m ? m.kind : 'mute'
               const iconEl = <Icon name="info" size={16} />
+              const systemContent = getContentForHighlight(m)
+              const mentionsFocused = messageMentionsFocusedUser(systemContent, focusedSet)
+              const dimmed = focusedUsernames.length > 0 && !mentionsFocused
               return (
                 <div
                   key={`msg-primary-system-${(m as CombinedItemWithSeq).seq}-${kind}-${m.tsMs}`}
-                  className="text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/70"
+                  className={`text-sm leading-snug px-2 py-0.5 -mx-2 text-base-content/70 ${dimmed ? 'opacity-40' : ''}`}
                 >
                   {showTimestamps ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                   <span className="mr-1.5 inline-flex items-center" aria-hidden>{iconEl}</span>
@@ -3698,10 +3735,13 @@ function CombinedChat({
                 <img src={broadcastIcon} alt="" className="w-4 h-4 shrink-0" aria-hidden title="Broadcast" />
               )
               if (isSystemBroadcast) {
+                const sysBroadcastContent = getContentForHighlight(m)
+                const mentionsFocused = messageMentionsFocusedUser(sysBroadcastContent, focusedSet)
+                const dimmed = focusedUsernames.length > 0 && !mentionsFocused
                 return (
                   <div
                     key={`msg-primary-broadcast-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${rawB?.uuid ?? ''}`}
-                    className="msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border"
+                    className={`msg-chat text-sm leading-snug px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border ${dimmed ? 'opacity-40' : ''}`}
                     style={{ borderColor: '#edea12' }}
                   >
                     {showTimestamps ? <span className="text-xs text-base-content/50 shrink-0">{ts}</span> : null}
@@ -3730,10 +3770,15 @@ function CombinedChat({
                 .join(' ')
               const fullDatetime = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleString() : ''
               const nick = rawB.user?.nick ?? rawB.nick ?? ''
+              const broadcastNickLower = nick.trim().toLowerCase()
+              const broadcastContent = getContentForHighlight(m)
+              const isFromFocused = focusedSet.has(broadcastNickLower)
+              const mentionsFocused = messageMentionsFocusedUser(broadcastContent, focusedSet)
+              const dimmed = focusedUsernames.length > 0 && !isFromFocused && !mentionsFocused
               return (
                 <div
                   key={`msg-primary-broadcast-user-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${rawB?.uuid ?? ''}`}
-                  className="msg-chat text-sm px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border msg-user"
+                  className={`msg-chat text-sm px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border msg-user ${dimmed ? 'opacity-40' : ''}`}
                   style={{ borderColor: '#edea12' }}
                   {...(nick.trim().toLowerCase() ? { 'data-username': nick.trim().toLowerCase() } : {})}
                 >
@@ -3761,7 +3806,11 @@ function CombinedChat({
                     />
                   ) : null}
                   <span
-                    className="shrink-0 flex items-center gap-1 cursor-context-menu"
+                    className="shrink-0 flex items-center gap-1 cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (nick?.trim()) handleUsernameFocusClick(nick.trim())
+                    }}
                     onContextMenu={(e) => openUserTooltip(e, m)}
                     onMouseUp={(e) => e.stopPropagation()}
                     onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
@@ -3829,6 +3878,11 @@ function CombinedChat({
                 : []
             const isPrimaryChatUserMsg = m.source === primaryChatSourceId && 'nick' in m
             const nickLower = isPrimaryChatUserMsg && m.nick ? m.nick.trim().toLowerCase() : ''
+            const msgNickLower = 'nick' in m ? (m.nick ?? '').trim().toLowerCase() : ''
+            const contentForMention = getContentForHighlight(m)
+            const isFromFocused = focusedSet.has(msgNickLower)
+            const mentionsFocused = messageMentionsFocusedUser(contentForMention, focusedSet)
+            const dimmed = focusedUsernames.length > 0 && !isFromFocused && !mentionsFocused
             const fullDatetime = Number.isFinite(m.tsMs) ? new Date(m.tsMs).toLocaleString() : ''
             const flairClassNames = primaryChatFlairFeatures
               .map((f) => flairsMapRef.current.get(f)?.name)
@@ -3837,7 +3891,7 @@ function CombinedChat({
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
-                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${isPrimaryChatUserMsg ? 'msg-user' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''}`}
+                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${isPrimaryChatUserMsg ? 'msg-user' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''} ${dimmed ? 'opacity-40' : ''}`}
                 {...(isPrimaryChatUserMsg && nickLower ? { 'data-username': nickLower } : {})}
               >
                 {isPrimaryChatUserMsg ? (
@@ -3875,7 +3929,11 @@ function CombinedChat({
                   />
                 ) : null}
                 <span
-                  className="shrink-0 flex items-center gap-1 cursor-context-menu"
+                  className="shrink-0 flex items-center gap-1 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if ('nick' in m && m.nick?.trim()) handleUsernameFocusClick(m.nick.trim())
+                  }}
                   onContextMenu={(e) => openUserTooltip(e, m)}
                   onMouseUp={(e) => e.stopPropagation()}
                   onDoubleClick={m.source === primaryChatSourceId && 'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
@@ -3947,10 +4005,11 @@ function CombinedChat({
           const kickId = kickParts.length >= 1 ? Number(kickParts[0]) : 0
           const kickName = kickParts.length >= 2 ? kickParts.slice(1).join(':') : undefined
           const comboStepClass = count >= 50 ? 'x50' : count >= 30 ? 'x30' : count >= 20 ? 'x20' : count >= 10 ? 'x10' : count >= 5 ? 'x5' : 'x2'
+          const comboDimmed = focusedUsernames.length > 0
           return (
             <div
               key={`combo-${source}-${emoteKey}-${tsMs}-${count}-${entry.index}`}
-              className={`msg-chat msg-emote text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass}`}
+              className={`msg-chat msg-emote text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-2 ${comboStepClass} ${comboDimmed ? 'opacity-40' : ''}`}
               data-combo={count}
               data-combo-group={comboStepClass}
             >
