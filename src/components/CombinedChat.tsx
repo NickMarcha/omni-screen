@@ -36,6 +36,56 @@ function getPlatformIcon(colorKey: string, primaryChatSourceIconUrl: string | un
   return undefined
 }
 
+/** API poll shape (mitchdev etc.). Maps to PollData for PollView. */
+interface ApiPoll {
+  id: number
+  question: string
+  options: string[]
+  votes: number[]
+  totalVotes: number
+  weighted: number
+  startedBy: string
+  duration: number
+  startTime: string
+  endTime: string
+}
+
+function apiPollToPollData(p: ApiPoll): PollData {
+  return {
+    canvote: false,
+    myvote: 0,
+    nick: p.startedBy,
+    weighted: !!p.weighted,
+    start: p.startTime,
+    now: p.endTime,
+    time: p.duration,
+    question: p.question,
+    options: p.options,
+    totals: p.votes,
+    totalvotes: p.totalVotes,
+  }
+}
+
+function pollDataToApiPoll(p: PollData): ApiPoll {
+  const startMs =
+    typeof p.start === 'number' ? (p.start < 1e12 ? p.start * 1000 : p.start) : new Date(p.start).getTime()
+  const endMs = Number.isFinite(startMs) && p.time > 0 ? startMs + p.time : startMs
+  const endTime = new Date(endMs).toISOString()
+  const startTime = typeof p.start === 'string' ? p.start : new Date(startMs).toISOString()
+  return {
+    id: -1,
+    question: p.question,
+    options: p.options,
+    votes: p.totals,
+    totalVotes: p.totalvotes,
+    weighted: p.weighted ? 1 : 0,
+    startedBy: p.nick,
+    duration: p.time,
+    startTime,
+    endTime,
+  }
+}
+
 interface PrimaryChatMessage {
   id: number
   nick: string
@@ -1033,6 +1083,9 @@ function CombinedChat({
   chatBackgroundColor,
   chatBackgroundOpacity,
   chatFormattingOptions,
+  hidePinnedAndPollHistory = false,
+  pollsApiUrl,
+  pollsInfoUrl,
 }: {
   /** Id of the primary chat source (from config.chatSources). Used for source badge and message source. */
   primaryChatSourceId: string | null
@@ -1111,6 +1164,12 @@ function CombinedChat({
   chatBackgroundOpacity?: number
   /** Options for link styling (NSFL/NSFW/SPOILERS) and URL normalization. */
   chatFormattingOptions?: ChatFormattingOptions
+  /** When true (OBS embed), hide pinned message, pin button, and poll history button. */
+  hidePinnedAndPollHistory?: boolean
+  /** API URL for historic polls (from extension). Required to show poll history button. */
+  pollsApiUrl?: string
+  /** Info link URL for poll history panel (from extension). */
+  pollsInfoUrl?: string
 }) {
   /** When false (browser/OBS embed), input is never shown – no IPC to send messages. */
   const hasRealIpc = (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false
@@ -1189,6 +1248,14 @@ function CombinedChat({
   const [pollServerOffsetMs, setPollServerOffsetMs] = useState<number | null>(null)
   const [pollVoteError, setPollVoteError] = useState<string | null>(null)
   const [votePending, setVotePending] = useState(false)
+  /** Poll history: open state, fetched data (lazy), index (0 = most recent), loading, error. */
+  const [pollHistoryOpen, setPollHistoryOpen] = useState(false)
+  const [pollHistoryData, setPollHistoryData] = useState<ApiPoll[] | null>(null)
+  const [pollHistoryIndex, setPollHistoryIndex] = useState(0)
+  const [pollHistoryLoading, setPollHistoryLoading] = useState(false)
+  const [pollHistoryError, setPollHistoryError] = useState<string | null>(null)
+  const pollHistoryDataRef = useRef<ApiPoll[] | null>(null)
+  pollHistoryDataRef.current = pollHistoryData
   /** Usernames who have whispered us (from PRIVMSG + unread API); persisted locally. */
   const [whisperUsernames, setWhisperUsernames] = useState<string[]>(() => {
     try {
@@ -2440,7 +2507,15 @@ function CombinedChat({
       })
     }
     const handlePollStop = (_event: any, data: { type: 'POLLSTOP'; poll: PollData }) => {
-      if (data?.type === 'POLLSTOP' && data.poll) setCurrentPoll(data.poll)
+      if (data?.type === 'POLLSTOP' && data.poll) {
+        setCurrentPoll(data.poll)
+        // Merge into poll history cache when we have one (avoids re-fetch for new polls)
+        const cached = pollHistoryDataRef.current
+        if (cached) {
+          const apiPoll = pollDataToApiPoll(data.poll)
+          setPollHistoryData([...cached, apiPoll])
+        }
+      }
       setPollOver(true)
       setVotePending(false)
       try {
@@ -2483,6 +2558,36 @@ function CombinedChat({
       unsubPollError()
     }
   }, [enablePrimaryChat])
+
+  // Poll history: lazy fetch when panel opens and we have no data yet
+  useEffect(() => {
+    if (!pollHistoryOpen || !pollsApiUrl || pollHistoryData != null || pollHistoryLoading) return
+    let cancelled = false
+    setPollHistoryLoading(true)
+    setPollHistoryError(null)
+    fetch(pollsApiUrl)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((arr: ApiPoll[]) => {
+        if (cancelled) return
+        if (!Array.isArray(arr)) {
+          setPollHistoryError('Invalid response')
+          return
+        }
+        setPollHistoryData(arr)
+        setPollHistoryIndex(0)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setPollHistoryError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (!cancelled) setPollHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pollHistoryLoading intentionally omitted: including it causes effect to re-run when we set it, cleanup cancels the fetch, and we never update state
+  }, [pollHistoryOpen, pollsApiUrl, pollHistoryData])
 
   // Kick chat messages forwarded from main process (Pusher)
   useEffect(() => {
@@ -3209,7 +3314,7 @@ function CombinedChat({
         inputContainerRef.current
       )}
       <div className={`relative flex-1 min-h-0 flex flex-col ${overlayMode && messagesClickThrough ? 'pointer-events-none' : ''}`}>
-        {enablePrimaryChat && pinnedMessage && !pinnedHidden && (
+        {enablePrimaryChat && !hidePinnedAndPollHistory && pinnedMessage && !pinnedHidden && (
           <div
             className="absolute left-0 right-0 z-10 p-2 pointer-events-none"
             style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight } : { top: 0 }}
@@ -3264,7 +3369,7 @@ function CombinedChat({
             </div>
           </div>
         )}
-        {enablePrimaryChat && pinnedMessage && pinnedHidden && (
+        {enablePrimaryChat && !hidePinnedAndPollHistory && pinnedMessage && pinnedHidden && (
           <div
             id="chat-pinned-show-btn"
             className="active absolute right-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
@@ -3277,6 +3382,106 @@ function CombinedChat({
             aria-label="Show pinned message"
           >
             <Icon name="pin" size={18} />
+          </div>
+        )}
+        {enablePrimaryChat && pollsApiUrl && !hidePinnedAndPollHistory && !pollHistoryOpen && (
+          <div
+            className="active absolute left-2 z-20 btn btn-ghost btn-sm btn-circle text-base"
+            style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight + 8 } : { top: 8 }}
+            title="Poll history"
+            onClick={() => setPollHistoryOpen(true)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && setPollHistoryOpen(true)}
+            aria-label="Poll history"
+          >
+            <Icon name="bar-chart-2" size={18} />
+          </div>
+        )}
+        {enablePrimaryChat && pollsApiUrl && !hidePinnedAndPollHistory && pollHistoryOpen && (
+          <div
+            className="absolute left-0 right-0 z-10 p-2 pointer-events-none"
+            style={overlayMode && overlayHeaderHeight != null ? { top: overlayHeaderHeight } : { top: 0 }}
+          >
+            <div id="chat-poll-history" className="active bg-base-300 rounded-lg shadow-sm pointer-events-auto p-2">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-sm font-medium shrink-0">Poll history</span>
+                {pollHistoryData && pollHistoryData.length > 0 && (
+                  <div className="flex items-center justify-center gap-2 flex-1 min-w-0">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      disabled={pollHistoryIndex >= pollHistoryData.length - 1}
+                      onClick={() => setPollHistoryIndex((i) => Math.min(i + 1, pollHistoryData.length - 1))}
+                      aria-label="Older poll"
+                    >
+                      <Icon name="arrow-left" size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      disabled={pollHistoryIndex <= 0}
+                      onClick={() => setPollHistoryIndex((i) => Math.max(i - 1, 0))}
+                      aria-label="Newer poll"
+                    >
+                      <Icon name="arrow-right" size={18} />
+                    </button>
+                    {pollsInfoUrl && (
+                      <a
+                        href={pollsInfoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-ghost btn-sm gap-1"
+                        title="Poll data source"
+                      >
+                        <Icon name="info" size={16} />
+                        <span className="text-xs">Info</span>
+                      </a>
+                    )}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm btn-circle shrink-0"
+                  onClick={() => setPollHistoryOpen(false)}
+                  aria-label="Close poll history"
+                >
+                  <Icon name="x" size={18} />
+                </button>
+              </div>
+              {pollHistoryLoading && (
+                <div className="text-sm text-base-content/60 py-4">Loading polls…</div>
+              )}
+              {pollHistoryError && (
+                <div className="text-sm text-warning py-2">
+                  {pollHistoryError}
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost ml-2"
+                    onClick={() => {
+                      setPollHistoryError(null)
+                      setPollHistoryData(null)
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              {!pollHistoryLoading && !pollHistoryError && pollHistoryData && pollHistoryData.length === 0 && (
+                <div className="text-sm text-base-content/60 py-4">No polls found.</div>
+              )}
+              {!pollHistoryLoading && !pollHistoryError && pollHistoryData && pollHistoryData.length > 0 && (
+                <>
+                  <PollView
+                    poll={apiPollToPollData(pollHistoryData[pollHistoryData.length - 1 - pollHistoryIndex])}
+                    pollOver
+                  />
+                  <div className="text-xs text-base-content/60 mt-2 text-center">
+                    {pollHistoryIndex + 1} / {pollHistoryData.length}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}
         {enablePrimaryChat && currentPoll && (

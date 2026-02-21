@@ -92,7 +92,9 @@ If `register` is not a function, the extension is loaded but does nothing. Any e
 **ChatSourceRendererConfig** is what you pass under `setRendererConfig({ chatSources: { [id]: { ... } } })`. It supplies the renderer with:
 
 - `baseUrl`, `loginUrl`, `emotesJsonUrl`, `emotesCssUrl`, `flairsJsonUrl`, `flairsCssUrl`
-- Optional: `platformIconUrl`, `mentionsChannelLabel`
+- Optional: `platformIconUrl`, `mentionsChannelLabel`, `pollsApiUrl`, `pollsInfoUrl`
+- `pollsApiUrl`: API URL for historic polls (e.g. `https://api.mitchdev.net/dgg/polls`). When set, the poll history button is shown in the chat.
+- `pollsInfoUrl`: Info link URL for the poll history panel (e.g. `https://mitchdev.net/dgg/`).
 
 The app uses the **primary** chat source for the main chat pane, cookie domains for the Connections UI, and for IPC such as mentions and log search when the extension registers the corresponding API.
 

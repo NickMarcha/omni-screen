@@ -31,6 +31,10 @@ export interface ChatSourceRendererConfig {
   platformIconUrl?: string
   /** Channel label for mentions/log search (e.g. rustlesearch); set by extension. */
   mentionsChannelLabel?: string
+  /** API URL for historic polls (e.g. mitchdev). When set, poll history button is shown. */
+  pollsApiUrl?: string
+  /** Info link URL for poll history panel (e.g. mitchdev.net/dgg). */
+  pollsInfoUrl?: string
 }
 
 /** Connection platform entry for the Connections UI (login/cookies). Provided by extensions. */

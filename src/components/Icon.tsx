@@ -32,6 +32,9 @@ import deleteSvg from '../assets/icons/feathericons/delete.svg?raw'
 import chevronRightSvg from '../assets/icons/feathericons/chevron-right.svg?raw'
 import chevronDownSvg from '../assets/icons/feathericons/chevron-down.svg?raw'
 import changelogSvg from '../assets/icons/changelog.svg?raw'
+import barChart2Svg from '../assets/icons/feathericons/bar-chart-2.svg?raw'
+import arrowLeftSvg from '../assets/icons/feathericons/arrow-left.svg?raw'
+import arrowRightSvg from '../assets/icons/feathericons/arrow-right.svg?raw'
 
 const ICONS: Record<string, string> = {
   'pie-chart': pieChartSvg,
@@ -68,6 +71,9 @@ const ICONS: Record<string, string> = {
   'chevron-right': chevronRightSvg,
   'chevron-down': chevronDownSvg,
   changelog: changelogSvg,
+  'bar-chart-2': barChart2Svg,
+  'arrow-left': arrowLeftSvg,
+  'arrow-right': arrowRightSvg,
 }
 
 export type IconName = keyof typeof ICONS

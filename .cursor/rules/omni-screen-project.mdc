@@ -35,7 +35,7 @@ alwaysApply: true
 ## Key Components
 
 - `OmniScreen.tsx` – Main screen, embed grid, combined chat pane/overlay
-- `CombinedChat.tsx` – Combined feed (primary + Kick + YouTube + Twitch). Primary chat MSG is batched (queue + queueMicrotask flush) to avoid losing messages when many arrive rapidly. Deduplication key: `platform:channel:user:timestamp`. Always ordered by arrival (seq). Primary chat emotes: cache-before-display – preload emote images before appending messages to avoid flash; preload cache cleared on `chat-websocket-reload`.
+- `CombinedChat.tsx` – Combined feed (primary + Kick + YouTube + Twitch). Primary chat MSG is batched (queue + queueMicrotask flush) to avoid losing messages when many arrive rapidly. Deduplication key: `platform:channel:user:timestamp`. Always ordered by arrival (seq). Primary chat emotes: cache-before-display – preload emote images before appending messages to avoid flash; preload cache cleared on `chat-websocket-reload`. Poll history: button (bar-chart-2) when extension provides `pollsApiUrl` in chatSources; lazy fetch, cached; new POLLSTOP merged; nav arrows + info in header, counter centered below poll; hidden when `hidePinnedAndPollHistory` (OBS embed).
 - `LinkScroller.tsx` – Link cards from chat
 - `Menu.tsx` – Settings modal: System, Theme, Notifications, Userscripts (collapsible dropdowns)
 

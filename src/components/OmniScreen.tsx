@@ -1200,13 +1200,15 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [primaryChatSourceId, setPrimaryChatSourceId] = useState<string | null>(null)
   const [primaryChatSourceAvailable, setPrimaryChatSourceAvailable] = useState<boolean>(false)
   const [primaryChatSourceIconUrl, setPrimaryChatSourceIconUrl] = useState<string | undefined>(undefined)
+  const [pollsApiUrl, setPollsApiUrl] = useState<string | undefined>(undefined)
+  const [pollsInfoUrl, setPollsInfoUrl] = useState<string | undefined>(undefined)
   const [installedExtensions, setInstalledExtensions] = useState<InstalledExtensionInfo[]>([])
   const [extensionSettingsSchemas, setExtensionSettingsSchemas] = useState<Record<string, ExtensionSettingsSection[]>>({})
   /** Per-extension settings (keyed by ext id, then field key). Persisted in localStorage omni-screen:ext-settings:${extId}. */
   const [extensionSettings, setExtensionSettings] = useState<Record<string, Record<string, boolean | string | number>>>({})
   const refetchAppConfig = useCallback(() => {
     window.ipcRenderer.invoke('get-app-config').then((config: {
-      chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string; emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }>
+      chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string; emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string; pollsApiUrl?: string; pollsInfoUrl?: string }>
       extensions?: InstalledExtensionInfo[]
       extensionSettingsSchemas?: Record<string, ExtensionSettingsSection[]>
     }) => {
@@ -1216,12 +1218,16 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       setPrimaryChatSourceId(primaryId)
       setPrimaryChatSourceAvailable(!!primary?.baseUrl)
       setPrimaryChatSourceIconUrl(typeof primary?.platformIconUrl === 'string' ? primary.platformIconUrl : undefined)
+      setPollsApiUrl(typeof primary?.pollsApiUrl === 'string' ? primary.pollsApiUrl : undefined)
+      setPollsInfoUrl(typeof primary?.pollsInfoUrl === 'string' ? primary.pollsInfoUrl : undefined)
       setInstalledExtensions(Array.isArray(config?.extensions) ? config.extensions : [])
       setExtensionSettingsSchemas(config?.extensionSettingsSchemas && typeof config.extensionSettingsSchemas === 'object' ? config.extensionSettingsSchemas : {})
     }).catch(() => {
       setPrimaryChatSourceId(null)
       setPrimaryChatSourceAvailable(false)
       setPrimaryChatSourceIconUrl(undefined)
+      setPollsApiUrl(undefined)
+      setPollsInfoUrl(undefined)
       setInstalledExtensions([])
       setExtensionSettingsSchemas({})
     })
@@ -3692,6 +3698,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               chatBackgroundColor={chatEmbedDisplayConfig?.chatBackgroundColor}
               chatBackgroundOpacity={chatEmbedDisplayConfig?.chatBackgroundOpacity}
               chatFormattingOptions={{ styleSensitiveLinks: chatStyleSensitiveLinks, normalizeUrls: chatNormalizeUrls }}
+              hidePinnedAndPollHistory={chatOnlyMode && !isElectron}
+              pollsApiUrl={pollsApiUrl}
+              pollsInfoUrl={pollsInfoUrl}
             />,
             chatOnlyContainer
           )}
@@ -3747,6 +3756,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               inputContainerRef={combinedChatOverlayMode ? chatOverlayInputContainerRef : undefined}
               contextMenuRef={combinedChatContextMenuRef}
               chatFormattingOptions={{ styleSensitiveLinks: chatStyleSensitiveLinks, normalizeUrls: chatNormalizeUrls }}
+              hidePinnedAndPollHistory={chatOnlyMode && !isElectron}
+              pollsApiUrl={pollsApiUrl}
+              pollsInfoUrl={pollsInfoUrl}
             />,
             chatPortalTarget
           )}
