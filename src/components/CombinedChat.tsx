@@ -1024,6 +1024,8 @@ export type CombinedChatContextMenuConfig = {
   openExternalChatWindow?: () => void
   /** Returns full embed URL with current chat params (for OBS Browser Source). When set, "Copy URL" uses this instead of location.href. */
   getCopyEmbedUrl?: () => string
+  /** Open RustleSearch in-app (LiteLinkScroller) for a username. When set, right-click Rustlesearch uses this instead of external link. */
+  onOpenRustleSearchForUser?: (username: string) => void
 }
 
 /** Parse optional primary chat label color (hex or rgb(r,g,b)) to hex; return undefined to use theme default. */
@@ -4107,15 +4109,31 @@ function CombinedChat({
                 Whisper
               </button>
             )}
-            <a
-              href={`https://rustlesearch.dev/?username=${encodeURIComponent(userTooltip.nick)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-xs btn-ghost"
-              onClick={() => closeUserTooltip()}
-            >
-              Rustlesearch
-            </a>
+            {contextMenuConfig?.onOpenRustleSearchForUser ? (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost flex items-center gap-1"
+                onClick={() => {
+                  contextMenuConfig.onOpenRustleSearchForUser!(userTooltip.nick)
+                  closeUserTooltip()
+                }}
+              >
+                Rustlesearch
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost flex items-center gap-1"
+                onClick={() => {
+                  const url = `https://rustlesearch.dev/?username=${encodeURIComponent(userTooltip.nick)}`
+                  window.ipcRenderer?.invoke('open-external-url', url).catch(() => {})
+                  closeUserTooltip()
+                }}
+              >
+                Rustlesearch
+                <Icon name="external-link" size={16} className="shrink-0" aria-hidden />
+              </button>
+            )}
           </div>
         </div>
       )}

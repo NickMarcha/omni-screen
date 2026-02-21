@@ -4412,7 +4412,10 @@ console.debug = (...args: any[]) => {
 }
 
 // IPC handler for renderer process to send logs
-ipcMain.handle('log-to-file', (_event, level: string, message: string, args: any[] = []) => {
+ipcMain.handle('log-to-file', (event, level: string, message: string, args: any[] = []) => {
+  if (chatWin && !chatWin.isDestroyed() && event.sender === chatWin.webContents) {
+    if (String(message).includes('[OmniScreen:bookmarked]')) return
+  }
   fileLogger.writeLog(level, 'renderer', message, args)
 })
 

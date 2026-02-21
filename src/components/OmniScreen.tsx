@@ -137,7 +137,6 @@ function EmbedTitleMarquee({ title }: { title: string }) {
 /** Log for bookmarked streamers (settings list: YT/Kick/Twitch poll and results). Not for pinned embeds. */
 function logBookmarked(message: string, detail?: unknown) {
   const line = detail !== undefined ? `${message} ${JSON.stringify(detail)}` : message
-  console.log('[OmniScreen:bookmarked]', message, detail !== undefined ? detail : '')
   try {
     window.ipcRenderer?.invoke('log-to-file', 'info', `[OmniScreen:bookmarked] ${line}`, [])
   } catch {
@@ -1443,6 +1442,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
   const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
   const [liteLinkScrollerMode, setLiteLinkScrollerMode] = useState<'ls' | 'rs'>('ls')
+  const [rustleSearchInitialUsername, setRustleSearchInitialUsername] = useState<string | null>(null)
   const [liteLinkScrollerCards, setLiteLinkScrollerCards] = useState<LinkCard[]>([])
   const initialLiteLinkScrollerSettings = useMemo((): LiteLinkScrollerSettings => {
     try {
@@ -1677,6 +1677,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [])
 
   const hasLoadedBookmarkedRef = useRef(false)
+  /** When true, bookmarkedStreamers was just updated from sync (bookmarked-streamers-changed); skip persist to avoid loop. */
+  const lastBookmarkedChangeFromSyncRef = useRef(false)
   useEffect(() => {
     const store = window.ipcRenderer?.store
     if (!store) return
@@ -1694,7 +1696,12 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   }, [normalizeStreamers])
 
   // Persist to shared store when bookmarked streamers change (skip until load completes to avoid overwriting with [])
+  // Skip when update came from sync handler to avoid ping-pong loop between main and chat windows.
   useEffect(() => {
+    if (lastBookmarkedChangeFromSyncRef.current) {
+      lastBookmarkedChangeFromSyncRef.current = false
+      return
+    }
     const store = window.ipcRenderer?.store
     if (!store || !hasLoadedBookmarkedRef.current) return
     store.setBookmarkedStreamers(bookmarkedStreamers).catch(() => {})
@@ -1710,6 +1717,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         if (!store) return
         const list = (await store.getBookmarkedStreamers()) as unknown[]
         const next = normalizeStreamers(list)
+        lastBookmarkedChangeFromSyncRef.current = true
         setBookmarkedStreamers(next)
         setBookmarkedPollRefreshTrigger((t) => t + 1)
       } catch {
@@ -1829,6 +1837,14 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         })
         return query ? `${base}?${query}#chat-window` : `${base}#chat-window`
       },
+      ...(!chatOnlyMode &&
+        primaryChatSourceHasRustlesearch && {
+        onOpenRustleSearchForUser: (username: string) => {
+          setRustleSearchInitialUsername(username)
+          setLiteLinkScrollerMode('rs')
+          setLiteLinkScrollerOpen(true)
+        },
+      }),
       ...(!chatOnlyMode && {
         openExternalChatWindow: () => {
           setChatPaneOpen(false)
@@ -1884,6 +1900,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       combinedMaxLinesScroll,
       combinedChatOverlayOpacity,
       primaryChatSourceId,
+      primaryChatSourceHasRustlesearch,
     ]
   )
 
@@ -1983,13 +2000,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     if (keysUnchanged) {
       for (const [k, v] of m) prev.set(k, v)
       for (const k of [...prev.keys()]) if (!m.has(k)) prev.delete(k)
-      logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: prev.size, stable: true })
+      if (!chatOnlyMode) logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: prev.size, stable: true })
       return prev
     }
     stableCombinedEmbedsRef.current = m
-    logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: m.size })
+    if (!chatOnlyMode) logBookmarked('combinedAvailableEmbeds', { pinnedCount: pinnedEmbeds.size, pinnedOriginatedCount: bookmarkedOriginatedEmbeds.size, liveFeedCount: availableEmbeds.size, combinedCount: m.size })
     return m
-  }, [availableEmbeds, pinnedEmbeds, bookmarkedOriginatedEmbeds])
+  }, [chatOnlyMode, availableEmbeds, pinnedEmbeds, bookmarkedOriginatedEmbeds])
   const combinedAvailableEmbedsRef = useRef<Map<string, LiveEmbed>>(combinedAvailableEmbeds)
   combinedAvailableEmbedsRef.current = combinedAvailableEmbeds
   const prevCombinedEmbedsRef = useRef<Map<string, LiveEmbed>>(new Map())
@@ -2659,7 +2676,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   ])
 
   // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
+  // Chat popout window does not need this – only main window shows the embed dock.
   useEffect(() => {
+    if (chatOnlyMode) return
     const withYt = bookmarkedStreamers.filter((s) => s.youtubeChannelId?.trim())
     if (withYt.length > 0) logBookmarked('YT poll: bookmarked streamers with YT', { count: withYt.length, streamers: withYt.map((s) => ({ id: s.id, nickname: s.nickname, yt: s.youtubeChannelId })) })
     if (withYt.length === 0) {
@@ -2724,11 +2743,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       cancelled = true
       clearInterval(t)
     }
-  }, [bookmarkedStreamers, bookmarkedYoutubeCheckMultiplier, bookmarkedPollRefreshTrigger])
+  }, [chatOnlyMode, bookmarkedStreamers, bookmarkedYoutubeCheckMultiplier, bookmarkedPollRefreshTrigger])
 
   // Poll bookmarked streamers' Kick channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
   // On error (rate limit, parse), preserve previous state so open embeds are not removed.
+  // Chat popout window does not need this – only main window shows the embed dock.
   useEffect(() => {
+    if (chatOnlyMode) return
     const withKick = bookmarkedStreamers.filter((s) => s.kickSlug?.trim())
     if (withKick.length > 0) logBookmarked('Kick poll: bookmarked streamers with Kick', { count: withKick.length, streamers: withKick.map((s) => ({ id: s.id, nickname: s.nickname, kick: s.kickSlug })) })
     if (withKick.length === 0) return
@@ -2780,11 +2801,13 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       cancelled = true
       clearInterval(t)
     }
-  }, [bookmarkedStreamers, bookmarkedPollRefreshTrigger])
+  }, [chatOnlyMode, bookmarkedStreamers, bookmarkedPollRefreshTrigger])
 
   // Poll bookmarked streamers' Twitch channels: add live embeds when live (grouped by findStreamerForKey). No primary chat required.
   // On error (parse/rate limit), preserve previous state so open embeds are not removed.
+  // Chat popout window does not need this – only main window shows the embed dock.
   useEffect(() => {
+    if (chatOnlyMode) return
     const withTwitch = bookmarkedStreamers.filter((s) => s.twitchLogin?.trim())
     if (withTwitch.length > 0) logBookmarked('Twitch poll: bookmarked streamers with Twitch', { count: withTwitch.length, streamers: withTwitch.map((s) => ({ id: s.id, nickname: s.nickname, twitch: s.twitchLogin })) })
     if (withTwitch.length === 0) return
@@ -2836,7 +2859,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       cancelled = true
       clearInterval(t)
     }
-  }, [bookmarkedStreamers, bookmarkedPollRefreshTrigger])
+  }, [chatOnlyMode, bookmarkedStreamers, bookmarkedPollRefreshTrigger])
 
   const selectedEmbeds = useMemo(() => {
     const arr: { key: string; embed: LiveEmbed }[] = []
@@ -3256,9 +3279,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       const bv = Number(bEmb?.count ?? bEmb?.mediaItem?.metadata?.viewers ?? 0) || 0
       return bv - av
     })
-    if (result.length > 0) logBookmarked('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
+    if (!chatOnlyMode && result.length > 0) logBookmarked('dockItems', { resultCount: result.length, result: result.map((r) => (r.type === 'group' ? `group:${r.streamers.map((s) => s.nickname).join(',')}:${r.keys.length}` : `single:${r.key}`)) })
     return result
-  }, [combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId])
+  }, [chatOnlyMode, combinedAvailableEmbeds, bookmarkedStreamers, youtubeVideoToStreamerId])
 
   const dockRef = useRef<HTMLDivElement | null>(null)
   const dockBarRef = useRef<HTMLDivElement | null>(null)
@@ -3772,7 +3795,10 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           <div className="flex-shrink-0 min-h-0 flex flex-col overflow-hidden border-r border-base-300" style={{ width: 380 }}>
             <LiteLinkScroller
               open={true}
-              onClose={() => setLiteLinkScrollerOpen(false)}
+              onClose={() => {
+                setLiteLinkScrollerOpen(false)
+                setRustleSearchInitialUsername(null)
+              }}
               cards={liteLinkScrollerCards}
               settings={liteLinkScrollerSettings}
               onSettingsChange={(partial) => setLiteLinkScrollerSettings((prev) => ({ ...prev, ...partial }))}
@@ -3787,6 +3813,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               mode={liteLinkScrollerMode}
               onModeChange={setLiteLinkScrollerMode}
               primaryChatSourceId={primaryChatSourceId}
+              rustleSearchInitialUsername={rustleSearchInitialUsername}
             />
           </div>
         )}
@@ -4754,7 +4781,10 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           <div className="flex-shrink-0 min-h-0 flex flex-col overflow-hidden border-l border-base-300" style={{ width: 380 }}>
             <LiteLinkScroller
               open={true}
-              onClose={() => setLiteLinkScrollerOpen(false)}
+              onClose={() => {
+                setLiteLinkScrollerOpen(false)
+                setRustleSearchInitialUsername(null)
+              }}
               cards={liteLinkScrollerCards}
               settings={liteLinkScrollerSettings}
               onSettingsChange={(partial) => setLiteLinkScrollerSettings((prev) => ({ ...prev, ...partial }))}
@@ -4769,6 +4799,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               mode={liteLinkScrollerMode}
               onModeChange={setLiteLinkScrollerMode}
               primaryChatSourceId={primaryChatSourceId}
+              rustleSearchInitialUsername={rustleSearchInitialUsername}
             />
           </div>
         )}

@@ -24,6 +24,11 @@ alwaysApply: true
 - **Renderer**: `src/main.tsx` → `App.tsx` (routes: menu, link-scroller, omni-screen, debug, chat-window)
 - **Main**: `electron/main.ts` – IPC, chat WebSockets, platform APIs
 
+## Chat Window & Bookmarked Streamers Sync
+
+- **Chat popout**: Separate BrowserWindow loads `#chat-window`, renders OmniScreen with `chatOnlyMode=true`. Skips bookmarked streamer polls (YT/Kick/Twitch); main process filters its `[OmniScreen:bookmarked]` logs.
+- **Sync loop guard**: Main and chat windows share bookmarked streamers via `store.setBookmarkedStreamers`; main broadcasts `bookmarked-streamers-changed` to the other. When the sync handler updates state, the persist effect must NOT write back (use `lastBookmarkedChangeFromSyncRef`) or an infinite ping-pong loop occurs (~300 iter/s, log flood, freeze).
+
 ## Chat Architecture
 
 - **Primary chat**: `electron/chatWebSocket.ts` – WebSocket to extension's chatWssUrl
@@ -37,7 +42,7 @@ alwaysApply: true
 - `OmniScreen.tsx` – Main screen, embed grid, combined chat pane/overlay
 - `CombinedChat.tsx` – Combined feed (primary + Kick + YouTube + Twitch). Primary chat MSG is batched (queue + queueMicrotask flush) to avoid losing messages when many arrive rapidly. Deduplication key: `platform:channel:user:timestamp`. Always ordered by arrival (seq). Primary chat emotes: cache-before-display – preload emote images before appending messages to avoid flash; preload cache cleared on `chat-websocket-reload`. Poll history: button (bar-chart-2) when extension provides `pollsApiUrl` in chatSources; lazy fetch, cached; new POLLSTOP merged; nav arrows + info in header, counter centered below poll; hidden when `hidePinnedAndPollHistory` (OBS embed).
 - `LinkScroller.tsx` – Link cards from chat
-- `LiteLinkScroller.tsx` – Compact sidebar with LS (links) / RS (RustleSearch) toggle. RustleSearch label links to https://rustlesearch.dev/
+- `LiteLinkScroller.tsx` – Compact sidebar with LS (links) / RS (RustleSearch) toggle. RustleSearch label links to https://rustlesearch.dev/ Right-click username in CombinedChat: if main window open, opens in-app RS with username; else opens in system browser via `open-external-url` IPC.
 - `Menu.tsx` – Settings modal: System, Theme, Notifications, Userscripts (collapsible dropdowns)
 
 ## Notifications & Sounds
@@ -68,3 +73,4 @@ alwaysApply: true
 - IPC channels: `platform-chat-action` (e.g. `kick-chat-set-targets`, `youtube-chat-message`)
 - Embed keys: `platform:id` (e.g. `kick:slug`, `youtube:videoId`, `twitch:login`)
 - BookmarkedStreamer: `notifyWhenLive` (default false) – per-streamer notification toggle; `openWhenLive` – auto-open embed when live
+- **External links in system browser**: Use `open-external-url` IPC (not `<a target="_blank">`) when the link must always open in the system default browser. `target="_blank"` goes through `setWindowOpenHandler` and respects `chatLinkOpenAction`, which may open in the Electron viewer window instead.

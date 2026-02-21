@@ -25,11 +25,12 @@ interface SurroundsMessage {
 interface RustleSearchViewProps {
   primaryChatSourceId: string | null
   onOpenLink?: (url: string) => void
+  initialUsername?: string | null
 }
 
 const DEFAULT_SIZE = 150
 
-export function RustleSearchView({ primaryChatSourceId, onOpenLink }: RustleSearchViewProps) {
+export function RustleSearchView({ primaryChatSourceId, onOpenLink, initialUsername }: RustleSearchViewProps) {
   const [username, setUsername] = useState('')
   const [text, setText] = useState('')
   const today = useMemo(() => new Date().toISOString().slice(0, 10), [])
@@ -112,8 +113,9 @@ export function RustleSearchView({ primaryChatSourceId, onOpenLink }: RustleSear
   }, [primaryChatSourceId])
 
   const runSearch = useCallback(
-    async (append: boolean) => {
+    async (append: boolean, overrideUsername?: string) => {
       if (!window.ipcRenderer?.invoke) return
+      const effectiveUsername = overrideUsername ?? username
       const params: {
         username?: string
         text?: string
@@ -126,7 +128,7 @@ export function RustleSearchView({ primaryChatSourceId, onOpenLink }: RustleSear
         end_date: endDate || today,
         size: DEFAULT_SIZE,
       }
-      if (username.trim()) params.username = username.trim()
+      if (effectiveUsername.trim()) params.username = effectiveUsername.trim()
       if (text.trim()) params.text = text.trim()
       if (append && lastSearchAfter != null) params.search_after = lastSearchAfter
 
@@ -179,6 +181,16 @@ export function RustleSearchView({ primaryChatSourceId, onOpenLink }: RustleSear
     },
     [username, text, startDate, endDate, today, lastSearchAfter]
   )
+
+  useEffect(() => {
+    if (!initialUsername?.trim()) return
+    const u = initialUsername.trim()
+    setUsername(u)
+    setLastSearchAfter(undefined)
+    setHasMore(false)
+    runSearch(false, u)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when initialUsername is set
+  }, [initialUsername])
 
   const handleSearch = useCallback(() => {
     setLastSearchAfter(undefined)

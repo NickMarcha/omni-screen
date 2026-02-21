@@ -43,6 +43,7 @@ interface LiteLinkScrollerProps {
   mode: 'ls' | 'rs'
   onModeChange?: (mode: 'ls' | 'rs') => void
   primaryChatSourceId?: string | null
+  rustleSearchInitialUsername?: string | null
 }
 
 export function LiteLinkScroller({
@@ -57,6 +58,7 @@ export function LiteLinkScroller({
   mode,
   onModeChange,
   primaryChatSourceId = null,
+  rustleSearchInitialUsername = null,
 }: LiteLinkScrollerProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -377,6 +379,7 @@ export function LiteLinkScroller({
           <RustleSearchView
             primaryChatSourceId={primaryChatSourceId}
             onOpenLink={onOpenLink}
+            initialUsername={rustleSearchInitialUsername}
           />
         </div>
       ) : (
