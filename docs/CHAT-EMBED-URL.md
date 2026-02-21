@@ -19,7 +19,6 @@ http://127.0.0.1:5173/?<params>#chat-window
 | `showTimestamps` | `1`/`0` | Show timestamps on messages |
 | `showLabels` | `1`/`0` | Show source labels (badges) |
 | `showPlatformIcons` | `1`/`0` | Show platform favicons |
-| `sortMode` | `timestamp`/`arrival` | Message sort order |
 | `highlightTerms` | JSON array | Terms to highlight (e.g. `["streamer"]`) |
 | `pauseEmoteOffscreen` | `1`/`0` | Pause emote animations when off-screen |
 | `showPrimaryChatFlairs` | `1`/`0` | Primary chat flairs/colors |

@@ -28,5 +28,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     setBookmarkedStreamers: (streamers: unknown) => ipcRenderer.invoke('store-set-bookmarked-streamers', streamers),
     getMinimizeToTray: () => ipcRenderer.invoke('store-get-minimize-to-tray'),
     setMinimizeToTray: (value: boolean) => ipcRenderer.invoke('store-set-minimize-to-tray', value),
+    getNotificationPrefs: () => ipcRenderer.invoke('store-get-notification-prefs'),
+    setNotificationPrefs: (prefs: Record<string, unknown>) => ipcRenderer.invoke('store-set-notification-prefs', prefs),
   },
+  getNotificationSoundsList: () => ipcRenderer.invoke('notification-sounds-list'),
+  pickCustomNotificationSound: () => ipcRenderer.invoke('notification-pick-custom-sound'),
+  playNotificationSoundPreview: (pathOrFilename: string, volume: number) =>
+    ipcRenderer.invoke('play-notification-sound-preview', pathOrFilename, volume),
 })

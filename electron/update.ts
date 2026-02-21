@@ -23,6 +23,12 @@ function isSystemInstall(): boolean {
 }
 
 export function update(win: Electron.BrowserWindow) {
+  // Remove existing handlers so we can re-register when window is recreated (e.g. from tray)
+  ipcMain.removeHandler('check-update')
+  ipcMain.removeHandler('start-download')
+  ipcMain.removeHandler('quit-and-install')
+  // Clear autoUpdater listeners so we don't stack them when update() is called again
+  autoUpdater.removeAllListeners()
 
   // When set to false, the update download will be triggered through the API
   autoUpdater.autoDownload = false

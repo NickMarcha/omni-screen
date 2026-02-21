@@ -33,6 +33,18 @@ interface Window {
       setBookmarkedStreamers: (streamers: unknown) => Promise<void>
       getMinimizeToTray: () => Promise<boolean>
       setMinimizeToTray: (value: boolean) => Promise<void>
+      getNotificationPrefs: () => Promise<{
+        soundEnabled: boolean
+        soundFile: string
+        soundVolume: number
+        customSoundPath: string
+        systemEnabled: boolean
+        systemWithSound: boolean
+      }>
+      setNotificationPrefs: (prefs: Record<string, unknown>) => Promise<void>
     }
+    getNotificationSoundsList?: () => Promise<string[]>
+    pickCustomNotificationSound?: () => Promise<string | null>
+    playNotificationSoundPreview?: (pathOrFilename: string, volume: number) => Promise<void>
   }
 }

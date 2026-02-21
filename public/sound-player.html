@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sound Player</title>
+</head>
+<body>
+  <audio id="audio" preload="none"></audio>
+  <script>
+    const audio = document.getElementById('audio')
+    const { ipcRenderer } = require('electron')
+    ipcRenderer.on('play-sound', (_event, { path: soundPath, volume }) => {
+      if (!soundPath) return
+      audio.volume = typeof volume === 'number' ? Math.max(0, Math.min(1, volume)) : 0.8
+      audio.src = soundPath
+      audio.play().catch(() => {})
+    })
+  </script>
+</body>
+</html>

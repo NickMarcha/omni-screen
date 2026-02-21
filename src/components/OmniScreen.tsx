@@ -87,7 +87,7 @@ import { Icon } from './Icon'
 import { ConfirmDialog } from './ConfirmDialog'
 import { omniColorForKey, textColorOn, withAlpha, COLOR_BOOKMARKED_DEFAULT } from '../utils/omniColors'
 import { parseChatEmbedParams, mergeWithStorageDefaults, buildChatEmbedQuery } from '../utils/chatEmbedUrl'
-import { chatWsOn, chatWsSendRegister } from '../utils/chatWsClient'
+import { chatWsOn, chatWsSendRegister, chatWsSendUnregister } from '../utils/chatWsClient'
 import kickPlatformIcon from '../assets/icons/third-party/platforms/kick-favicon.ico'
 import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-favicon.ico'
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
@@ -146,7 +146,6 @@ function logBookmarked(message: string, detail?: unknown) {
 }
 
 type ChatPaneSide = 'left' | 'right'
-type CombinedSortMode = 'timestamp' | 'arrival'
 
 /** User count button with hover tooltip (portal so it isn't clipped by overflow). */
 function CombinedUserCountButton(props: {
@@ -307,6 +306,8 @@ export interface BookmarkedStreamer {
   twitchColor?: string
   /** When true, preferred video auto-opens when this streamer is detected as live. */
   openWhenLive?: boolean
+  /** When true, notify (sound/OS) when this streamer goes live. */
+  notifyWhenLive?: boolean
   /** When true, hide the source label (badge) in combined chat for this streamer's messages. */
   hideLabelInCombinedChat?: boolean
 }
@@ -321,6 +322,7 @@ function buildAddStreamerUrl(streamer: BookmarkedStreamer, includeColors: boolea
   if (streamer.kickSlug?.trim()) params.set('kick', streamer.kickSlug.trim().toLowerCase())
   if (streamer.twitchLogin?.trim()) params.set('twitch', streamer.twitchLogin.trim().toLowerCase())
   if (streamer.openWhenLive === false) params.set('openWhenLive', 'false')
+  if (streamer.notifyWhenLive === true) params.set('notifyWhenLive', 'true')
   if (streamer.hideLabelInCombinedChat === true) params.set('hideLabel', 'true')
   if (includeColors) {
     if (streamer.color && HEX_COLOR_REGEX.test(streamer.color)) params.set('color', streamer.color)
@@ -1375,10 +1377,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     if (saved === '1' || saved === 'true') return true
     return false
   })
-  const [combinedSortMode, setCombinedSortMode] = useState<CombinedSortMode>(() => {
-    const saved = localStorage.getItem('omni-screen:combined-sort-mode')
-    return saved === 'timestamp' ? 'timestamp' : 'arrival'
-  })
   const [youTubePollMultiplier, setYouTubePollMultiplier] = useState<number>(() => {
     const saved = Number(localStorage.getItem('omni-screen:youtube-poll-multiplier'))
     return Number.isFinite(saved) && saved > 0 ? saved : 1
@@ -1415,6 +1413,14 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     const saved = localStorage.getItem('omni-screen:chat-link-open-action')
     if (saved === 'none' || saved === 'clipboard' || saved === 'browser' || saved === 'viewer') return saved
     return 'browser'
+  })
+  const [chatStyleSensitiveLinks, setChatStyleSensitiveLinks] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:chat-style-sensitive-links')
+    return saved !== '0'
+  })
+  const [chatNormalizeUrls, setChatNormalizeUrls] = useState<boolean>(() => {
+    const saved = localStorage.getItem('omni-screen:chat-normalize-urls')
+    return saved !== '0'
   })
   const [keybinds, setKeybinds] = useState<Record<CombinedChatKeybindId, KeybindModifiers>>(loadKeybinds)
 
@@ -1651,6 +1657,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       ...x,
       nickname: typeof x.nickname === 'string' ? x.nickname : (x.nickname ?? ''),
       color: typeof x.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.color) ? x.color : undefined,
+      notifyWhenLive: x.notifyWhenLive === true,
       youtubeColor: typeof x.youtubeColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.youtubeColor) ? x.youtubeColor : undefined,
       kickColor: typeof x.kickColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.kickColor) ? x.kickColor : undefined,
       twitchColor: typeof x.twitchColor === 'string' && /^#[0-9A-Fa-f]{6}$/.test(x.twitchColor) ? x.twitchColor : undefined,
@@ -1704,6 +1711,29 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [normalizeStreamers])
 
+  // When main process detects a streamer went live (background scheduler), add embed so openWhenLive can run
+  useEffect(() => {
+    const ipc = window.ipcRenderer
+    if (!ipc) return
+    const handler = (_e: unknown, payload: { streamerId?: string; embedKey?: string; platform?: string; id?: string; nickname?: string }) => {
+      const { embedKey, platform, id, nickname } = payload || {}
+      if (!embedKey || !platform || !id) return
+      const key = canonicalEmbedKey(embedKey)
+      setBookmarkedOriginatedEmbeds((prev) => {
+        if (prev.has(key)) return prev
+        const next = new Map(prev)
+        next.set(key, {
+          platform: platform.toLowerCase(),
+          id,
+          mediaItem: { metadata: { displayName: nickname || id, title: nickname || id } },
+        })
+        return next
+      })
+    }
+    ipc.on('streamer-went-live', handler)
+    return () => { ipc.off('streamer-went-live', handler) }
+  }, [])
+
   useEffect(() => {
     try {
       localStorage.setItem('omni-screen:preferred-platform-order', JSON.stringify(preferredPlatformOrder))
@@ -1747,7 +1777,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         showPrimaryChatSourceFlairsAndColors: !combinedDisablePrimaryChatFlairsAndColors,
         setShowPrimaryChatSourceFlairsAndColors: setPrimaryChatFlairsFromChat,
       },
-      order: { sortMode: combinedSortMode, setSortMode: setCombinedSortMode },
       emotes: {
         pauseOffScreen: combinedPauseEmoteAnimationsOffScreen,
         setPauseOffScreen: setCombinedPauseEmoteAnimationsOffScreen,
@@ -1779,7 +1808,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           showTimestamps: combinedShowTimestamps,
           showLabels: combinedShowLabels,
           showPlatformIcons: combinedShowPlatformIcons,
-          sortMode: combinedSortMode,
           highlightTerms: combinedHighlightTerms,
           pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
           showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
@@ -1807,7 +1835,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
             showTimestamps: combinedShowTimestamps,
             showLabels: combinedShowLabels,
             showPlatformIcons: combinedShowPlatformIcons,
-            sortMode: combinedSortMode,
             highlightTerms: combinedHighlightTerms,
             pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
             showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
@@ -1831,7 +1858,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       combinedShowLabels,
       combinedShowPlatformIcons,
       combinedDisablePrimaryChatFlairsAndColors,
-      combinedSortMode,
       combinedPauseEmoteAnimationsOffScreen,
       isElectron,
       chatLinkOpenAction,
@@ -2129,7 +2155,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       localStorage.setItem('omni-screen:combined-show-labels', combinedShowLabels ? '1' : '0')
       localStorage.setItem('omni-screen:combined-show-platform-icons', combinedShowPlatformIcons ? '1' : '0')
       localStorage.setItem('omni-screen:show-chat-input', showChatInput ? '1' : '0')
-      localStorage.setItem('omni-screen:combined-sort-mode', combinedSortMode)
       localStorage.setItem('omni-screen:combined-highlight-terms', JSON.stringify(combinedHighlightTerms))
       localStorage.setItem('omni-screen:combined-pause-emote-offscreen', combinedPauseEmoteAnimationsOffScreen ? '1' : '0')
       localStorage.setItem('omni-screen:chat-link-open-action', chatLinkOpenAction)
@@ -2154,7 +2179,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     combinedShowLabels,
     combinedShowPlatformIcons,
     showChatInput,
-    combinedSortMode,
     combinedHighlightTerms,
     combinedPauseEmoteAnimationsOffScreen,
     chatLinkOpenAction,
@@ -2189,7 +2213,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       showTimestamps: combinedShowTimestamps,
       showLabels: combinedShowLabels,
       showPlatformIcons: combinedShowPlatformIcons,
-      sortMode: combinedSortMode,
       highlightTerms: combinedHighlightTerms,
       pauseEmoteOffscreen: combinedPauseEmoteAnimationsOffScreen,
       showPrimaryChatFlairs: !combinedDisablePrimaryChatFlairsAndColors,
@@ -2214,7 +2237,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     combinedShowTimestamps,
     combinedShowLabels,
     combinedShowPlatformIcons,
-    combinedSortMode,
     combinedHighlightTerms,
     combinedPauseEmoteAnimationsOffScreen,
     combinedDisablePrimaryChatFlairsAndColors,
@@ -2574,15 +2596,16 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     }
   }, [chatOnlyMode])
 
-  // Subscribe platform chats via registry – main window and chat window each register; backend computes union.
+  // Subscribe platform chats + primary via registry – main window and chat window each register; backend computes union.
   useEffect(() => {
     const consumerId = chatOnlyMode ? 'chat-win' : 'main'
     const shouldRun = chatOnlyMode || chatPaneOpen || chatExternalWindowOpen
     if (!shouldRun) {
-      window.ipcRenderer.invoke('chat-unregister-consumer', { consumerId }).catch(() => {})
+      chatWsSendUnregister(consumerId)
       return
     }
-    const keys = chatOnlyMode
+    const includePrimary = combinedIncludePrimaryChat && !!primaryChatSourceId
+    const platformKeys = chatOnlyMode
       ? Array.from(selectedEmbedChatKeys)
       : (() => {
           const kickKeys = Array.from(selectedEmbedChatKeys).filter((k) => k.startsWith('kick:'))
@@ -2607,14 +2630,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
           const twitchKeys = Array.from(selectedEmbedChatKeys).filter((k) => k.startsWith('twitch:'))
           return [...kickKeys, ...ytKeys, ...twitchKeys]
         })()
-    chatWsSendRegister(consumerId, keys)
-    window.ipcRenderer?.invoke('chat-register-consumer', {
-      consumerId,
-      embedChatKeys: keys,
-      opts: { delayMultiplier: youTubePollMultiplier },
-    }).catch(() => {})
+    const primaryKey = includePrimary && primaryChatSourceId ? `primary:${primaryChatSourceId}` : null
+    const keys = primaryKey ? [...platformKeys, primaryKey] : platformKeys
+    chatWsSendRegister(consumerId, keys, { delayMultiplier: youTubePollMultiplier })
     return () => {
-      window.ipcRenderer.invoke('chat-unregister-consumer', { consumerId }).catch(() => {})
+      /* Unregister via WebSocket disconnect when handlers are removed */
     }
   }, [
     chatOnlyMode,
@@ -2623,6 +2643,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
     selectedEmbedChatKeys,
     combinedAvailableEmbeds,
     youTubePollMultiplier,
+    combinedIncludePrimaryChat,
+    primaryChatSourceId,
   ])
 
   // Poll bookmarked streamers' YouTube channels: add live embeds and youtubeVideoToStreamerId for grouping. No primary chat required.
@@ -3568,7 +3590,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         showTimestamps: chatEmbedDisplayConfig.showTimestamps,
         showLabels: chatEmbedDisplayConfig.showLabels,
         showPlatformIcons: chatEmbedDisplayConfig.showPlatformIcons,
-        sortMode: chatEmbedDisplayConfig.sortMode,
         highlightTerms: chatEmbedDisplayConfig.highlightTerms,
         pauseEmoteOffscreen: chatEmbedDisplayConfig.pauseEmoteOffscreen,
         showPrimaryChatFlairs: chatEmbedDisplayConfig.showPrimaryChatFlairs,
@@ -3604,10 +3625,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
         setShowPlatformIcons: (v) => updateEmbedUrl({ showPlatformIcons: v }),
         showPrimaryChatSourceFlairsAndColors: chatEmbedDisplayConfig.showPrimaryChatFlairs ?? true,
         setShowPrimaryChatSourceFlairsAndColors: (v) => updateEmbedUrl({ showPrimaryChatFlairs: v }),
-      },
-      order: {
-        sortMode: chatEmbedDisplayConfig.sortMode ?? 'arrival',
-        setSortMode: (v) => updateEmbedUrl({ sortMode: v }),
       },
       emotes: {
         pauseOffScreen: chatEmbedDisplayConfig.pauseEmoteOffscreen ?? false,
@@ -3656,7 +3673,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               showTimestamps={chatEmbedDisplayConfig?.showTimestamps ?? combinedShowTimestamps}
               showSourceLabels={chatEmbedDisplayConfig?.showLabels ?? combinedShowLabels}
               showPlatformIcons={chatEmbedDisplayConfig?.showPlatformIcons ?? combinedShowPlatformIcons}
-              sortMode={chatEmbedDisplayConfig?.sortMode ?? combinedSortMode}
               highlightTerms={chatEmbedDisplayConfig?.highlightTerms ?? combinedHighlightTerms}
               pauseEmoteAnimationsOffScreen={chatEmbedDisplayConfig?.pauseEmoteOffscreen ?? combinedPauseEmoteAnimationsOffScreen}
               showPrimaryChatSourceFlairsAndColors={chatEmbedDisplayConfig?.showPrimaryChatFlairs ?? !combinedDisablePrimaryChatFlairsAndColors}
@@ -3675,6 +3691,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               chatAreaTransparentBackground={chatEmbedDisplayConfig?.chatTransparent ?? chatWindowTransparentBackground}
               chatBackgroundColor={chatEmbedDisplayConfig?.chatBackgroundColor}
               chatBackgroundOpacity={chatEmbedDisplayConfig?.chatBackgroundOpacity}
+              chatFormattingOptions={{ styleSensitiveLinks: chatStyleSensitiveLinks, normalizeUrls: chatNormalizeUrls }}
             />,
             chatOnlyContainer
           )}
@@ -3710,7 +3727,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               showTimestamps={combinedShowTimestamps}
               showSourceLabels={combinedShowLabels}
               showPlatformIcons={combinedShowPlatformIcons}
-              sortMode={combinedSortMode}
               highlightTerms={combinedHighlightTerms}
               pauseEmoteAnimationsOffScreen={combinedPauseEmoteAnimationsOffScreen}
               showPrimaryChatSourceFlairsAndColors={!combinedDisablePrimaryChatFlairsAndColors}
@@ -3730,6 +3746,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               overlayCinemaMode={combinedChatOverlayMode ? cinemaMode : undefined}
               inputContainerRef={combinedChatOverlayMode ? chatOverlayInputContainerRef : undefined}
               contextMenuRef={combinedChatContextMenuRef}
+              chatFormattingOptions={{ styleSensitiveLinks: chatStyleSensitiveLinks, normalizeUrls: chatNormalizeUrls }}
             />,
             chatPortalTarget
           )}
@@ -5077,6 +5094,15 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                             />
                             <span className="text-xs text-base-content/60">Auto-open</span>
                           </label>
+                          <label className="flex items-center gap-1.5 shrink-0 cursor-pointer" title="Notify when this streamer goes live">
+                            <input
+                              type="checkbox"
+                              className="toggle toggle-xs"
+                              checked={s.notifyWhenLive === true}
+                              onChange={(e) => setBookmarkedStreamers((prev) => prev.map((x) => (x.id === s.id ? { ...x, notifyWhenLive: e.target.checked } : x)))}
+                            />
+                            <span className="text-xs text-base-content/60">Notify</span>
+                          </label>
                           <div className="text-xs text-base-content/60 flex items-center gap-x-1.5 shrink-0 flex-wrap">
                             {[
                               s.youtubeChannelId && {
@@ -5206,6 +5232,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                           twitchLogin: undefined,
                           color: undefined,
                           openWhenLive: false,
+                          notifyWhenLive: false,
                         }}
                         onSave={(next) => {
                           setBookmarkedStreamers((prev) => [...prev, { ...next, id: `streamer-${Date.now()}` }])
@@ -5322,25 +5349,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                           />
                         </label>
                         <span className="label-text-alt text-base-content/60 block">When scrolled up, keep at most this many visible lines. Reduces memory use.</span>
-                        <div className="flex items-center justify-between gap-2 text-sm">
-                          <span>Order</span>
-                          <div className="join">
-                            <button
-                              type="button"
-                              className={`btn btn-xs join-item ${combinedSortMode === 'timestamp' ? 'btn-primary' : 'btn-ghost'}`}
-                              onClick={() => setCombinedSortMode('timestamp')}
-                            >
-                              Timestamp
-                            </button>
-                            <button
-                              type="button"
-                              className={`btn btn-xs join-item ${combinedSortMode === 'arrival' ? 'btn-primary' : 'btn-ghost'}`}
-                              onClick={() => setCombinedSortMode('arrival')}
-                            >
-                              Arrival
-                            </button>
-                          </div>
-                        </div>
                       </div>
                     </div>
 
@@ -5366,6 +5374,38 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                             onChange={(e) => setCombinedShowLabels(e.target.checked)}
                           />
                         </label>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Style sensitive links (NSFL/NSFW/SPOILERS)</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={chatStyleSensitiveLinks}
+                            onChange={(e) => {
+                              const v = e.target.checked
+                              setChatStyleSensitiveLinks(v)
+                              try {
+                                localStorage.setItem('omni-screen:chat-style-sensitive-links', v ? '1' : '0')
+                              } catch { /* ignore */ }
+                            }}
+                          />
+                        </label>
+                        <span className="label-text-alt text-base-content/60 block">When on, links containing NSFL/NSFW/SPOILERS are blurred until hovered.</span>
+                        <label className="flex items-center justify-between gap-2 text-sm">
+                          <span>Normalize URLs</span>
+                          <input
+                            type="checkbox"
+                            className="toggle toggle-sm"
+                            checked={chatNormalizeUrls}
+                            onChange={(e) => {
+                              const v = e.target.checked
+                              setChatNormalizeUrls(v)
+                              try {
+                                localStorage.setItem('omni-screen:chat-normalize-urls', v ? '1' : '0')
+                              } catch { /* ignore */ }
+                            }}
+                          />
+                        </label>
+                        <span className="label-text-alt text-base-content/60 block">When on, strip tracking params from Twitter/YouTube/Instagram links.</span>
                         <label className="flex items-center justify-between gap-2 text-sm">
                           <span>Platform icons</span>
                           <input

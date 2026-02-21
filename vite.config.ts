@@ -1,11 +1,31 @@
 import { defineConfig } from 'vite'
 import path from 'node:path'
+import fs from 'node:fs'
 import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // Build-time feature flag for charity raffle (DGG Against Malaria). Set CHARITY_RAFFLE_ENABLED=1 to include.
 const charityRaffleEnabled = process.env.CHARITY_RAFFLE_ENABLED === '1'
+
+/** Copy notification sounds to dist so they're available in production. */
+function copyNotificationSoundsPlugin() {
+  return {
+    name: 'copy-notification-sounds',
+    closeBundle() {
+      const src = path.resolve(__dirname, 'src/assets/media/sound/notification')
+      const dest = path.resolve(__dirname, 'dist/assets/media/sound/notification')
+      if (!fs.existsSync(src)) return
+      fs.mkdirSync(dest, { recursive: true })
+      for (const name of fs.readdirSync(src)) {
+        const ext = path.extname(name).toLowerCase()
+        if (['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(ext) || name.toLowerCase().endsWith('.txt')) {
+          fs.copyFileSync(path.join(src, name), path.join(dest, name))
+        }
+      }
+    },
+  }
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -17,6 +37,7 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     react(),
+    copyNotificationSoundsPlugin(),
     electron({
       main: {
         // Shortcut of `build.lib.entry`.

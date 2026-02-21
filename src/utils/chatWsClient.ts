@@ -3,6 +3,8 @@
  * All chat consumers (main window, chat window, OBS) connect here.
  */
 
+import { incrementWsClientDispatched, incrementWsClientNoHandler } from './primaryChatDebugCounters'
+
 const CHAT_WS_URL = 'ws://127.0.0.1:5174'
 
 /** HTTP base for emotes/flairs proxy (same host as WebSocket). Use for emotes when CORS would block direct CDN. */
@@ -30,9 +32,27 @@ function connect() {
       try {
         const msg = JSON.parse(e.data) as { type?: string; channel?: string; payload?: unknown }
         if (msg?.type !== 'ipc' || !msg.channel) return
-        const set = handlers.get(msg.channel)
-        if (!set) return
-        const payload = msg.payload
+        let targetChannel = msg.channel
+        let payload = msg.payload
+        if (msg.channel === 'chat-message') {
+          const inner = payload as { channel?: string; payload?: unknown } | undefined
+          if (inner?.channel) {
+            targetChannel = inner.channel
+            payload = inner.payload
+          }
+        }
+        const set = handlers.get(targetChannel)
+        if (!set) {
+          if (targetChannel === 'chat-websocket-message') {
+            const p = (Array.isArray(payload) ? payload[0] : payload) as { type?: string } | undefined
+            if (p?.type === 'MSG') incrementWsClientNoHandler()
+          }
+          return
+        }
+        if (targetChannel === 'chat-websocket-message') {
+          const p = (Array.isArray(payload) ? payload[0] : payload) as { type?: string } | undefined
+          if (p?.type === 'MSG') incrementWsClientDispatched()
+        }
         const args = Array.isArray(payload) ? payload : payload !== undefined ? [payload] : []
         set.forEach((h) => {
           try {
@@ -83,13 +103,24 @@ export function chatWsOff(channel: string, handler: Handler): void {
   handlers.get(channel)?.delete(handler)
 }
 
-let pendingRegister: { consumerId: string; embedChatKeys: string[] } | null = null
+export interface ChatRegisterOpts {
+  delayMultiplier?: number
+}
 
-export function chatWsSendRegister(consumerId: string, embedChatKeys: string[]): void {
+let pendingRegister: { consumerId: string; embedChatKeys: string[]; opts?: ChatRegisterOpts } | null = null
+
+export function chatWsSendRegister(consumerId: string, embedChatKeys: string[], opts?: ChatRegisterOpts): void {
+  const payload = opts ? { type: 'register' as const, consumerId, embedChatKeys, opts } : { type: 'register' as const, consumerId, embedChatKeys }
   if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'register', consumerId, embedChatKeys }))
+    ws.send(JSON.stringify(payload))
     return
   }
-  pendingRegister = { consumerId, embedChatKeys }
+  pendingRegister = { consumerId, embedChatKeys, opts }
   if (!ws) connect()
+}
+
+export function chatWsSendUnregister(consumerId: string): void {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'unregister', consumerId }))
+  }
 }

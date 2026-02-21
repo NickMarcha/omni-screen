@@ -323,6 +323,25 @@ body {
   line-height: 1.6 !important;
 }
 
+/* Suspost (ඞ at line start): subtle styling */
+.sus {
+  font-size: inherit;
+  opacity: 0.85;
+}
+
+/* Sensitive links: blur by default when style-sensitive-links is on */
+.nsfl-link,
+.nsfw-link,
+.spoilers-link {
+  filter: blur(2px);
+  transition: filter 0.2s;
+}
+.nsfl-link:hover,
+.nsfw-link:hover,
+.spoilers-link:hover {
+  filter: none;
+}
+
 /* Primary chat flairs: extension flairs.css sets .flair.<name> { background-image, height, width }. Base rule so icons display. */
 .flair {
   display: inline-block;

@@ -17,6 +17,25 @@ export interface BookmarkedStreamer {
   twitchColor?: string
   openWhenLive?: boolean
   hideLabelInCombinedChat?: boolean
+  notifyWhenLive?: boolean
+}
+
+export interface NotificationPrefs {
+  soundEnabled: boolean
+  soundFile: string
+  soundVolume: number
+  customSoundPath: string
+  systemEnabled: boolean
+  systemWithSound: boolean
+}
+
+const defaultNotificationPrefs: NotificationPrefs = {
+  soundEnabled: false,
+  soundFile: '534.wav',
+  soundVolume: 0.8,
+  customSoundPath: '',
+  systemEnabled: false,
+  systemWithSound: true,
 }
 
 const store = new Store({
@@ -24,6 +43,7 @@ const store = new Store({
   defaults: {
     bookmarkedStreamers: [] as BookmarkedStreamer[],
     minimizeToTray: false,
+    notifications: defaultNotificationPrefs,
   },
 })
 
@@ -46,6 +66,25 @@ export function getMinimizeToTray(): boolean {
 
 export function setMinimizeToTray(value: boolean) {
   store.set('minimizeToTray', value)
+}
+
+export function getNotificationPrefs(): NotificationPrefs {
+  const raw = store.get('notifications') as unknown
+  if (!raw || typeof raw !== 'object') return { ...defaultNotificationPrefs }
+  const o = raw as Record<string, unknown>
+  return {
+    soundEnabled: typeof o.soundEnabled === 'boolean' ? o.soundEnabled : defaultNotificationPrefs.soundEnabled,
+    soundFile: typeof o.soundFile === 'string' ? o.soundFile : defaultNotificationPrefs.soundFile,
+    soundVolume: typeof o.soundVolume === 'number' ? Math.max(0, Math.min(1, o.soundVolume)) : defaultNotificationPrefs.soundVolume,
+    customSoundPath: typeof o.customSoundPath === 'string' ? o.customSoundPath : defaultNotificationPrefs.customSoundPath,
+    systemEnabled: typeof o.systemEnabled === 'boolean' ? o.systemEnabled : defaultNotificationPrefs.systemEnabled,
+    systemWithSound: typeof o.systemWithSound === 'boolean' ? o.systemWithSound : defaultNotificationPrefs.systemWithSound,
+  }
+}
+
+export function setNotificationPrefs(prefs: Partial<NotificationPrefs>) {
+  const current = getNotificationPrefs()
+  store.set('notifications', { ...current, ...prefs })
 }
 
 /** Get raw store for IPC – used when renderer needs other keys. */

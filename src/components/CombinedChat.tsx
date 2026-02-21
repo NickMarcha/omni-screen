@@ -8,6 +8,18 @@ import youtubePlatformIcon from '../assets/icons/third-party/platforms/youtube-f
 import twitchPlatformIcon from '../assets/icons/third-party/platforms/twitch-favicon.png'
 import broadcastIcon from '../assets/icons/broadcast.png'
 import { chatWsOn, CHAT_HTTP_PROXY_BASE } from '../utils/chatWsClient'
+import { loadCSSNoCache } from '../utils/loadCss'
+import {
+  escapeRegexLiteral,
+  renderTextWithLinks,
+  renderPrimaryChatMessageContent as renderPrimaryChatMessageContentShared,
+  type ChatFormattingOptions,
+} from '../utils/chatFormatting'
+import {
+  incrementCombinedChatReceived,
+  incrementCombinedChatAppended,
+  incrementCombinedChatRejectedDuplicate,
+} from '../utils/primaryChatDebugCounters'
 
 /** Built-in platform icons (kick, youtube, twitch). Primary chat source icon is provided by the extension via primaryChatSourceIconUrl prop. */
 const BUILTIN_PLATFORM_ICONS: Record<string, string> = {
@@ -105,7 +117,7 @@ type PrimaryChatWsHistory = {
   items?: Array<{ type: 'MSG'; message: PrimaryChatMessage } | { type: 'BROADCAST'; broadcast: PrimaryChatBroadcastPayload }>
 }
 
-interface KickChatMessage {
+export interface KickChatMessage {
   platform: 'kick'
   slug: string
   chatroomId: number
@@ -163,6 +175,70 @@ interface EmoteData {
   }>
 }
 
+/** Preload a single emote image. Resolves on load or error (never blocks forever). */
+function preloadEmoteImage(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve()
+    img.onerror = () => resolve()
+    img.src = url
+  })
+}
+
+/** Build proxy URL for emote image. Relative paths go through proxy; absolute URLs used as-is. */
+function buildEmoteProxyUrl(imageUrl: string): string {
+  const trimmed = imageUrl?.trim() ?? ''
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('//')) {
+    return trimmed
+  }
+  return `${CHAT_HTTP_PROXY_BASE}/emote/${trimmed.replace(/^\.\//, '')}`
+}
+
+/** Extract emote prefixes from primary chat content using the emote pattern. */
+function extractEmotePrefixesFromContent(
+  content: string,
+  emotePattern: RegExp | null,
+  prefixToUrl: Map<string, string>
+): Set<string> {
+  const prefixes = new Set<string>()
+  if (!emotePattern || !content || prefixToUrl.size === 0) return prefixes
+  emotePattern.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = emotePattern.exec(content)) !== null) {
+    const prefix = match[1]
+    if (prefix && prefixToUrl.has(prefix)) prefixes.add(prefix)
+  }
+  return prefixes
+}
+
+/** Preload emote images for a batch of primary chat items before display. Resolves when all needed emotes are cached. */
+async function preloadEmotesForBatch(
+  items: CombinedItemWithSeq[],
+  primaryChatSourceId: string | null,
+  emotePattern: RegExp | null,
+  prefixToUrl: Map<string, string>,
+  preloadedSet: Set<string>
+): Promise<void> {
+  if (prefixToUrl.size === 0) return
+  const toPreload = new Set<string>()
+  const primarySources = new Set([
+    primaryChatSourceId ?? 'chat',
+    primaryChatSourceId ? `${primaryChatSourceId}-broadcast` : 'chat-broadcast',
+  ])
+  for (const item of items) {
+    if (!primarySources.has(item.source)) continue
+    const content = (item as { content?: string }).content ?? ''
+    const prefixes = extractEmotePrefixesFromContent(content, emotePattern, prefixToUrl)
+    for (const p of prefixes) {
+      if (!preloadedSet.has(p)) toPreload.add(p)
+    }
+  }
+  if (toPreload.size === 0) return
+  const urls = [...toPreload].map((p) => prefixToUrl.get(p)!).filter(Boolean)
+  await Promise.all(urls.map(preloadEmoteImage))
+  for (const p of toPreload) preloadedSet.add(p)
+}
+
 /** Primary chat flair (from extension flairs.json): used for nickname color and flair icons. */
 interface PrimaryChatFlair {
   name: string
@@ -181,198 +257,6 @@ function usernameColorFlair(flairs: PrimaryChatFlair[], user: { features?: strin
     .filter((flair) => user.features!.some((f) => f === flair.name))
     .sort((a, b) => a.priority - b.priority)
     .find((f) => f.rainbowColor || f.color)
-}
-
-/** Load CSS via fetch with cache: 'no-store' and inject as style tag. Used for emotes/flairs so they are never cached. */
-async function loadCSSNoCache(href: string, id: string): Promise<void> {
-  const existing = document.getElementById(id)
-  if (existing) existing.remove()
-  const res = await fetch(href, { cache: 'no-store' })
-  if (!res.ok) throw new Error(`Failed to load CSS: ${res.status}`)
-  const css = await res.text()
-  const style = document.createElement('style')
-  style.id = id
-  style.textContent = css
-  document.head.appendChild(style)
-}
-
-function escapeRegexLiteral(text: string) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function processTextWithEmotes(
-  text: string,
-  emotePattern: RegExp | null,
-  emotesMap: Map<string, string>,
-  baseKey: number = 0,
-  onEmoteDoubleClick?: (prefix: string) => void,
-): (string | JSX.Element)[] {
-  if (!emotePattern || emotesMap.size === 0) return [text]
-
-  // Important: global regexes keep state (lastIndex) across calls.
-  emotePattern.lastIndex = 0
-
-  const parts: (string | JSX.Element)[] = []
-  let lastIndex = 0
-  let keyCounter = baseKey
-
-  let match: RegExpExecArray | null
-  while ((match = emotePattern.exec(text)) !== null) {
-    const matchedPrefix = match[1]
-    if (!emotesMap.has(matchedPrefix)) continue
-
-    if (match.index > lastIndex) {
-      const beforeText = text.substring(lastIndex, match.index)
-      if (beforeText) parts.push(beforeText)
-    }
-
-    parts.push(
-      <div
-        key={`emote-${keyCounter++}`}
-        className={`emote ${matchedPrefix} ${onEmoteDoubleClick ? 'cursor-pointer' : ''}`}
-        title={onEmoteDoubleClick ? `${matchedPrefix} (double-click to insert)` : matchedPrefix}
-        role="img"
-        aria-label={matchedPrefix}
-        onDoubleClick={
-          onEmoteDoubleClick
-            ? (e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                onEmoteDoubleClick(matchedPrefix)
-              }
-            : undefined
-        }
-      />,
-    )
-    lastIndex = match.index + match[0].length
-  }
-
-  if (lastIndex < text.length) {
-    const remainingText = text.substring(lastIndex)
-    if (remainingText) parts.push(remainingText)
-  }
-
-  return parts.length > 0 ? parts : [text]
-}
-
-function processGreentext(
-  text: string,
-  emotePattern: RegExp | null,
-  emotesMap: Map<string, string>,
-  baseKey: number = 0,
-  onEmoteDoubleClick?: (prefix: string) => void,
-): (string | JSX.Element)[] {
-  const lines = text.split('\n')
-  const parts: (string | JSX.Element)[] = []
-  let keyCounter = baseKey
-
-  lines.forEach((line, lineIndex) => {
-    const isGreentext = line.trim().startsWith('>')
-
-    const processedLine = processTextWithEmotes(line, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
-    processedLine.forEach((part) => {
-      if (!isGreentext) {
-        parts.push(part)
-        keyCounter++
-        return
-      }
-
-      // Mimic primary chat greentext styling (color, font); font size inherits; line-height inline so it wins.
-      parts.push(
-        <span
-          key={`greentext-${keyCounter++}`}
-          className="msg-chat-greentext"
-          style={{
-            color: 'rgb(108, 165, 40)',
-            fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
-            boxSizing: 'border-box',
-            textRendering: 'optimizeLegibility',
-            overflowWrap: 'break-word',
-            lineHeight: 1.6,
-          }}
-        >
-          {part}
-        </span>,
-      )
-    })
-
-    if (lineIndex < lines.length - 1) parts.push('\n')
-  })
-
-  return parts.length > 0 ? parts : [text]
-}
-
-/** Matches http(s) URLs and hash-style # links: #kick/..., #twitch/..., #youtube/... */
-const LINK_REGEX = /(https?:\/\/[^\s]+|#(?:kick|twitch|youtube)\/[^\s]+)/gi
-
-function renderTextWithLinks(
-  text: string,
-  emotePattern: RegExp | null,
-  emotesMap: Map<string, string>,
-  onOpenLink?: (url: string) => void,
-  onEmoteDoubleClick?: (prefix: string) => void,
-  skipGreentext?: boolean,
-): JSX.Element {
-  const parts: (string | JSX.Element)[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  let hasLinks = false
-  let keyCounter = 0
-  const processSegment = skipGreentext
-    ? (seg: string) => processTextWithEmotes(seg, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
-    : (seg: string) => processGreentext(seg, emotePattern, emotesMap, keyCounter, onEmoteDoubleClick)
-
-  while ((match = LINK_REGEX.exec(text)) !== null) {
-    hasLinks = true
-    if (match.index > lastIndex) {
-      const textSegment = text.substring(lastIndex, match.index)
-      const processedSegment = processSegment(textSegment)
-      processedSegment.forEach((part) => {
-        parts.push(part)
-        keyCounter++
-      })
-    }
-
-    const url = match[0]
-    const isHashLink = url.startsWith('#')
-    parts.push(
-      <a
-        key={`link-${keyCounter++}`}
-        href={isHashLink ? '#' : url}
-        target={isHashLink ? undefined : '_blank'}
-        rel={isHashLink ? undefined : 'noopener noreferrer'}
-        className="link link-primary break-words overflow-wrap-anywhere"
-        onClick={(e) => {
-          if (onOpenLink) {
-            e.preventDefault()
-            e.stopPropagation()
-            onOpenLink(url)
-          }
-        }}
-        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-      >
-        {url}
-      </a>,
-    )
-
-    lastIndex = match.index + match[0].length
-  }
-
-  if (lastIndex < text.length) {
-    const textSegment = text.substring(lastIndex)
-    const processedSegment = processSegment(textSegment)
-    processedSegment.forEach((part) => {
-      parts.push(part)
-      keyCounter++
-    })
-  }
-
-  if (!hasLinks) {
-    const processedSegment = processSegment(text)
-    return <>{processedSegment}</>
-  }
-
-  return <>{parts}</>
 }
 
 /** Plain text used for highlight-term matching only (excludes emote names). */
@@ -394,54 +278,6 @@ function getContentForHighlight(m: CombinedItem): string {
     return m.content ?? ''
   }
   return m.content ?? ''
-}
-
-/** Segment type for primary chat message content: plain text or a mentioned nick. */
-type PrimaryChatContentSegment = { type: 'text'; value: string } | { type: 'nick'; value: string }
-
-/** Split a non-link string into text and nick segments. Nicks match only as whole words (not inside other words). */
-function tokenizeNicksInText(text: string, re: RegExp): PrimaryChatContentSegment[] {
-  const segments: PrimaryChatContentSegment[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  re.lastIndex = 0
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ type: 'text', value: text.slice(lastIndex, match.index) })
-    }
-    segments.push({ type: 'nick', value: match[1]! })
-    lastIndex = re.lastIndex
-  }
-  if (lastIndex < text.length) {
-    segments.push({ type: 'text', value: text.slice(lastIndex) })
-  }
-  return segments.length ? segments : [{ type: 'text', value: text }]
-}
-
-/** Split primary chat message content into text and nick segments. Nicks are only matched outside of links, and only as whole words (not inside other words). */
-function tokenizePrimaryChatContent(content: string, nicks: string[]): PrimaryChatContentSegment[] {
-  if (!content) return [{ type: 'text', value: '' }]
-  if (nicks.length === 0) return [{ type: 'text', value: content }]
-  const sorted = [...nicks].filter((n) => n.length > 0).sort((a, b) => b.length - a.length)
-  const escaped = sorted.map((n) => escapeRegexLiteral(n))
-  /* Whole-word only: not preceded/followed by word char (so "John" in "Johnny" or "someJohn" does not match) */
-  const nickRe = new RegExp(`(?<!\\w)(${escaped.join('|')})(?!\\w)`, 'gi')
-  const segments: PrimaryChatContentSegment[] = []
-  let lastIndex = 0
-  let linkMatch: RegExpExecArray | null
-  LINK_REGEX.lastIndex = 0
-  while ((linkMatch = LINK_REGEX.exec(content)) !== null) {
-    const textBeforeLink = content.slice(lastIndex, linkMatch.index)
-    if (textBeforeLink.length > 0) {
-      segments.push(...tokenizeNicksInText(textBeforeLink, nickRe))
-    }
-    segments.push({ type: 'text', value: linkMatch[0] })
-    lastIndex = linkMatch.index + linkMatch[0].length
-  }
-  if (lastIndex < content.length) {
-    segments.push(...tokenizeNicksInText(content.slice(lastIndex), nickRe))
-  }
-  return segments.length ? segments : [{ type: 'text', value: content }]
 }
 
 const SCROLL_THRESHOLD_PX = 40
@@ -971,20 +807,21 @@ function renderKickEmote(id: number, name?: string, key?: string) {
   )
 }
 
-function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => void): (string | JSX.Element)[] {
+function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => void): (string | ReactNode)[] {
   const text = String(msg?.content ?? '')
   if (!text) return ['']
 
-  const pushText = (segment: string, parts: (string | JSX.Element)[]) => {
+  const pushText = (segment: string, parts: (string | ReactNode)[]) => {
     if (!segment) return
-    parts.push(renderTextWithLinks(segment, null, new Map(), onOpenLink))
+    const node = renderTextWithLinks({ text: segment, emotePattern: null, emotesMap: new Map(), onOpenLink })
+    if (node != null) parts.push(node)
   }
 
   // 1) If we ever embed explicit tokens, handle them.
   const tokenRe = /\[emote:(\d+):([^\]]+)\]/g
   if (tokenRe.test(text)) {
     tokenRe.lastIndex = 0
-    const parts: (string | JSX.Element)[] = []
+    const parts: (string | ReactNode)[] = []
     let last = 0
     let match: RegExpExecArray | null
     let k = 0
@@ -998,11 +835,11 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
       last = start + match[0].length
     }
     if (last < text.length) pushText(text.slice(last), parts)
-    return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+    return parts.length ? parts : [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
   }
 
   const emotes = Array.isArray(msg?.emotes) ? msg.emotes : []
-  if (emotes.length === 0) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+  if (emotes.length === 0) return [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
 
   // 2) If Kick provides positions, use them (most accurate).
   const withRanges = emotes
@@ -1016,7 +853,7 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
     .sort((a, b) => (a.start as number) - (b.start as number))
 
   if (withRanges.length > 0) {
-    const parts: (string | JSX.Element)[] = []
+    const parts: (string | ReactNode)[] = []
     let last = 0
     let k = 0
     for (const e of withRanges) {
@@ -1030,7 +867,7 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
       last = en
     }
     if (last < text.length) pushText(text.slice(last), parts)
-    return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+    return parts.length ? parts : [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
   }
 
   // 3) Fallback: replace emote names in-message.
@@ -1041,7 +878,7 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
     if (!name || !Number.isFinite(id) || id <= 0) continue
     if (!nameToId.has(name)) nameToId.set(name, id)
   }
-  if (nameToId.size === 0) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+  if (nameToId.size === 0) return [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
 
   const names = Array.from(nameToId.keys()).sort((a, b) => b.length - a.length).slice(0, 50)
   const pattern = `:?(${names.map(escapeRegexLiteral).join('|')}):?`
@@ -1056,7 +893,7 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
       re = null
     }
   }
-  if (!re) return [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+  if (!re) return [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
 
   const parts: (string | JSX.Element)[] = []
   let last = 0
@@ -1072,14 +909,14 @@ function renderKickContent(msg: KickChatMessage, onOpenLink?: (url: string) => v
     last = start + match[0].length
   }
   if (last < text.length) pushText(text.slice(last), parts)
-  return parts.length ? parts : [renderTextWithLinks(text, null, new Map(), onOpenLink)]
+  return parts.length ? parts : [renderTextWithLinks({ text, emotePattern: null, emotesMap: new Map(), onOpenLink })]
 }
 
 function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string) => void): ReactNode {
   const runs = msg.runs
   if (!runs || runs.length === 0) {
     const raw = msg.message ?? ''
-    return raw ? renderTextWithLinks(raw, null, new Map(), onOpenLink) : ''
+    return raw ? renderTextWithLinks({ text: raw, emotePattern: null, emotesMap: new Map(), onOpenLink }) : ''
   }
 
   const parts: React.ReactNode[] = []
@@ -1087,7 +924,7 @@ function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string
     if ('text' in run && run.text) {
       parts.push(
         <Fragment key={`yt-txt-${i}`}>
-          {renderTextWithLinks(run.text, null, new Map(), onOpenLink)}
+          {renderTextWithLinks({ text: run.text, emotePattern: null, emotesMap: new Map(), onOpenLink })}
         </Fragment>,
       )
       return
@@ -1108,7 +945,7 @@ function renderYouTubeContent(msg: YouTubeChatMessage, onOpenLink?: (url: string
   })
   return parts.length ? <>{parts}</> : (() => {
     const raw = msg.message ?? ''
-    return raw ? renderTextWithLinks(raw, null, new Map(), onOpenLink) : ''
+    return raw ? renderTextWithLinks({ text: raw, emotePattern: null, emotesMap: new Map(), onOpenLink }) : ''
   })()
 }
 
@@ -1124,7 +961,6 @@ export type CombinedChatContextMenuConfig = {
     showPrimaryChatSourceFlairsAndColors: boolean
     setShowPrimaryChatSourceFlairsAndColors: (v: boolean) => void
   }
-  order: { sortMode: 'timestamp' | 'arrival'; setSortMode: (v: 'timestamp' | 'arrival') => void }
   emotes: { pauseOffScreen: boolean; setPauseOffScreen: (v: boolean) => void }
   /** When false (browser/OBS), links submenu is hidden – links use default browser behavior. */
   linkAction?: { value: 'none' | 'clipboard' | 'browser' | 'viewer'; setValue: (v: 'none' | 'clipboard' | 'browser' | 'viewer') => void }
@@ -1170,7 +1006,6 @@ function CombinedChat({
   showTimestamps,
   showSourceLabels,
   showPlatformIcons = false,
-  sortMode,
   highlightTerms = [],
   pauseEmoteAnimationsOffScreen = false,
   showPrimaryChatSourceFlairsAndColors = true,
@@ -1197,6 +1032,7 @@ function CombinedChat({
   chatAreaTransparentBackground = false,
   chatBackgroundColor,
   chatBackgroundOpacity,
+  chatFormattingOptions,
 }: {
   /** Id of the primary chat source (from config.chatSources). Used for source badge and message source. */
   primaryChatSourceId: string | null
@@ -1222,7 +1058,6 @@ function CombinedChat({
   showSourceLabels: boolean
   /** When true, show platform favicon in the source badge. */
   showPlatformIcons?: boolean
-  sortMode: 'timestamp' | 'arrival'
   /** When set, messages whose text contains any of these terms (case-insensitive) get a light blue background. */
   highlightTerms?: string[]
   /** When true, pause CSS animations on primary chat emotes when they scroll out of view (reduces restart-on-scroll). */
@@ -1274,6 +1109,8 @@ function CombinedChat({
   chatBackgroundColor?: string
   /** Opacity of the chat background (0–1). When set with chatBackgroundColor or in overlay/transparent mode. */
   chatBackgroundOpacity?: number
+  /** Options for link styling (NSFL/NSFW/SPOILERS) and URL normalization. */
+  chatFormattingOptions?: ChatFormattingOptions
 }) {
   /** When false (browser/OBS embed), input is never shown – no IPC to send messages. */
   const hasRealIpc = (window as { ipcRenderer?: { isElectron?: boolean } }).ipcRenderer?.isElectron !== false
@@ -1281,6 +1118,10 @@ function CombinedChat({
 
   const [emotesMap, setEmotesMap] = useState<Map<string, string>>(new Map())
   const [flairsList, setFlairsList] = useState<PrimaryChatFlair[]>([])
+  /** Prefix -> proxy URL for emote image preload. Built when emotes load; cleared and rebuilt on reload. */
+  const emotePrefixToUrlRef = useRef<Map<string, string>>(new Map())
+  /** Emote prefixes we've already preloaded this session. Cleared on reload. */
+  const preloadedEmotePrefixesRef = useRef<Set<string>>(new Set())
   const flairsMapRef = useRef<Map<string, PrimaryChatFlair>>(new Map())
   flairsMapRef.current = useMemo(() => {
     const m = new Map<string, PrimaryChatFlair>()
@@ -1473,18 +1314,10 @@ function CombinedChat({
 
   const effectiveCap = Math.min(maxKeep, hardCap)
 
-  /** Build displayItems and renderList from items (for line-based trimming). */
+  /** Build displayItems and renderList from items (for line-based trimming). Always order by arrival (seq). */
   const buildDisplayItemsAndRenderList = useCallback(
     (arr: CombinedItemWithSeq[]) => {
-      const displayItems =
-        sortMode === 'timestamp'
-          ? [...arr].sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
-          : (() => {
-              const history = arr.filter((m) => Boolean((m as any).isHistory))
-              const live = arr.filter((m) => !Boolean((m as any).isHistory))
-              history.sort((a, b) => (a.tsMs - b.tsMs) || (a.seq - b.seq))
-              return [...history, ...live]
-            })()
+      const displayItems = [...arr].sort((a, b) => a.seq - b.seq)
       const list: Array<
         | { type: 'message'; index: number; item: CombinedItemWithSeq }
         | { type: 'combo'; index: number; startIndex: number; count: number; emoteKey: string; source: string; tsMs: number; slug?: string }
@@ -1554,7 +1387,7 @@ function CombinedChat({
       }
       return { displayItems, renderList: list }
     },
-    [sortMode, emotesMap, primaryChatSourceId]
+    [emotesMap, primaryChatSourceId]
   )
 
   /** Trim by visible lines (messages + combo rows). When at bottom use soft limit; when scrolled up use hard cap. */
@@ -1595,6 +1428,42 @@ function CombinedChat({
   const appendItemsRef = useRef(appendItems)
   appendItemsRef.current = appendItems
 
+  /** Deduplication for primary chat MSG. Key: platform:channel:user:timestamp. Prevents duplicates when same message arrives via MSG and HISTORY or on reconnect. */
+  const seenPrimaryChatKeysRef = useRef<Set<string>>(new Set())
+  const SEEN_PRIMARY_KEYS_CAP = 10_000
+  const tryAddPrimaryChatMessage = useCallback(
+    (msg: PrimaryChatMessage, platform: string, channel = ''): boolean => {
+      const nick = msg?.nick ?? ''
+      const ts = typeof msg?.timestamp === 'number' && Number.isFinite(msg.timestamp) ? msg.timestamp : 0
+      const key = `${platform}:${channel}:${nick}:${ts}`
+      const set = seenPrimaryChatKeysRef.current
+      if (set.has(key)) return false
+      set.add(key)
+      if (set.size > SEEN_PRIMARY_KEYS_CAP) {
+        seenPrimaryChatKeysRef.current = new Set()
+        seenPrimaryChatKeysRef.current.add(key)
+      }
+      return true
+    },
+    [],
+  )
+
+  /** Deduplication for platform chat (Kick, YouTube, Twitch). Prevents burst when re-registration replays cache. */
+  const seenPlatformMessageIdsRef = useRef<Set<string>>(new Set())
+  const SEEN_PLATFORM_IDS_CAP = 10_000
+  const tryAddPlatformMessage = useCallback((source: 'kick' | 'youtube' | 'twitch', id: string | undefined): boolean => {
+    const key = typeof id === 'string' && id ? `${source}:${id}` : null
+    if (!key) return true
+    const set = seenPlatformMessageIdsRef.current
+    if (set.has(key)) return false
+    set.add(key)
+    if (set.size > SEEN_PLATFORM_IDS_CAP) {
+      seenPlatformMessageIdsRef.current = new Set()
+      seenPlatformMessageIdsRef.current.add(key)
+    }
+    return true
+  }, [])
+
   const emotePattern = useMemo(() => {
     if (emotesMap.size === 0) return null
     // Sort by prefix length (longest first) to match longer prefixes first.
@@ -1607,25 +1476,31 @@ function CombinedChat({
       return null
     }
   }, [emotesMap])
+  const emotePatternRef = useRef<RegExp | null>(null)
+  emotePatternRef.current = emotePattern
 
-  // Load primary chat source emotes + flairs (from WebSocket chat-emotes-config or get-app-config).
+  // Load primary chat source emotes + flairs. Fetches from proxy (pre-cached by main at app start).
+  // Only updates when config changes (chat-emotes-config) or on chat-websocket-reload.
   const [emotesConfigFromWs, setEmotesConfigFromWs] = useState<{
     emotesJsonUrl: string
     emotesCssUrl: string
     flairsJsonUrl?: string
     flairsCssUrl?: string
   } | null>(null)
+  const lastEmotesConfigRef = useRef<string | null>(null)
   useEffect(() => {
     const handler = (_e: unknown, payload: unknown) => {
       const p = payload as { emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string }
-      if (p?.emotesJsonUrl && p?.emotesCssUrl) {
-        setEmotesConfigFromWs({
-          emotesJsonUrl: p.emotesJsonUrl,
-          emotesCssUrl: p.emotesCssUrl,
-          flairsJsonUrl: p.flairsJsonUrl,
-          flairsCssUrl: p.flairsCssUrl,
-        })
-      }
+      if (!p?.emotesJsonUrl || !p?.emotesCssUrl) return
+      const key = `${p.emotesJsonUrl}|${p.emotesCssUrl}|${p.flairsJsonUrl ?? ''}|${p.flairsCssUrl ?? ''}`
+      if (lastEmotesConfigRef.current === key) return
+      lastEmotesConfigRef.current = key
+      setEmotesConfigFromWs({
+        emotesJsonUrl: p.emotesJsonUrl,
+        emotesCssUrl: p.emotesCssUrl,
+        flairsJsonUrl: p.flairsJsonUrl,
+        flairsCssUrl: p.flairsCssUrl,
+      })
     }
     const unsub = chatWsOn('chat-emotes-config', handler)
     return () => unsub()
@@ -1659,8 +1534,6 @@ function CombinedChat({
       if (!emotesJsonUrl || !emotesCssUrl) return
       const cacheKey = Date.now()
       try {
-        const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
-        if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSNoCache(
           `${emotesCssUrl}?_=${cacheKey}`,
           'primary-chat-emotes-css',
@@ -1672,18 +1545,22 @@ function CombinedChat({
         const emotesData: EmoteData[] = await emotesRes.json()
         if (cancelled) return
         const map = new Map<string, string>()
+        const urlMap = new Map<string, string>()
         emotesData.forEach((emote) => {
-          if (emote.image && emote.image.length > 0) map.set(emote.prefix, '')
+          if (emote.image && emote.image.length > 0) {
+            map.set(emote.prefix, '')
+            const imgUrl = emote.image[0]?.url
+            if (imgUrl) urlMap.set(emote.prefix, buildEmoteProxyUrl(imgUrl))
+          }
         })
         setEmotesMap(map)
+        emotePrefixToUrlRef.current = urlMap
       } catch {
         // Continue without emotes if fetch fails.
       }
 
       if (flairsJsonUrl && flairsCssUrl) {
         try {
-          const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
-          if (existingFlairsCss) existingFlairsCss.remove()
           await loadCSSNoCache(
             `${flairsCssUrl}?_=${cacheKey}`,
             'primary-chat-flairs-css',
@@ -1736,8 +1613,6 @@ function CombinedChat({
       if (!emotesJsonUrl || !emotesCssUrl) return
       const cacheKey = Date.now()
       try {
-        const existingEmotesCss = document.getElementById('primary-chat-emotes-css')
-        if (existingEmotesCss) existingEmotesCss.remove()
         await loadCSSNoCache(
           `${emotesCssUrl}?_=${cacheKey}`,
           'primary-chat-emotes-css',
@@ -1748,17 +1623,22 @@ function CombinedChat({
         if (!emotesRes.ok) return
         const emotesData: EmoteData[] = await emotesRes.json()
         const map = new Map<string, string>()
+        const urlMap = new Map<string, string>()
         emotesData.forEach((emote) => {
-          if (emote.image && emote.image.length > 0) map.set(emote.prefix, '')
+          if (emote.image && emote.image.length > 0) {
+            map.set(emote.prefix, '')
+            const imgUrl = emote.image[0]?.url
+            if (imgUrl) urlMap.set(emote.prefix, buildEmoteProxyUrl(imgUrl))
+          }
         })
+        preloadedEmotePrefixesRef.current.clear()
+        emotePrefixToUrlRef.current = urlMap
         setEmotesMap(map)
       } catch {
         // ignore
       }
       if (flairsJsonUrl && flairsCssUrl) {
         try {
-          const existingFlairsCss = document.getElementById('primary-chat-flairs-css')
-          if (existingFlairsCss) existingFlairsCss.remove()
           await loadCSSNoCache(
             `${flairsCssUrl}?_=${cacheKey}`,
             'primary-chat-flairs-css',
@@ -1779,6 +1659,7 @@ function CombinedChat({
   }, [enablePrimaryChat, emotesConfigFromWs])
 
   // Track "at bottom" and "user scrolled up" for auto-scroll behavior.
+  // ResizeObserver: when chat width changes, content reflows; if we were at bottom, scroll to bottom.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
@@ -1792,9 +1673,24 @@ function CombinedChat({
       setShowMoreMessagesBelow((prev) => (prev !== !atBottom ? !atBottom : prev))
     }
 
+    const onResize = () => {
+      if (!wasAtBottomRef.current) return
+      programmaticScrollRef.current = true
+      el.scrollTop = el.scrollHeight
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false
+      })
+    }
+
+    const resizeObserver = new ResizeObserver(onResize)
+    resizeObserver.observe(el)
+
     el.addEventListener('scroll', onScroll)
     onScroll()
-    return () => el.removeEventListener('scroll', onScroll)
+    return () => {
+      resizeObserver.disconnect()
+      el.removeEventListener('scroll', onScroll)
+    }
   }, [])
 
   /** When appending or after history/reconnect: if we're at bottom, clear "user scrolled up" so we keep sticking. */
@@ -1947,6 +1843,10 @@ function CombinedChat({
   }, [enablePrimaryChat, primaryChatSourceId])
 
   // Primary chat WebSocket connection (via main process IPC)
+  // Batch incoming MSG to avoid losing messages when many arrive in quick succession (React state updates can overwrite each other).
+  const primaryChatMsgQueueRef = useRef<PrimaryChatMessage[]>([])
+  const primaryChatFlushScheduledRef = useRef(false)
+
   useEffect(() => {
     let alive = true
     if (!enablePrimaryChat) {
@@ -1955,20 +1855,56 @@ function CombinedChat({
       }
     }
 
-    const handleMessage = (_event: any, data: PrimaryChatWsMessage) => {
-      if (!alive) return
-      if (!data || data.type !== 'MSG' || !data.message) return
-      const msg = data.message
-      appendItems([
-        {
-          source: primaryChatSourceId ?? 'chat',
+    const flushPrimaryChatQueue = async () => {
+      primaryChatFlushScheduledRef.current = false
+      const batch = primaryChatMsgQueueRef.current
+      if (batch.length === 0) return
+      primaryChatMsgQueueRef.current = []
+      const toAdd: CombinedItemWithSeq[] = []
+      const src = primaryChatSourceId ?? 'chat'
+      for (const msg of batch) {
+        if (!tryAddPrimaryChatMessage(msg, src)) {
+          incrementCombinedChatRejectedDuplicate()
+          continue
+        }
+        toAdd.push({
+          source: src,
           tsMs: typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(),
           nick: msg.nick,
           content: msg.data ?? '',
           raw: msg,
           seq: seqRef.current++,
-        },
-      ])
+        })
+      }
+      if (toAdd.length > 0) {
+        await preloadEmotesForBatch(
+          toAdd,
+          primaryChatSourceId,
+          emotePatternRef.current,
+          emotePrefixToUrlRef.current,
+          preloadedEmotePrefixesRef.current
+        )
+        if (!alive) return
+        incrementCombinedChatAppended(toAdd.length)
+        appendItemsRef.current(toAdd)
+      }
+      if (primaryChatMsgQueueRef.current.length > 0) scheduleFlush()
+    }
+
+    const scheduleFlush = () => {
+      if (primaryChatFlushScheduledRef.current) return
+      primaryChatFlushScheduledRef.current = true
+      queueMicrotask(() => {
+        if (alive) void flushPrimaryChatQueue()
+      })
+    }
+
+    const handleMessage = (_event: any, data: PrimaryChatWsMessage) => {
+      if (!alive) return
+      if (!data || data.type !== 'MSG' || !data.message) return
+      incrementCombinedChatReceived()
+      primaryChatMsgQueueRef.current.push(data.message)
+      scheduleFlush()
     }
 
     const handleHistory = (_event: any, history: PrimaryChatWsHistory) => {
@@ -2015,27 +1951,82 @@ function CombinedChat({
       if (mapped.length === 0) return
       const slice = useItems ? mapped.slice(-hardCapRef.current) : mapped
       markStickIfAtBottom()
-      setItems((prev) => {
-        const nonPrimary = prev.filter((m) => m.source !== (primaryChatSourceId ?? 'chat') && m.source !== `${primaryChatSourceId ?? 'chat'}-broadcast`)
-        return trimToLimitRef.current([...nonPrimary, ...slice], wasAtBottomRef.current)
+      void (async () => {
+        await preloadEmotesForBatch(
+          slice,
+          primaryChatSourceId,
+          emotePatternRef.current,
+          emotePrefixToUrlRef.current,
+          preloadedEmotePrefixesRef.current
+        )
+        if (!alive) return
+        setItems((prev) => {
+        const src = primaryChatSourceId ?? 'chat'
+        const broadcastSrc = `${src}-broadcast`
+        const existingPrimary = prev.filter((m) => m.source === src || m.source === broadcastSrc)
+        const nonPrimary = prev.filter((m) => m.source !== src && m.source !== broadcastSrc)
+        const existingKeys = new Set<string>()
+        for (const m of existingPrimary) {
+          if (m.source === broadcastSrc) {
+            const b = m.raw as PrimaryChatBroadcastPayload
+            existingKeys.add(b?.uuid ? `b:${b.uuid}` : `b:${m.tsMs}:${(m as { nick?: string }).nick ?? ''}:${((m as { content?: string }).content ?? '').slice(0, 100)}`)
+          } else {
+            const msg = m.raw as PrimaryChatMessage
+            const k = `${src}::${(msg?.nick ?? '')}:${typeof msg?.timestamp === 'number' ? msg.timestamp : 0}`
+            existingKeys.add(`m:${k}`)
+          }
+        }
+        const newFromSlice: CombinedItemWithSeq[] = []
+        for (const item of slice) {
+          if (item.source === broadcastSrc) {
+            const b = item.raw as PrimaryChatBroadcastPayload
+            const key = b?.uuid ? `b:${b.uuid}` : `b:${item.tsMs}:${(item as { nick?: string }).nick ?? ''}:${((item as { content?: string }).content ?? '').slice(0, 100)}`
+            if (!existingKeys.has(key)) {
+              existingKeys.add(key)
+              newFromSlice.push(item)
+            }
+          } else {
+            const msg = item.raw as PrimaryChatMessage
+            const nick = msg?.nick ?? ''
+            const ts = typeof msg?.timestamp === 'number' && Number.isFinite(msg.timestamp) ? msg.timestamp : 0
+            const key = `m:${src}::${nick}:${ts}`
+            if (!existingKeys.has(key)) {
+              existingKeys.add(key)
+              seenPrimaryChatKeysRef.current.add(`${src}::${nick}:${ts}`)
+              newFromSlice.push(item)
+            }
+          }
+        }
+        const merged = [...existingPrimary, ...newFromSlice.sort((a, b) => a.tsMs - b.tsMs)]
+        return trimToLimitRef.current([...nonPrimary, ...merged], wasAtBottomRef.current)
       })
       setUpdateSeq((v) => v + 1)
+    })()
     }
 
     const handleBroadcast = (_event: any, payload: { type?: string; broadcast?: PrimaryChatBroadcastPayload } | null) => {
       if (!alive) return
       const b = payload?.broadcast
       if (!b) return
-      appendItems([
-        {
-          source: primaryChatSourceId ? `${primaryChatSourceId}-broadcast` : 'chat-broadcast',
-          tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
-          nick: b.nick ?? '',
-          content: b.data ?? '',
-          raw: b,
-          seq: seqRef.current++,
-        },
-      ])
+      const item: CombinedItemWithSeq = {
+        source: primaryChatSourceId ? `${primaryChatSourceId}-broadcast` : 'chat-broadcast',
+        tsMs: typeof b.timestamp === 'number' ? b.timestamp : Date.now(),
+        nick: b.nick ?? '',
+        content: b.data ?? '',
+        raw: b,
+        seq: seqRef.current++,
+      }
+      void (async () => {
+        await preloadEmotesForBatch(
+          [item],
+          primaryChatSourceId,
+          emotePatternRef.current,
+          emotePrefixToUrlRef.current,
+          preloadedEmotePrefixesRef.current
+        )
+        if (!alive) return
+        appendItems([item])
+      })()
     }
 
     const handleConnected = () => {
@@ -2100,7 +2091,7 @@ function CombinedChat({
       }
     }
 
-    window.ipcRenderer?.invoke('chat-websocket-connect').catch(() => {})
+    // Primary chat is driven by WebSocket register (OmniScreen); no explicit connect needed
     window.ipcRenderer?.invoke('chat-websocket-status').then((r: { connected?: boolean }) => {
       if (alive && r?.connected) setPrimaryChatConnected(true)
     }).catch(() => {})
@@ -2285,7 +2276,7 @@ function CombinedChat({
       unsubUserEvent()
       window.ipcRenderer?.invoke('chat-websocket-disconnect').catch(() => {})
     }
-  }, [enablePrimaryChat])
+  }, [enablePrimaryChat, tryAddPrimaryChatMessage])
 
   // When combined chat first loads with primary chat authenticated, fetch unread private messages once.
   useEffect(() => {
@@ -2499,6 +2490,7 @@ function CombinedChat({
     const handleKick = (_event: any, msg: KickChatMessage) => {
       if (!alive) return
       if (!msg || msg.platform !== 'kick') return
+      if (!tryAddPlatformMessage('kick', msg.id)) return
       appendItems([
         {
           source: 'kick',
@@ -2518,7 +2510,7 @@ function CombinedChat({
       alive = false
       unsubKick()
     }
-  }, [])
+  }, [tryAddPlatformMessage])
 
   // YouTube chat messages forwarded from main process (polling youtubei)
   useEffect(() => {
@@ -2526,6 +2518,7 @@ function CombinedChat({
     const handleYouTube = (_event: any, msg: YouTubeChatMessage) => {
       if (!alive) return
       if (!msg || msg.platform !== 'youtube') return
+      if (!tryAddPlatformMessage('youtube', msg.id)) return
       const usec = typeof msg.timestampUsec === 'string' ? Number(msg.timestampUsec) : NaN
       const tsMs = Number.isFinite(usec) ? Math.floor(usec / 1000) : Date.now()
       appendItems([
@@ -2546,7 +2539,7 @@ function CombinedChat({
       alive = false
       unsubYt()
     }
-  }, [])
+  }, [tryAddPlatformMessage])
 
   // Twitch chat messages forwarded from main process (IRC over WebSocket)
   useEffect(() => {
@@ -2554,6 +2547,7 @@ function CombinedChat({
     const handleTwitch = (_event: any, msg: TwitchChatMessage) => {
       if (!alive) return
       if (!msg || msg.platform !== 'twitch') return
+      if (!tryAddPlatformMessage('twitch', msg.id)) return
       const tsMs = typeof msg.tmiSentTs === 'number' && Number.isFinite(msg.tmiSentTs) ? msg.tmiSentTs : Date.now()
       appendItems([
         {
@@ -2573,7 +2567,7 @@ function CombinedChat({
       alive = false
       unsubTwitch()
     }
-  }, [])
+  }, [tryAddPlatformMessage])
 
   // Twitch chat names (353/366, JOIN/PART) for autocomplete and chatter count
   useEffect(() => {
@@ -2774,18 +2768,37 @@ function CombinedChat({
   // Auto-scroll when user has not scrolled up (stick to bottom).
   // Use updateSeq (not merged.length) because the list is capped at maxLines
   // and length can stay constant even as new messages arrive.
+  // Extended programmaticScrollRef guard + delayed stick: layout (emote images) can change after
+  // initial scroll; keep guard longer and re-scroll to catch late layout.
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     if (userScrolledUpRef.current) return
 
+    const stick = () => {
+      el.scrollTop = el.scrollHeight
+      wasAtBottomRef.current = true
+      userScrolledUpRef.current = false
+    }
+
     programmaticScrollRef.current = true
-    el.scrollTop = el.scrollHeight
+    stick()
     requestAnimationFrame(() => {
-      programmaticScrollRef.current = false
+      stick()
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false
+      })
     })
-    userScrolledUpRef.current = false
-    wasAtBottomRef.current = true
+    const lateStick = setTimeout(() => {
+      if (!userScrolledUpRef.current) {
+        programmaticScrollRef.current = true
+        stick()
+        requestAnimationFrame(() => {
+          programmaticScrollRef.current = false
+        })
+      }
+    }, 80)
+    return () => clearTimeout(lateStick)
   }, [updateSeq])
 
   const onOpenLink = onOpenLinkProp ?? (hasRealIpc
@@ -2830,73 +2843,21 @@ function CombinedChat({
     [primaryChatUserDataCache, flairsList]
   )
 
-  /** Render primary chat message content with mentioned nicks as hover-underline, right-click menu, double-click to insert; emotes double-click to insert into input. Greentext lines (starting with >) wrap the whole line so nicks don't interrupt the green style. */
+  /** Render primary chat message content with mentioned nicks, emotes, greentext, suspost. */
   const renderPrimaryChatMessageContent = useCallback(
-    (content: string) => {
-      const lines = (content ?? '').split('\n')
-      const parts: React.ReactNode[] = []
-      let key = 0
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const line = lines[lineIndex]!
-        const isGreentext = line.trim().startsWith('>')
-        const lineSegments = tokenizePrimaryChatContent(line, primaryChatNicks)
-        const lineParts: React.ReactNode[] = []
-        for (const seg of lineSegments) {
-          if (seg.type === 'text') {
-            lineParts.push(
-              <Fragment key={`pchat-txt-${key++}`}>
-                {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
-              </Fragment>
-            )
-          } else {
-            /* When a word is both a nick and an emote, prefer emote (emote match is case-sensitive; nick match is not). */
-            const treatAsEmote = emotesMap.has(seg.value)
-            if (treatAsEmote) {
-              lineParts.push(
-                <Fragment key={`pchat-txt-${key++}`}>
-                  {renderTextWithLinks(seg.value, emotePattern, emotesMap, onOpenLink, handleEmoteDoubleClick, isGreentext)}
-                </Fragment>
-              )
-            } else {
-              lineParts.push(
-                <span
-                  key={`pchat-nick-${key++}`}
-                  className="primary-chat-mention hover:underline cursor-context-menu"
-                  onContextMenu={(e) => openUserTooltipByNick(e, seg.value)}
-                  onDoubleClick={() => handleNickDoubleClick(seg.value)}
-                  onMouseUp={(e) => e.stopPropagation()}
-                >
-                  {seg.value}
-                </span>
-              )
-            }
-          }
-        }
-        if (isGreentext) {
-          parts.push(
-            <span
-              key={`greentext-${key++}`}
-              className="msg-chat-greentext"
-              style={{
-                color: 'rgb(108, 165, 40)',
-                fontFamily: '"Roboto", Helvetica, "Trebuchet MS", Verdana, sans-serif',
-                boxSizing: 'border-box',
-                textRendering: 'optimizeLegibility',
-                overflowWrap: 'break-word',
-                lineHeight: 1.6,
-              }}
-            >
-              {lineParts}
-            </span>
-          )
-        } else {
-          parts.push(...lineParts)
-        }
-        if (lineIndex < lines.length - 1) parts.push(<Fragment key={`nl-${key++}`}>{'\n'}</Fragment>)
-      }
-      return <>{parts}</>
-    },
-    [primaryChatNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick]
+    (content: string) =>
+      renderPrimaryChatMessageContentShared({
+        content,
+        primaryChatNicks,
+        emotePattern,
+        emotesMap,
+        onOpenLink,
+        onEmoteDoubleClick: handleEmoteDoubleClick,
+        onNickDoubleClick: handleNickDoubleClick,
+        onUserTooltip: openUserTooltipByNick,
+        options: chatFormattingOptions,
+      }),
+    [primaryChatNicks, emotePattern, emotesMap, onOpenLink, openUserTooltipByNick, handleNickDoubleClick, handleEmoteDoubleClick, chatFormattingOptions]
   )
 
   const sendPrimaryChatMessage = useCallback(() => {
@@ -3296,7 +3257,7 @@ function CombinedChat({
                     <span className="ctrl">: </span>
                   </span>
                   <span className="msg-chat-content text whitespace-pre-wrap break-words">
-                    {renderTextWithLinks(pinnedMessage.data ?? '', emotePattern, emotesMap, onOpenLink)}
+                    {renderTextWithLinks({ text: pinnedMessage.data ?? '', emotePattern, emotesMap, onOpenLink, options: chatFormattingOptions })}
                   </span>
                 </span>
               </div>
@@ -3422,7 +3383,7 @@ function CombinedChat({
                           {ts ? <span className="text-xs text-base-content/50 mr-2">{ts}</span> : null}
                           <span className="font-semibold mr-2">{msg.from}</span>
                           <span className="whitespace-pre-wrap break-words inline-flex flex-wrap items-baseline gap-0.5">
-                            {renderTextWithLinks(msg.message ?? '', emotePattern, emotesMap, onOpenLink)}
+                            {renderTextWithLinks({ text: msg.message ?? '', emotePattern, emotesMap, onOpenLink, options: chatFormattingOptions })}
                           </span>
                         </div>
                       )
@@ -3762,7 +3723,7 @@ function CombinedChat({
                       ))
                     : m.source === 'youtube'
                       ? renderYouTubeContent(m.raw as YouTubeChatMessage, onOpenLink)
-                      : renderTextWithLinks(m.content ?? '', null, new Map(), onOpenLink)}
+                      : renderTextWithLinks({ text: m.content ?? '', emotePattern: null, emotesMap: new Map(), onOpenLink })}
                 </span>
               </div>
             )
@@ -4005,14 +3966,6 @@ function CombinedChat({
                 </div>
                 <div
                   className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
-                  onMouseEnter={() => setContextMenuHover('order')}
-                  role="menuitem"
-                >
-                  <span>Order</span>
-                  <span aria-hidden className="text-base-content/50">▸</span>
-                </div>
-                <div
-                  className="px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2 cursor-default"
                   onMouseEnter={() => setContextMenuHover('emotes')}
                   role="menuitem"
                 >
@@ -4113,22 +4066,6 @@ function CombinedChat({
                   </button>
                 </div>
               )}
-              {contextMenuHover === 'order' && (
-                <div
-                  className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
-                  style={{ maxHeight: maxH - 8 }}
-                  onMouseEnter={() => setContextMenuHover('order')}
-                >
-                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.order.sortMode === 'timestamp'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.order.setSortMode('timestamp'); closeContextMenu() }}>
-                    <span>By timestamp</span>
-                    {contextMenuConfig.order.sortMode === 'timestamp' && <span aria-hidden>✓</span>}
-                  </button>
-                  <button type="button" role="menuitemradio" aria-checked={contextMenuConfig.order.sortMode === 'arrival'} className="w-full px-3 py-1.5 text-left hover:bg-base-300 flex items-center justify-between gap-2" onClick={() => { contextMenuConfig.order.setSortMode('arrival'); closeContextMenu() }}>
-                    <span>By arrival</span>
-                    {contextMenuConfig.order.sortMode === 'arrival' && <span aria-hidden>✓</span>}
-                  </button>
-                </div>
-              )}
               {contextMenuHover === 'emotes' && (
                 <div
                   className={`w-[228px] shrink-0 bg-base-200 py-1 ${showSubmenuLeft ? 'border-r border-base-300 rounded-l-lg' : 'border-l border-base-300 rounded-r-lg'}`}
@@ -4176,4 +4113,5 @@ function CombinedChat({
   )
 }
 
+export { renderKickContent }
 export default memo(CombinedChat)

@@ -231,9 +231,27 @@ function Menu({ onNavigate }: MenuProps) {
   const [communityManifests, setCommunityManifests] = useState<Record<string, { id: string; name: string; description?: string; icon?: string; tags?: string[] } | null>>({})
   const [extensionActionStatus, setExtensionActionStatus] = useState<string | null>(null)
   const [prefsDraft, setPrefsDraft] = useState<AppPreferences>(() => getAppPreferences())
+  const [systemSectionExpanded, setSystemSectionExpanded] = useState(false)
   const [themeSectionExpanded, setThemeSectionExpanded] = useState(false)
+  const [notificationsSectionExpanded, setNotificationsSectionExpanded] = useState(false)
   const [userscriptsSectionExpanded, setUserscriptsSectionExpanded] = useState(false)
   const [minimizeToTray, setMinimizeToTray] = useState(false)
+  const [notificationPrefs, setNotificationPrefs] = useState<{
+    soundEnabled: boolean
+    soundFile: string
+    soundVolume: number
+    customSoundPath: string
+    systemEnabled: boolean
+    systemWithSound: boolean
+  }>({
+    soundEnabled: false,
+    soundFile: '534',
+    soundVolume: 0.8,
+    customSoundPath: '',
+    systemEnabled: false,
+    systemWithSound: true,
+  })
+  const [notificationSoundsList, setNotificationSoundsList] = useState<string[]>([])
 
   // Connections: pasted cookie strings per platform (local state only; Save sends to main). Extension platforms get keys when CONNECTIONS_PLATFORMS includes them; use ?? '' when reading.
   const [connectionsDraft, setConnectionsDraft] = useState<Record<string, string>>({
@@ -309,10 +327,16 @@ function Menu({ onNavigate }: MenuProps) {
     window.ipcRenderer.invoke('get-installed-extensions').then((list: InstalledExt[]) => setExtensionsList(Array.isArray(list) ? list : [])).catch(() => setExtensionsList([]))
   }, [])
 
-  // When Settings modal opens, load minimize-to-tray from store
+  // When Settings modal opens, load minimize-to-tray and notification prefs from store
   useEffect(() => {
     if (!settingsOpen) return
     window.ipcRenderer?.store?.getMinimizeToTray().then((v: boolean) => setMinimizeToTray(!!v)).catch(() => {})
+    window.ipcRenderer?.store?.getNotificationPrefs().then((p) => {
+      if (p) setNotificationPrefs(p)
+    }).catch(() => {})
+    window.ipcRenderer?.getNotificationSoundsList?.().then((list) => {
+      setNotificationSoundsList(Array.isArray(list) ? list : [])
+    }).catch(() => setNotificationSoundsList([]))
   }, [settingsOpen])
 
   // When Extensions modal opens or extensions-reloaded, refresh installed list
@@ -792,6 +816,41 @@ function Menu({ onNavigate }: MenuProps) {
                 <button
                   type="button"
                   className="w-full flex items-center gap-3 p-4 text-left hover:bg-base-200/50 transition-colors"
+                  onClick={() => setSystemSectionExpanded((e) => !e)}
+                >
+                  <Icon name={systemSectionExpanded ? 'chevron-down' : 'chevron-right'} size={18} className="shrink-0 text-base-content/60" />
+                  <span className="font-semibold">System</span>
+                </button>
+                {systemSectionExpanded && (
+                  <div className="px-4 pb-4 pt-0 space-y-4 border-t border-base-200">
+                    <div className="pt-4">
+                      <label className="flex items-start justify-between gap-4 cursor-pointer">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold">Run in system tray</div>
+                          <div className="text-xs text-base-content/60 mt-1">
+                            When enabled, closing all windows keeps the app running in the tray. Required for OBS chat embed and chat notifications when the main window is closed.
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                          checked={minimizeToTray}
+                          onChange={(e) => {
+                            const v = e.target.checked
+                            setMinimizeToTray(v)
+                            window.ipcRenderer?.store?.setMinimizeToTray(v).catch(() => {})
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="border border-base-200 rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-base-200/50 transition-colors"
                   onClick={() => setThemeSectionExpanded((e) => !e)}
                 >
                   <Icon name={themeSectionExpanded ? 'chevron-down' : 'chevron-right'} size={18} className="shrink-0 text-base-content/60" />
@@ -917,26 +976,133 @@ function Menu({ onNavigate }: MenuProps) {
               </div>
 
               <div className="border border-base-200 rounded-lg overflow-hidden">
-                <div className="p-4">
-                  <label className="flex items-start justify-between gap-4 cursor-pointer">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold">Run in system tray</div>
-                      <div className="text-xs text-base-content/60 mt-1">
-                        When enabled, closing all windows keeps the app running in the tray. Required for OBS chat embed and chat notifications when the main window is closed.
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-base-200/50 transition-colors"
+                  onClick={() => setNotificationsSectionExpanded((e) => !e)}
+                >
+                  <Icon name={notificationsSectionExpanded ? 'chevron-down' : 'chevron-right'} size={18} className="shrink-0 text-base-content/60" />
+                  <span className="font-semibold">Notifications</span>
+                </button>
+                {notificationsSectionExpanded && (
+                  <div className="px-4 pb-4 pt-0 space-y-4 border-t border-base-200">
+                    <p className="text-xs text-base-content/60 pt-4">
+                      Notifications require &quot;Run in system tray&quot; when the main window is closed. Per-streamer notification toggles are in Omni Screen.
+                    </p>
+                    <label className="flex items-start justify-between gap-4 cursor-pointer">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">Sound notification</div>
+                        <div className="text-xs text-base-content/60 mt-1">Play a sound when a bookmarked streamer goes live.</div>
                       </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm flex-shrink-0 mt-0.5"
-                      checked={minimizeToTray}
-                      onChange={(e) => {
-                        const v = e.target.checked
-                        setMinimizeToTray(v)
-                        window.ipcRenderer?.store?.setMinimizeToTray(v).catch(() => {})
-                      }}
-                    />
-                  </label>
-                </div>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                        checked={notificationPrefs.soundEnabled}
+                        onChange={(e) => {
+                          const v = e.target.checked
+                          setNotificationPrefs((p) => ({ ...p, soundEnabled: v }))
+                          window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, soundEnabled: v }).catch(() => {})
+                        }}
+                      />
+                    </label>
+                    {notificationPrefs.soundEnabled && (
+                      <div className="space-y-3 pl-2 border-l-2 border-base-300">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="text-sm">Sound</label>
+                          <select
+                            className="select select-bordered select-sm w-40"
+                            value={notificationPrefs.soundFile}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setNotificationPrefs((p) => ({ ...p, soundFile: v }))
+                              window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, soundFile: v }).catch(() => {})
+                              const path = v === 'custom' ? notificationPrefs.customSoundPath : v
+                              if (path && window.ipcRenderer?.playNotificationSoundPreview) {
+                                window.ipcRenderer.playNotificationSoundPreview(path, notificationPrefs.soundVolume).catch(() => {})
+                              }
+                            }}
+                          >
+                            {notificationSoundsList.map((s) => (
+                              <option key={s} value={s}>{s}</option>
+                            ))}
+                            <option value="custom">Custom file...</option>
+                          </select>
+                          {notificationPrefs.soundFile === 'custom' && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              onClick={async () => {
+                                const path = await window.ipcRenderer?.pickCustomNotificationSound?.()
+                                if (path) {
+                                  setNotificationPrefs((p) => ({ ...p, customSoundPath: path }))
+                                  window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, customSoundPath: path }).catch(() => {})
+                                  if (window.ipcRenderer?.playNotificationSoundPreview) {
+                                    window.ipcRenderer.playNotificationSoundPreview(path, notificationPrefs.soundVolume).catch(() => {})
+                                  }
+                                }
+                              }}
+                            >
+                              {notificationPrefs.customSoundPath ? 'Change file' : 'Select file'}
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm w-16">Volume</label>
+                          <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={Math.round(notificationPrefs.soundVolume * 100)}
+                            className="range range-sm flex-1 max-w-32"
+                            onChange={(e) => {
+                              const v = Math.max(0, Math.min(100, Number(e.target.value))) / 100
+                              setNotificationPrefs((p) => ({ ...p, soundVolume: v }))
+                              window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, soundVolume: v }).catch(() => {})
+                              const path = notificationPrefs.soundFile === 'custom' ? notificationPrefs.customSoundPath : notificationPrefs.soundFile
+                              if (path && window.ipcRenderer?.playNotificationSoundPreview) {
+                                window.ipcRenderer.playNotificationSoundPreview(path, v).catch(() => {})
+                              }
+                            }}
+                          />
+                          <span className="text-xs text-base-content/60 w-8">{Math.round(notificationPrefs.soundVolume * 100)}%</span>
+                        </div>
+                      </div>
+                    )}
+                    <label className="flex items-start justify-between gap-4 cursor-pointer">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">System notification</div>
+                        <div className="text-xs text-base-content/60 mt-1">Show OS notification when a bookmarked streamer goes live.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                        checked={notificationPrefs.systemEnabled}
+                        onChange={(e) => {
+                          const v = e.target.checked
+                          setNotificationPrefs((p) => ({ ...p, systemEnabled: v }))
+                          window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, systemEnabled: v }).catch(() => {})
+                        }}
+                      />
+                    </label>
+                    {notificationPrefs.systemEnabled && (
+                      <label className="flex items-start justify-between gap-4 cursor-pointer pl-2 border-l-2 border-base-300">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm">Play sound with notification</div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          className="toggle toggle-sm flex-shrink-0 mt-0.5"
+                          checked={notificationPrefs.systemWithSound}
+                          onChange={(e) => {
+                            const v = e.target.checked
+                            setNotificationPrefs((p) => ({ ...p, systemWithSound: v }))
+                            window.ipcRenderer?.store?.setNotificationPrefs({ ...notificationPrefs, systemWithSound: v }).catch(() => {})
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="border border-base-200 rounded-lg overflow-hidden">

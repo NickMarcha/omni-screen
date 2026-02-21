@@ -1,6 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'events'
 import { fileLogger } from './fileLogger'
+import { incrementMainReceived } from './primaryChatDebugCounters'
 
 export interface ChatMessage {
   id: number
@@ -288,6 +289,7 @@ function createChatHandlers(): Record<string, ChatMessageHandler> {
   h.MSG = (ws, message, collect) => {
     try {
       const msgData = JSON.parse(message.substring(4)) as ChatMessage
+      incrementMainReceived()
       ws.emit('message', { type: 'MSG', message: msgData })
       if (collect) {
         collect.messages.push(msgData)
@@ -625,7 +627,6 @@ export class ChatWebSocket extends EventEmitter {
   private maxReconnectDelay = 30000 // Max 30 seconds
   private reconnectTimer: NodeJS.Timeout | null = null
   private isIntentionallyClosed = false
-  private heartbeatInterval: NodeJS.Timeout | null = null
   private connectionTimeout: NodeJS.Timeout | null = null
   private typeCounts: Map<string, number> = new Map()
   private seenTypes: Set<string> = new Set()
@@ -681,7 +682,6 @@ export class ChatWebSocket extends EventEmitter {
         this.reconnectAttempts = 0
         this.reconnectDelay = 1000
         this.emit('connected')
-        this.startHeartbeat()
       })
 
       this.ws.on('message', (data: WebSocket.Data) => {
@@ -706,7 +706,6 @@ export class ChatWebSocket extends EventEmitter {
         console.log(`[ChatWebSocket] Closed: code=${code}, reason=${reason.toString()}`)
         this.connectionTimeout && clearTimeout(this.connectionTimeout)
         this.connectionTimeout = null
-        this.stopHeartbeat()
         this.emit('disconnected', { code, reason: reason.toString() })
 
         // Reconnect if not intentionally closed
@@ -734,8 +733,7 @@ export class ChatWebSocket extends EventEmitter {
    */
   disconnect(): void {
     this.isIntentionallyClosed = true
-    this.stopHeartbeat()
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -910,34 +908,6 @@ export class ChatWebSocket extends EventEmitter {
       this.reconnectTimer = null
       this.connect()
     }, delay)
-  }
-
-  /**
-   * Start heartbeat to keep connection alive
-   */
-  private startHeartbeat(): void {
-    this.stopHeartbeat()
-    
-    // Send ping every 30 seconds
-    this.heartbeatInterval = setInterval(() => {
-      if (this.isConnected()) {
-        try {
-          this.ws!.ping()
-        } catch (error) {
-          console.error('[ChatWebSocket] Heartbeat ping failed:', error)
-        }
-      }
-    }, 30000)
-  }
-
-  /**
-   * Stop heartbeat
-   */
-  private stopHeartbeat(): void {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval)
-      this.heartbeatInterval = null
-    }
   }
 
   /**

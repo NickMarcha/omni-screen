@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { logger } from '../utils/logger'
-import { chatWsOn, CHAT_HTTP_PROXY_BASE } from '../utils/chatWsClient'
+import { chatWsOn, chatWsSendRegister, chatWsSendUnregister, CHAT_HTTP_PROXY_BASE } from '../utils/chatWsClient'
 import { applyThemeToDocument, getAppPreferences } from '../utils/appPreferences'
 import TwitterEmbed from './embeds/TwitterEmbed'
 import TwitterTimelineEmbed from './embeds/TwitterTimelineEmbed'
@@ -2884,18 +2884,35 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     fetchMentions(filter || [], 0, false, primaryChatEnabled)
   }, [filter, fetchMentions, websocketHistoryReceived, primaryChatEnabled])
 
-  // WebSocket connection for streaming messages
+  // Register with chat registry so primary + Kick connect (driven by union of all consumers)
+  const kickEnabled = !!settings.channels?.kick?.enabled
+  const kickSlug = (settings.channels?.kick?.channelSlug || '').trim()
+  const linkScrollerKeys = useMemo(() => {
+    const keys: string[] = []
+    if (primaryChatEnabled && primaryChatSourceId) keys.push(`primary:${primaryChatSourceId}`)
+    if (kickEnabled && kickSlug) keys.push(`kick:${kickSlug.toLowerCase()}`)
+    return keys
+  }, [primaryChatEnabled, primaryChatSourceId, kickEnabled, kickSlug])
   useEffect(() => {
-    if (!primaryChatEnabled) {
+    if (linkScrollerKeys.length === 0) {
       setWebsocketHistoryReceived(true)
+      chatWsSendUnregister('link-scroller')
       return
     }
+    chatWsSendRegister('link-scroller', linkScrollerKeys)
+    return () => {
+      chatWsSendUnregister('link-scroller')
+    }
+  }, [linkScrollerKeys])
+
+  // WebSocket listeners for streaming messages (primary chat)
+  useEffect(() => {
+    if (!primaryChatEnabled) return
     // Clear any existing timeout
     if (websocketHistoryTimeoutRef.current) {
       clearTimeout(websocketHistoryTimeoutRef.current)
       websocketHistoryTimeoutRef.current = null
     }
-    
     websocketHistoryTimeoutRef.current = setTimeout(() => {
       if (!websocketHistoryReceived && filter && filter.length > 0) {
         logger.api('WebSocket history timeout - proceeding with mentions API fetch')
@@ -2903,14 +2920,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       }
       websocketHistoryTimeoutRef.current = null
     }, 5000)
-
-    window.ipcRenderer.invoke('chat-websocket-connect').catch((err) => {
-      logger.error('Failed to connect chat WebSocket:', err)
-      if (!websocketHistoryReceived && filter && filter.length > 0) {
-        logger.api('WebSocket connection failed - proceeding with mentions API fetch')
-        setWebsocketHistoryReceived(true)
-      }
-    })
 
     // Listen for WebSocket messages (primary chat source)
     const handleMessage = (_event: any, data: { type: 'MSG'; message: any }) => {
@@ -3064,10 +3073,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
       unsubConnected()
       unsubDisconnected()
       unsubError()
-      window.ipcRenderer?.invoke('chat-websocket-disconnect').catch((err) => {
-        logger.error('Failed to disconnect chat WebSocket:', err)
-      })
-      
       // Clear timeout on cleanup
       if (websocketHistoryTimeoutRef.current) {
         clearTimeout(websocketHistoryTimeoutRef.current)
@@ -3076,18 +3081,9 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     }
   }, [filter, websocketHistoryReceived, primaryChatEnabled])
 
-  // Kick channel: set targets and listen for messages when Kick is enabled
-  const kickEnabled = !!settings.channels?.kick?.enabled
-  const kickSlug = (settings.channels?.kick?.channelSlug || '').trim()
+  // Kick: listen for messages (targets driven by WebSocket register above)
   useEffect(() => {
-    if (!kickEnabled || !kickSlug) {
-      window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
-      return
-    }
-    window.ipcRenderer.invoke('kick-chat-set-targets', { slugs: [kickSlug] }).catch((err) => {
-      logger.error('Failed to set Kick chat targets:', err)
-    })
-    // Delayed refetch so history is retried after initial fetch (e.g. if cookies weren't ready)
+    if (!kickEnabled || !kickSlug) return
     const refetchTimer = window.setTimeout(() => {
       window.ipcRenderer.invoke('kick-chat-refetch-history', { slugs: [kickSlug] }).catch(() => {})
     }, 4500)
@@ -3129,7 +3125,6 @@ function LinkScroller({ onBackToMenu }: { onBackToMenu?: () => void }) {
     return () => {
       window.clearTimeout(refetchTimer)
       unsubKick()
-      window.ipcRenderer?.invoke('kick-chat-set-targets', { slugs: [] }).catch(() => {})
     }
   }, [kickEnabled, kickSlug, filter])
 

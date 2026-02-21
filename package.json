@@ -22,7 +22,8 @@
     "test:twitch-gql": "npx tsx scripts/test-twitch-gql.ts",
     "test:twitch-irc": "npx tsx scripts/test-twitch-irc.ts",
     "check:chat-upstream": "npx tsx scripts/check-chat-upstream.ts",
-    "analyze:chat-history": "node scripts/analyze-chat-history.mjs"
+    "analyze:chat-history": "node scripts/analyze-chat-history.mjs",
+    "extract:chat-samples": "node scripts/extract-chat-samples.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.11",

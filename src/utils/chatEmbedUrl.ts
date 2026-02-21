@@ -3,8 +3,6 @@
  * Fallback: URL param → storage → app default.
  */
 
-export type CombinedSortMode = 'timestamp' | 'arrival'
-
 export interface ChatEmbedConfig {
   selectedEmbedChatKeys: string[]
   selectedEmbedKeys: string[]
@@ -16,7 +14,6 @@ export interface ChatEmbedConfig {
   showTimestamps?: boolean
   showLabels?: boolean
   showPlatformIcons?: boolean
-  sortMode?: CombinedSortMode
   highlightTerms?: string[]
   pauseEmoteOffscreen?: boolean
   showPrimaryChatFlairs?: boolean
@@ -105,9 +102,6 @@ export function parseChatEmbedParams(searchParams: URLSearchParams): Partial<Cha
     config.showPlatformIcons = showPlatformIcons === '1' || showPlatformIcons === 'true'
   }
 
-  const sortMode = searchParams.get('sortMode')
-  if (sortMode === 'timestamp' || sortMode === 'arrival') config.sortMode = sortMode
-
   const highlightTermsRaw = searchParams.get('highlightTerms')
   if (highlightTermsRaw) {
     try {
@@ -186,7 +180,6 @@ export function mergeWithStorageDefaults(
     showTimestamps: urlConfig.showTimestamps ?? boolFromStorage('omni-screen:combined-show-timestamps', true),
     showLabels: urlConfig.showLabels ?? boolFromStorage('omni-screen:combined-show-labels', true),
     showPlatformIcons: urlConfig.showPlatformIcons ?? boolFromStorage('omni-screen:combined-show-platform-icons', false),
-    sortMode: urlConfig.sortMode ?? (getStorage('omni-screen:combined-sort-mode') === 'timestamp' ? 'timestamp' : 'arrival'),
     highlightTerms: urlConfig.highlightTerms ?? (() => {
       try {
         const raw = getStorage('omni-screen:combined-highlight-terms')
@@ -225,7 +218,6 @@ export function buildChatEmbedQuery(config: Partial<ChatEmbedConfig>): string {
   if (typeof config.showTimestamps === 'boolean') params.set('showTimestamps', config.showTimestamps ? '1' : '0')
   if (typeof config.showLabels === 'boolean') params.set('showLabels', config.showLabels ? '1' : '0')
   if (typeof config.showPlatformIcons === 'boolean') params.set('showPlatformIcons', config.showPlatformIcons ? '1' : '0')
-  if (config.sortMode) params.set('sortMode', config.sortMode)
   if (config.highlightTerms && config.highlightTerms.length > 0) params.set('highlightTerms', JSON.stringify(config.highlightTerms))
   if (typeof config.pauseEmoteOffscreen === 'boolean') params.set('pauseEmoteOffscreen', config.pauseEmoteOffscreen ? '1' : '0')
   if (typeof config.showPrimaryChatFlairs === 'boolean') params.set('showPrimaryChatFlairs', config.showPrimaryChatFlairs ? '1' : '0')

@@ -46,7 +46,7 @@ const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
 
 /**
  * Build a bookmarked streamer object from protocol query params.
- * Params: nickname, youtube, kick, twitch, color, youtubeColor, kickColor, twitchColor, openWhenLive, hideLabel.
+ * Params: nickname, youtube, kick, twitch, color, youtubeColor, kickColor, twitchColor, openWhenLive, notifyWhenLive, hideLabel.
  */
 function buildStreamerFromParams(params: Record<string, string>): Record<string, unknown> {
   const nickname = (params.nickname || params.nick || '').trim() || 'Unnamed'
@@ -60,6 +60,9 @@ function buildStreamerFromParams(params: Record<string, string>): Record<string,
   const openWhenLive = params.openWhenLive !== undefined
     ? (params.openWhenLive === '1' || params.openWhenLive === 'true')
     : true
+  const notifyWhenLive = params.notifyWhenLive !== undefined
+    ? (params.notifyWhenLive === '1' || params.notifyWhenLive === 'true')
+    : false
   const hideLabel = params.hideLabel !== undefined
     ? (params.hideLabel === '1' || params.hideLabel === 'true')
     : undefined
@@ -72,6 +75,7 @@ function buildStreamerFromParams(params: Record<string, string>): Record<string,
     id: `streamer-${Date.now()}`,
     nickname,
     openWhenLive,
+    notifyWhenLive,
   }
   if (youtube) streamer.youtubeChannelId = youtube
   if (kick) streamer.kickSlug = kick

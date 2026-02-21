@@ -80,6 +80,14 @@ export class ChatSubscriptionRegistry {
     return Array.from(new Set(chans)).sort()
   }
 
+  /** Primary chat source id if any consumer wants it (e.g. "dgg" from key "primary:dgg"). */
+  getPrimaryChatSourceId(): string | null {
+    for (const k of this.getUnionEmbedKeys()) {
+      if (k.startsWith('primary:')) return k.slice('primary:'.length)
+    }
+    return null
+  }
+
   /** Add a message to the cache and evict oldest if over limit. */
   addToCache(embedKey: string, channel: string, payload: unknown) {
     this.seq++

@@ -30,11 +30,14 @@ import { getYouTubeLiveOrLatest, normalizeYouTubeChannelInput } from './youtubeL
 import { checkUrlIsLive } from './urlIsLive'
 import { handleProtocolUrl, parseProtocolUrl, PROTOCOL_SCHEME } from './urlHandler'
 import { ChatSubscriptionRegistry } from './chatSubscriptionRegistry'
-import { startChatWsServer, broadcastChatMessage, sendCachedToConsumer, stopChatWsServer, getChatWsServerUrl, setEmotesProxyConfig } from './chatServerWs'
+import { startChatWsServer, broadcastChatMessage, sendCachedToConsumer, stopChatWsServer, getChatWsServerUrl, setEmotesProxyConfig, clearAndRefetchPrimaryChatEmotes, setChatSubscriptionCallbacks } from './chatServerWs'
+import { getPrimaryChatDebugCounters, resetPrimaryChatDebugCounters } from './primaryChatDebugCounters'
 import type { ProtocolHandleResult } from './extensions/types.js'
 import { loadExtensions, reloadExtensions, getLoadedExtensions } from './extensions/loader'
 import { installFromManifestUrl, readExtensionsList, setExtensionEnabled, uninstallExtension } from './extensions/storage'
-import { getBookmarkedStreamers, setBookmarkedStreamers, getMinimizeToTray, setMinimizeToTray, type BookmarkedStreamer } from './sharedStore'
+import { getBookmarkedStreamers, setBookmarkedStreamers, getMinimizeToTray, setMinimizeToTray, getNotificationPrefs, setNotificationPrefs, type BookmarkedStreamer } from './sharedStore'
+import { startLiveCheckScheduler, stopLiveCheckScheduler } from './liveCheckScheduler'
+import { destroySoundWindow, getNotificationSoundsList, playNotificationSound } from './soundWindow'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -119,6 +122,34 @@ ipcMain.handle('store-set-bookmarked-streamers', (event, streamers: BookmarkedSt
 })
 ipcMain.handle('store-get-minimize-to-tray', () => getMinimizeToTray())
 ipcMain.handle('store-set-minimize-to-tray', (_event, value: boolean) => setMinimizeToTray(!!value))
+
+ipcMain.handle('store-get-notification-prefs', () => getNotificationPrefs())
+ipcMain.handle('store-set-notification-prefs', (_event, prefs: Record<string, unknown>) => {
+  const p = prefs && typeof prefs === 'object' ? prefs : {}
+  setNotificationPrefs({
+    ...(typeof p.soundEnabled === 'boolean' && { soundEnabled: p.soundEnabled }),
+    ...(typeof p.soundFile === 'string' && { soundFile: p.soundFile }),
+    ...(typeof p.soundVolume === 'number' && { soundVolume: Math.max(0, Math.min(1, p.soundVolume)) }),
+    ...(typeof p.customSoundPath === 'string' && { customSoundPath: p.customSoundPath }),
+    ...(typeof p.systemEnabled === 'boolean' && { systemEnabled: p.systemEnabled }),
+    ...(typeof p.systemWithSound === 'boolean' && { systemWithSound: p.systemWithSound }),
+  })
+})
+
+ipcMain.handle('notification-sounds-list', () => getNotificationSoundsList())
+
+ipcMain.handle('notification-pick-custom-sound', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'Select notification sound',
+    filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }],
+    properties: ['openFile'],
+  })
+  return canceled || filePaths.length === 0 ? null : filePaths[0]
+})
+
+ipcMain.handle('play-notification-sound-preview', async (_event, pathOrFilename: string, volume: number) => {
+  await playNotificationSound(pathOrFilename, typeof volume === 'number' ? Math.max(0, Math.min(1, volume)) : 0.8)
+})
 
 ipcMain.handle('get-installed-extensions', () => readExtensionsList())
 
@@ -1710,8 +1741,6 @@ async function createChatWindow(loadUrl: string): Promise<void> {
   chatWin.on('closed', () => {
     if (chatWin === thisChatWin) {
       chatWin = null
-      chatSubscriptionRegistry.unregister('chat-win')
-      applyChatSubscriptionTargets()
       if (chatWindowClickThroughShortcut) {
         globalShortcut.unregister(chatWindowClickThroughShortcut)
         chatWindowClickThroughShortcut = null
@@ -3554,204 +3583,11 @@ ipcMain.handle('open-login-window', async (_event, service: string) => {
   }
 })
 
-// Chat WebSocket IPC handlers
+// Chat WebSocket IPC handlers (chat-websocket-connect kept for legacy callers; primary chat is driven by WebSocket register)
 ipcMain.handle('chat-websocket-connect', async (_event) => {
   try {
-    const primary = getPrimaryChatSource()
-    if (!primary) return { success: false, error: 'Chat source extension not installed', data: null }
-    if (!chatWebSocket) {
-      chatWebSocket = new ChatWebSocket(primary.config.chatWssUrl, primary.config.chatOrigin)
-      
-      const safeSend = (channel: string, ...args: any[]) => {
-        broadcastChatMessage(channel, ...args)
-      }
-      
-      // Forward events to renderer
-      chatWebSocket.on('connected', () => {
-        safeSend('chat-websocket-connected')
-      })
-      
-      chatWebSocket.on('disconnected', (data) => {
-        safeSend('chat-websocket-disconnected', data)
-      })
-      
-      chatWebSocket.on('error', (error) => {
-        try {
-          const errorMessage = error instanceof Error ? error.message : (error?.message || String(error) || 'Unknown error')
-          safeSend('chat-websocket-error', { message: errorMessage })
-        } catch (sendError) {
-          console.error('[Main Process] Failed to send WebSocket error to renderer:', sendError)
-        }
-      })
-      
-      chatWebSocket.on('history', (history) => {
-        console.log(`[Main Process] Received history event with ${history.messages?.length || 0} messages`)
-        safeSend('chat-websocket-history', history)
-      })
-      
-      chatWebSocket.on('message', (data) => {
-        safeSend('chat-websocket-message', data)
-      })
-      
-      chatWebSocket.on('userEvent', (event) => {
-        safeSend('chat-websocket-user-event', event)
-      })
-      
-      chatWebSocket.on('paidEvents', (event) => {
-        safeSend('chat-websocket-paid-events', event)
-      })
-      
-      chatWebSocket.on('pin', (event) => {
-        safeSend('chat-websocket-pin', event)
-      })
-      
-      chatWebSocket.on('names', (event) => {
-        safeSend('chat-websocket-names', event)
-      })
-      
-      chatWebSocket.on('mute', (event: { type?: string; mute?: { data?: string; duration?: number } }) => {
-        safeSend('chat-websocket-mute', event)
-        const m = event?.mute
-        const targetNick = m?.data?.trim()?.toLowerCase()
-        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
-        if (targetNick && meNick && targetNick === meNick && typeof m?.duration === 'number') {
-          safeSend('chat-websocket-muted', { muteTimeLeft: m.duration })
-        }
-      })
-
-      chatWebSocket.on('me', (event) => {
-        cachedPrimaryChatMe = event
-        safeSend('chat-websocket-me', event)
-      })
-      
-      chatWebSocket.on('pollStart', (event) => {
-        try {
-          fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTART', [event?.poll?.question?.slice?.(0, 50)])
-        } catch {
-          // ignore
-        }
-        safeSend('chat-websocket-poll-start', event)
-      })
-
-      chatWebSocket.on('voteCast', (event) => {
-        safeSend('chat-websocket-vote-cast', event)
-      })
-
-      chatWebSocket.on('pollStop', (event) => {
-        try {
-          fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTOP', [])
-        } catch {
-          // ignore
-        }
-        safeSend('chat-websocket-poll-stop', event)
-      })
-
-      chatWebSocket.on('voteCounted', (event: { vote?: string }) => {
-        try {
-          fileLogger.writeLog('info', 'main', '[Chat WS] Vote counted', [event?.vote])
-        } catch {
-          // ignore
-        }
-        safeSend('chat-websocket-vote-counted', event)
-      })
-
-      chatWebSocket.on('pollVoteError', (event: { description?: string }) => {
-        try {
-          fileLogger.writeLog('info', 'main', '[Chat WS] Poll vote error', [event?.description])
-        } catch {
-          // ignore
-        }
-        safeSend('chat-websocket-poll-vote-error', event)
-      })
-
-      chatWebSocket.on('chatErr', (event: { description?: string }) => {
-        try {
-          fileLogger.writeLog('warn', 'main', '[Chat WS] Server ERR (e.g. whisper failed)', [event?.description])
-        } catch {
-          // ignore
-        }
-        safeSend('chat-websocket-err', event)
-      })
-
-      chatWebSocket.on('privmsg', (event) => {
-        safeSend('chat-websocket-privmsg', event)
-      })
-
-      chatWebSocket.on('muted', (event: { muteTimeLeft?: number }) => {
-        safeSend('chat-websocket-muted', event)
-      })
-
-      chatWebSocket.on('death', (event: { type?: string; death?: { nick?: string; duration?: number } }) => {
-        safeSend('chat-websocket-death', event)
-        const death = event?.death
-        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
-        if (death && meNick && death.nick?.trim()?.toLowerCase() === meNick && typeof death.duration === 'number') {
-          safeSend('chat-websocket-muted', { muteTimeLeft: death.duration })
-        }
-      })
-
-      chatWebSocket.on('unmute', (event: { type?: string; unmute?: { nick?: string; data?: string } }) => {
-        safeSend('chat-websocket-unmute', event)
-        const u = event?.unmute
-        const unmuteNick = (typeof u?.data === 'string' ? u.data : u?.nick)?.trim()?.toLowerCase()
-        const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
-        if (unmuteNick && meNick && unmuteNick === meNick) {
-          safeSend('chat-websocket-mute-cleared')
-        }
-      })
-
-      chatWebSocket.on('unban', (event) => {
-        safeSend('chat-websocket-unban', event)
-      })
-
-      chatWebSocket.on('subscription', (event) => {
-        safeSend('chat-websocket-subscription', event)
-      })
-
-      chatWebSocket.on('broadcast', (event) => {
-        safeSend('chat-websocket-broadcast', event)
-      })
-
-      chatWebSocket.on('ban', (event) => {
-        safeSend('chat-websocket-ban', event)
-      })
-      chatWebSocket.on('subonly', (event) => {
-        safeSend('chat-websocket-subonly', event)
-      })
-      chatWebSocket.on('reload', (event) => {
-        safeSend('chat-websocket-reload', event)
-      })
-      chatWebSocket.on('privmsgsent', (event) => {
-        safeSend('chat-websocket-privmsgsent', event)
-      })
-      chatWebSocket.on('addphrase', (event) => {
-        safeSend('chat-websocket-addphrase', event)
-      })
-      chatWebSocket.on('removephrase', (event) => {
-        safeSend('chat-websocket-removephrase', event)
-      })
-      chatWebSocket.on('giftsub', (event) => {
-        safeSend('chat-websocket-giftsub', event)
-      })
-      chatWebSocket.on('massgift', (event) => {
-        safeSend('chat-websocket-massgift', event)
-      })
-      chatWebSocket.on('donation', (event) => {
-        safeSend('chat-websocket-donation', event)
-      })
-    }
-
-    if (!chatWebSocket.isConnected()) {
-      const cookieStr = await getCookiesForUrl(primary.config.baseUrl)
-      chatWebSocket.connect({
-        headers: {
-          Cookie: cookieStr,
-          Origin: primary.config.chatOrigin,
-        },
-      })
-    }
-
-    return { success: true }
+    const ok = await ensurePrimaryChatConnected()
+    return ok ? { success: true } : { success: false, error: 'Chat source extension not installed', data: null }
   } catch (error) {
     console.error('[Main Process] Error connecting chat WebSocket:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
@@ -4044,12 +3880,115 @@ ipcMain.handle('live-websocket-send', async (_event, data: { type: string; data:
   return { success: true }
 })
 
-function platformChatSafeSend(ch: string, ...a: unknown[]) {
-  broadcastChatMessage(ch, ...a)
+/** Unified chat channel: all chat messages go through 'chat-message' with { channel, payload }. */
+function broadcastChatUnified(channel: string, ...args: unknown[]) {
+  const payload = args.length === 1 ? args[0] : args
+  broadcastChatMessage('chat-message', { channel, payload })
 }
 
-/** Apply subscription registry union to platform chat managers. Creates managers when needed. */
-function applyChatSubscriptionTargets(opts?: { youTubeDelayMultiplier?: number }) {
+function platformChatSafeSend(ch: string, ...a: unknown[]) {
+  broadcastChatUnified(ch, ...a)
+}
+
+/** Attach all primary chat event handlers to a ChatWebSocket. */
+function attachPrimaryChatHandlers(ws: ChatWebSocket) {
+  const safeSend = (channel: string, ...args: unknown[]) => broadcastChatUnified(channel, ...args)
+  ws.on('connected', () => safeSend('chat-websocket-connected'))
+  ws.on('disconnected', (data) => safeSend('chat-websocket-disconnected', data))
+  ws.on('error', (error) => {
+    try {
+      const errorMessage = error instanceof Error ? error.message : (error?.message || String(error) || 'Unknown error')
+      safeSend('chat-websocket-error', { message: errorMessage })
+    } catch {
+      /* ignore */
+    }
+  })
+  ws.on('history', (history) => {
+    console.log(`[Main Process] Received history event with ${(history as { messages?: unknown[] })?.messages?.length ?? 0} messages`)
+    safeSend('chat-websocket-history', history)
+  })
+  ws.on('message', (data) => safeSend('chat-websocket-message', data))
+  ws.on('userEvent', (event) => safeSend('chat-websocket-user-event', event))
+  ws.on('paidEvents', (event) => safeSend('chat-websocket-paid-events', event))
+  ws.on('pin', (event) => safeSend('chat-websocket-pin', event))
+  ws.on('names', (event) => safeSend('chat-websocket-names', event))
+  ws.on('mute', (event: { type?: string; mute?: { data?: string; duration?: number } }) => {
+    safeSend('chat-websocket-mute', event)
+    const m = event?.mute
+    const targetNick = m?.data?.trim()?.toLowerCase()
+    const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+    if (targetNick && meNick && targetNick === meNick && typeof m?.duration === 'number') {
+      safeSend('chat-websocket-muted', { muteTimeLeft: m.duration })
+    }
+  })
+  ws.on('me', (event) => {
+    cachedPrimaryChatMe = event
+    safeSend('chat-websocket-me', event)
+  })
+  ws.on('pollStart', (event) => { try { fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTART', [(event as { poll?: { question?: string } })?.poll?.question?.slice?.(0, 50)]) } catch { /* ignore */ }; safeSend('chat-websocket-poll-start', event) })
+  ws.on('voteCast', (event) => safeSend('chat-websocket-vote-cast', event))
+  ws.on('pollStop', (event) => { try { fileLogger.writeLog('info', 'main', '[Chat WS] POLLSTOP', []) } catch { /* ignore */ }; safeSend('chat-websocket-poll-stop', event) })
+  ws.on('voteCounted', (event) => { try { fileLogger.writeLog('info', 'main', '[Chat WS] Vote counted', [(event as { vote?: string })?.vote]) } catch { /* ignore */ }; safeSend('chat-websocket-vote-counted', event) })
+  ws.on('pollVoteError', (event) => { try { fileLogger.writeLog('warn', 'main', '[Chat WS] Poll vote error', [(event as { description?: string })?.description]) } catch { /* ignore */ }; safeSend('chat-websocket-poll-vote-error', event) })
+  ws.on('chatErr', (event) => { try { fileLogger.writeLog('warn', 'main', '[Chat WS] Server ERR', [(event as { description?: string })?.description]) } catch { /* ignore */ }; safeSend('chat-websocket-err', event) })
+  ws.on('privmsg', (event) => safeSend('chat-websocket-privmsg', event))
+  ws.on('muted', (event) => safeSend('chat-websocket-muted', event))
+  ws.on('death', (event) => {
+    safeSend('chat-websocket-death', event)
+    const death = (event as { death?: { nick?: string; duration?: number } })?.death
+    const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+    if (death && meNick && death.nick?.trim()?.toLowerCase() === meNick && typeof death.duration === 'number') {
+      safeSend('chat-websocket-muted', { muteTimeLeft: death.duration })
+    }
+  })
+  ws.on('unmute', (event) => {
+    safeSend('chat-websocket-unmute', event)
+    const u = (event as { unmute?: { nick?: string; data?: string } })?.unmute
+    const unmuteNick = (typeof u?.data === 'string' ? u.data : u?.nick)?.trim()?.toLowerCase()
+    const meNick = (cachedPrimaryChatMe as { data?: { nick?: string } } | null)?.data?.nick?.trim()?.toLowerCase()
+    if (unmuteNick && meNick && unmuteNick === meNick) safeSend('chat-websocket-mute-cleared')
+  })
+  ws.on('unban', (event) => safeSend('chat-websocket-unban', event))
+  ws.on('subscription', (event) => safeSend('chat-websocket-subscription', event))
+  ws.on('broadcast', (event) => safeSend('chat-websocket-broadcast', event))
+  ws.on('ban', (event) => safeSend('chat-websocket-ban', event))
+  ws.on('subonly', (event) => safeSend('chat-websocket-subonly', event))
+  ws.on('reload', async () => {
+    await clearAndRefetchPrimaryChatEmotes()
+    safeSend('chat-websocket-reload')
+  })
+  ws.on('privmsgsent', (event) => safeSend('chat-websocket-privmsgsent', event))
+  ws.on('addphrase', (event) => safeSend('chat-websocket-addphrase', event))
+  ws.on('removephrase', (event) => safeSend('chat-websocket-removephrase', event))
+  ws.on('giftsub', (event) => safeSend('chat-websocket-giftsub', event))
+  ws.on('massgift', (event) => safeSend('chat-websocket-massgift', event))
+  ws.on('donation', (event) => safeSend('chat-websocket-donation', event))
+}
+
+async function ensurePrimaryChatConnected(): Promise<boolean> {
+  const primary = getPrimaryChatSource()
+  if (!primary) return false
+  if (!chatWebSocket) {
+    chatWebSocket = new ChatWebSocket(primary.config.chatWssUrl, primary.config.chatOrigin)
+    attachPrimaryChatHandlers(chatWebSocket)
+  }
+  if (!chatWebSocket.isConnected()) {
+    const cookieStr = await getCookiesForUrl(primary.config.baseUrl)
+    chatWebSocket.connect({ headers: { Cookie: cookieStr, Origin: primary.config.chatOrigin } })
+  }
+  return true
+}
+
+function disconnectPrimaryChat(): void {
+  if (chatWebSocket) {
+    chatWebSocket.disconnect()
+    chatWebSocket.destroy()
+    chatWebSocket = null
+  }
+}
+
+/** Apply subscription registry union to platform chat managers. Creates managers when needed. Manages primary chat from registry. */
+async function applyChatSubscriptionTargets(opts?: { youTubeDelayMultiplier?: number }) {
   const kickSlugs = chatSubscriptionRegistry.getKickSlugs()
   const ytIds = chatSubscriptionRegistry.getYouTubeVideoIds()
   const twitchChans = chatSubscriptionRegistry.getTwitchChannels()
@@ -4094,35 +4033,22 @@ function applyChatSubscriptionTargets(opts?: { youTubeDelayMultiplier?: number }
     }
     twitchChatManager.setTargets(twitchChans).catch(() => {})
   }
+
+  const primaryId = chatSubscriptionRegistry.getPrimaryChatSourceId()
+  if (primaryId) {
+    await ensurePrimaryChatConnected()
+  } else {
+    disconnectPrimaryChat()
+  }
 }
 
-/** Register a chat consumer and apply union targets. Sends cached messages via WebSocket. */
-ipcMain.handle('chat-register-consumer', async (_event, payload: { consumerId: string; embedChatKeys: string[]; opts?: { delayMultiplier?: number } }) => {
-  const consumerId = typeof payload?.consumerId === 'string' ? payload.consumerId.trim() : ''
-  const keys = Array.isArray(payload?.embedChatKeys) ? payload.embedChatKeys.filter((k): k is string => typeof k === 'string') : []
-  if (!consumerId) return
-  chatSubscriptionRegistry.register(consumerId, keys)
-  applyChatSubscriptionTargets({ youTubeDelayMultiplier: payload?.opts?.delayMultiplier ?? 1 })
-  const cached = chatSubscriptionRegistry.getCachedForKeys(new Set(keys))
-  if (cached.length > 0) {
-    sendCachedToConsumer(consumerId, cached.map((m) => ({ channel: m.channel, payload: m.payload })))
-  }
-})
-
-ipcMain.handle('chat-unregister-consumer', async (_event, payload: { consumerId: string }) => {
-  const consumerId = typeof payload?.consumerId === 'string' ? payload.consumerId.trim() : ''
-  if (!consumerId) return
-  chatSubscriptionRegistry.unregister(consumerId)
-  applyChatSubscriptionTargets()
-})
-
-// Kick (Pusher) chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers (e.g. LinkScroller)
+// Kick (Pusher) chat IPC handlers – targets driven by WebSocket register; set-targets updates registry for legacy callers (e.g. LinkScroller)
 ipcMain.handle('kick-chat-set-targets', async (_event, payload: { slugs: string[] }) => {
   try {
     const slugs = Array.isArray(payload?.slugs) ? payload.slugs : []
     const keys = slugs.map((s) => `kick:${String(s).toLowerCase()}`)
     chatSubscriptionRegistry.register('legacy-kick', keys)
-    applyChatSubscriptionTargets()
+    await applyChatSubscriptionTargets()
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
@@ -4290,7 +4216,7 @@ ipcMain.handle('youtube-send-message', async (_event, payload: { videoId: string
   }
 })
 
-// YouTube chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers
+// YouTube chat IPC handlers – targets driven by WebSocket register; set-targets updates registry for legacy callers
 ipcMain.handle(
   'youtube-chat-set-targets',
   async (_event, payload: { videoIds: string[]; opts?: { delayMultiplier?: number } }) => {
@@ -4298,20 +4224,20 @@ ipcMain.handle(
     const videoIds = Array.isArray(payload?.videoIds) ? payload.videoIds : []
     const keys = videoIds.map((v) => `youtube:${String(v).trim()}`).filter((k) => k !== 'youtube:')
     chatSubscriptionRegistry.register('legacy-youtube', keys)
-    applyChatSubscriptionTargets({ youTubeDelayMultiplier: payload?.opts?.delayMultiplier ?? 1 })
+    await applyChatSubscriptionTargets({ youTubeDelayMultiplier: payload?.opts?.delayMultiplier ?? 1 })
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
   }
 })
 
-// Twitch chat IPC handlers – targets driven by chat-register-consumer; set-targets updates registry for legacy callers
+// Twitch chat IPC handlers – targets driven by WebSocket register; set-targets updates registry for legacy callers
 ipcMain.handle('twitch-chat-set-targets', async (_event, payload: { channels: string[] }) => {
   try {
     const channels = Array.isArray(payload?.channels) ? payload.channels : []
     const keys = channels.map((c) => `twitch:${String(c).toLowerCase()}`).filter((k) => k !== 'twitch:')
     chatSubscriptionRegistry.register('legacy-twitch', keys)
-    applyChatSubscriptionTargets()
+    await applyChatSubscriptionTargets()
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) || 'Unknown error' }
@@ -4444,6 +4370,23 @@ ipcMain.handle('copy-config-to-clipboard', (_event, payload: string) => {
   clipboard.writeText(payload)
 })
 
+// Debug page: primary chat message flow counters (temporary instrumentation)
+ipcMain.handle('get-primary-chat-debug-counters', () => getPrimaryChatDebugCounters())
+ipcMain.handle('reset-primary-chat-debug-counters', () => resetPrimaryChatDebugCounters())
+
+// Debug page: read chat-samples.json from logs dir (from scripts/extract-chat-samples.mjs)
+ipcMain.handle('get-chat-samples', () => {
+  try {
+    const logsDir = fileLogger.getLogsDirectoryPath()
+    const samplesPath = path.join(logsDir, 'chat-samples.json')
+    if (!existsSync(samplesPath)) return null
+    const raw = readFileSync(samplesPath, 'utf-8')
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+})
+
 // Global error handlers: log to files only (no console)
 process.on('uncaughtException', (error) => {
   const errorMessage = error instanceof Error ? error.message : String(error) || 'Unknown error'
@@ -4458,6 +4401,8 @@ process.on('unhandledRejection', (reason, _promise) => {
 
 // Cleanup on app quit
 app.on('before-quit', () => {
+  stopLiveCheckScheduler()
+  destroySoundWindow()
   stopChatWsServer()
   if (productionHttpServer) {
     productionHttpServer.close()
@@ -4581,7 +4526,30 @@ app.whenReady().then(() => {
   createApplicationMenu()
   createTray()
 
+  // Background live checks for bookmarked streamers with notifyWhenLive (works when app is in tray)
+  startLiveCheckScheduler(
+    (channel, payload) => {
+      if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+      if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(channel, payload)
+    },
+    () => !!(win && !win.isDestroyed() && win.isFocused()),
+  )
+
   // Start chat WebSocket server for unified delivery (main, chat window, OBS)
+  setChatSubscriptionCallbacks(
+    (consumerId, keys, opts) => {
+      chatSubscriptionRegistry.register(consumerId, keys)
+      void applyChatSubscriptionTargets({ youTubeDelayMultiplier: opts?.delayMultiplier ?? 1 })
+      const cached = chatSubscriptionRegistry.getCachedForKeys(new Set(keys))
+      if (cached.length > 0) {
+        sendCachedToConsumer(consumerId, cached.map((m) => ({ channel: m.channel, payload: m.payload })))
+      }
+    },
+    (consumerId) => {
+      chatSubscriptionRegistry.unregister(consumerId)
+      void applyChatSubscriptionTargets()
+    },
+  )
   startChatWsServer().catch((e) => console.error('[Main] Chat WS server failed:', e))
 
   // In production, start HTTP server early so OBS/tray mode can load the app when windows are closed

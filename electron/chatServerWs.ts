@@ -8,6 +8,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
+import { incrementMainBroadcastDroppedNoClients, incrementMainBroadcastSent } from './primaryChatDebugCounters'
 
 const CHAT_WS_PORT = 5174
 const PING_INTERVAL_MS = 30000
@@ -29,9 +30,51 @@ let httpServer: ReturnType<typeof createServer> | null = null
 let server: WebSocketServer | null = null
 let cachedEmotesConfig: EmotesConfig | null = null
 
-/** Set primary chat emotes URLs for proxy (called from main when overlay loads). */
+/** Cached proxy responses: emotes.json, emotes.css, flairs.json, flairs.css. Pre-fetched so renderer gets instant response. */
+const emotesCache = new Map<string, { body: string; contentType: string }>()
+
+function cacheKey(path: string): string {
+  return path
+}
+
+/** Pre-fetch emotes/flairs into cache. Called when config is set or on reload. */
+async function populateEmotesCache(config: EmotesConfig): Promise<void> {
+  const entries: Array<{ path: string; url: string; rewrite?: (body: string) => string }> = [
+    { path: '/emotes.json', url: config.emotesJsonUrl },
+    { path: '/emotes.css', url: config.emotesCssUrl, rewrite: (b) => rewriteCssUrls(b, '/emote/') },
+  ]
+  if (config.flairsJsonUrl) entries.push({ path: '/flairs.json', url: config.flairsJsonUrl })
+  if (config.flairsCssUrl) entries.push({ path: '/flairs.css', url: config.flairsCssUrl, rewrite: (b) => rewriteCssUrls(b, '/flair/') })
+
+  await Promise.all(
+    entries.map(async ({ path, url, rewrite }) => {
+      try {
+        const { body, contentType } = await proxyFetch(url)
+        const out = rewrite ? rewrite(body) : body
+        emotesCache.set(cacheKey(path), { body: out, contentType })
+      } catch {
+        emotesCache.delete(cacheKey(path))
+      }
+    })
+  )
+}
+
+/** Set primary chat emotes URLs for proxy (called from main when overlay loads). Pre-fetches into cache. */
 export function setEmotesProxyConfig(config: EmotesConfig | null) {
   cachedEmotesConfig = config
+  emotesCache.clear()
+  if (config) {
+    populateEmotesCache(config).catch((e) => console.error('[Chat WS Server] Pre-fetch emotes failed:', e))
+  }
+}
+
+/** Clear cache and refetch. Called on chat-websocket-reload. Returns when refetch is done. */
+export async function clearAndRefetchPrimaryChatEmotes(): Promise<void> {
+  emotesCache.clear()
+  const config = cachedEmotesConfig
+  if (config) {
+    await populateEmotesCache(config)
+  }
 }
 
 const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' }
@@ -39,6 +82,18 @@ const clients = new Set<WebSocket>()
 const clientByConsumerId = new Map<string, WebSocket>()
 const cachedQueueByConsumerId = new Map<string, Array<{ channel: string; payload: unknown }>>()
 let pingInterval: ReturnType<typeof setInterval> | null = null
+
+export type RegisterOpts = { delayMultiplier?: number }
+export type OnRegisterCallback = (consumerId: string, embedChatKeys: string[], opts?: RegisterOpts) => void
+export type OnUnregisterCallback = (consumerId: string) => void
+let onRegisterCallback: OnRegisterCallback | null = null
+let onUnregisterCallback: OnUnregisterCallback | null = null
+
+/** Set callbacks for subscription registry updates. Called from main when starting the chat server. */
+export function setChatSubscriptionCallbacks(onRegister: OnRegisterCallback | null, onUnregister: OnUnregisterCallback | null): void {
+  onRegisterCallback = onRegister
+  onUnregisterCallback = onUnregister
+}
 
 function startPingInterval() {
   if (pingInterval) return
@@ -154,9 +209,16 @@ export function startChatWsServer(): Promise<void> {
             return
           }
           if (targetUrl) {
+            const cached = emotesCache.get(cacheKey(urlPath))
+            if (cached) {
+              res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': cached.contentType })
+              res.end(cached.body)
+              return
+            }
             try {
               const { body, contentType: ct } = await proxyFetch(targetUrl)
               const out = rewriteCss ? rewriteCss(body) : body
+              emotesCache.set(cacheKey(urlPath), { body: out, contentType: ct })
               res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': ct })
               res.end(out)
             } catch {
@@ -179,19 +241,46 @@ export function startChatWsServer(): Promise<void> {
         })
         const removeFromRegistry = () => {
           clients.delete(socket)
+          const idsToUnregister: string[] = []
           for (const [id, s] of clientByConsumerId) {
-            if (s === socket) clientByConsumerId.delete(id)
+            if (s === socket) {
+              idsToUnregister.push(id)
+              clientByConsumerId.delete(id)
+            }
           }
+          idsToUnregister.forEach((id) => onUnregisterCallback?.(id))
         }
         socket.on('close', removeFromRegistry)
         socket.on('error', removeFromRegistry)
         socket.on('message', (data) => {
           try {
-            const msg = JSON.parse(data.toString()) as { type?: string; consumerId?: string; embedChatKeys?: string[] }
+            const msg = JSON.parse(data.toString()) as { type?: string; consumerId?: string; embedChatKeys?: string[]; opts?: RegisterOpts }
+            if (msg?.type === 'unregister' && typeof msg.consumerId === 'string') {
+              const cid = msg.consumerId.trim()
+              if (cid && clientByConsumerId.get(cid) === socket) {
+                clientByConsumerId.delete(cid)
+                onUnregisterCallback?.(cid)
+              }
+              return
+            }
             if (msg?.type === 'register' && typeof msg.consumerId === 'string') {
               const cid = msg.consumerId.trim()
+              const keys = Array.isArray(msg.embedChatKeys) ? msg.embedChatKeys.filter((k): k is string => typeof k === 'string') : []
+              const opts = msg.opts && typeof msg.opts === 'object' ? msg.opts : undefined
               if (cid) {
+                // Same socket re-registering with different consumerId: unregister old one(s)
+                const idsToUnregister: string[] = []
+                for (const [id, s] of clientByConsumerId) {
+                  if (s === socket && id !== cid) {
+                    idsToUnregister.push(id)
+                    clientByConsumerId.delete(id)
+                  }
+                }
+                idsToUnregister.forEach((id) => onUnregisterCallback?.(id))
+
                 clientByConsumerId.set(cid, socket)
+                onRegisterCallback?.(cid, keys, opts)
+
                 const base = `http://127.0.0.1:${CHAT_WS_PORT}`
                 if (cachedEmotesConfig) {
                   try {
@@ -217,7 +306,7 @@ export function startChatWsServer(): Promise<void> {
                   queued.forEach((m) => {
                     if (socket.readyState === 1) {
                       try {
-                        socket.send(JSON.stringify({ type: 'ipc', channel: m.channel, payload: m.payload }))
+                        socket.send(JSON.stringify({ type: 'ipc', channel: 'chat-message', payload: { channel: m.channel, payload: m.payload } }))
                       } catch {
                         /* ignore */
                       }
@@ -257,7 +346,7 @@ export function sendCachedToConsumer(consumerId: string, cached: Array<{ channel
   if (socket && socket.readyState === 1) {
     cached.forEach((m) => {
       try {
-        socket.send(JSON.stringify({ type: 'ipc', channel: m.channel, payload: m.payload }))
+        socket.send(JSON.stringify({ type: 'ipc', channel: 'chat-message', payload: { channel: m.channel, payload: m.payload } }))
       } catch {
         /* ignore */
       }
@@ -269,8 +358,20 @@ export function sendCachedToConsumer(consumerId: string, cached: Array<{ channel
   }
 }
 
+function isPrimaryChatMsg(channel: string, args: unknown[]): boolean {
+  if (channel !== 'chat-message') return false
+  const payload = args.length === 1 ? args[0] : args
+  const inner = payload as { channel?: string; payload?: { type?: string } } | undefined
+  return inner?.channel === 'chat-websocket-message' && inner?.payload?.type === 'MSG'
+}
+
 export function broadcastChatMessage(channel: string, ...args: unknown[]) {
-  if (!server || clients.size === 0) return
+  const isPrimaryMsg = isPrimaryChatMsg(channel, args)
+  if (!server || clients.size === 0) {
+    if (isPrimaryMsg) incrementMainBroadcastDroppedNoClients()
+    return
+  }
+  if (isPrimaryMsg) incrementMainBroadcastSent()
   const msg: ChatWsMessage = { type: 'ipc', channel, payload: args.length === 1 ? args[0] : args }
   const data = JSON.stringify(msg)
   clients.forEach((sock) => {

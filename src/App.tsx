@@ -92,6 +92,24 @@ function App() {
     }
   }, [])
 
+  // Streamer went live: show in-app toast when main window is focused (main process sets showToast)
+  useEffect(() => {
+    const handler = (_e: unknown, payload: { nickname?: string; showToast?: boolean }) => {
+      if (!payload?.showToast || window.location.hash === '#chat-window') return
+      const message = `${payload.nickname || 'Streamer'} is now live`
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+      setToast({ type: 'success', message })
+      toastTimeoutRef.current = setTimeout(() => {
+        setToast(null)
+        toastTimeoutRef.current = null
+      }, TOAST_DURATION_MS)
+    }
+    window.ipcRenderer?.on?.('streamer-went-live', handler)
+    return () => {
+      window.ipcRenderer?.off?.('streamer-went-live', handler)
+    }
+  }, [])
+
   // Chat window: sync transparent preference to main process so it can recreate window correctly
   useEffect(() => {
     if (currentPage === 'chat-window') {
