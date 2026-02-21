@@ -4,6 +4,7 @@ import { Icon } from './Icon'
 import { LinkCardOverviewCard, LinkCardExpandedContent } from './LinkScroller'
 import type { LinkCard } from './LinkScroller'
 import type { PlatformDisplayMode } from './LinkScroller'
+import { RustleSearchView } from './RustleSearchView'
 
 const LOG_PREFIX = '[LiteLinkScroller]'
 
@@ -39,6 +40,9 @@ interface LiteLinkScrollerProps {
   onOpenLink?: (url: string) => void
   getEmbedTheme: () => 'light' | 'dark'
   onOpenSettings?: () => void
+  mode: 'ls' | 'rs'
+  onModeChange?: (mode: 'ls' | 'rs') => void
+  primaryChatSourceId?: string | null
 }
 
 export function LiteLinkScroller({
@@ -50,6 +54,9 @@ export function LiteLinkScroller({
   onOpenLink,
   getEmbedTheme,
   onOpenSettings,
+  mode,
+  onModeChange,
+  primaryChatSourceId = null,
 }: LiteLinkScrollerProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -309,10 +316,10 @@ export function LiteLinkScroller({
 
   return (
     <div className="flex flex-col h-full w-full min-w-0 bg-base-200">
-      {/* Top bar: Settings, card count, Close */}
+      {/* Top bar: Settings, card count / mode label, LS/RS toggle, Close */}
       <div className="flex-none flex items-center justify-between gap-2 px-2 py-1.5 border-b border-base-300">
         <div className="flex items-center gap-1">
-          {onOpenSettings && (
+          {onOpenSettings && mode === 'ls' && (
             <button
               type="button"
               className="btn btn-xs btn-ghost"
@@ -324,8 +331,36 @@ export function LiteLinkScroller({
           )}
         </div>
         <span className="text-xs text-base-content/60 truncate flex-1 min-w-0 text-center">
-          {cards.length} link{cards.length !== 1 ? 's' : ''}
+          {mode === 'ls' ? (
+            `${cards.length} link${cards.length !== 1 ? 's' : ''}`
+          ) : (
+            <a href="https://rustlesearch.dev/" target="_blank" rel="noopener noreferrer" className="link link-hover">
+              RustleSearch
+            </a>
+          )}
         </span>
+        {onModeChange && (
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              className={`btn btn-xs btn-ghost ${mode === 'ls' ? 'btn-primary' : ''}`}
+              title="Lite link scroller (links from chat)"
+              onClick={() => onModeChange('ls')}
+              aria-label="Lite link scroller"
+            >
+              LS
+            </button>
+            <button
+              type="button"
+              className={`btn btn-xs btn-ghost ${mode === 'rs' ? 'btn-primary' : ''}`}
+              title="RustleSearch (chat log search)"
+              onClick={() => onModeChange('rs')}
+              aria-label="RustleSearch"
+            >
+              RS
+            </button>
+          </div>
+        )}
         <button
           type="button"
           className="btn btn-xs btn-ghost btn-square"
@@ -337,7 +372,15 @@ export function LiteLinkScroller({
         </button>
       </div>
 
-      {/* One-column scrollable list: old to new (top to bottom). Scroll up disables autoplay/auto-scroll. */}
+      {mode === 'rs' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <RustleSearchView
+            primaryChatSourceId={primaryChatSourceId}
+            onOpenLink={onOpenLink}
+          />
+        </div>
+      ) : (
+      /* One-column scrollable list: old to new (top to bottom). Scroll up disables autoplay/auto-scroll. */
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2" onScroll={handleScroll}>
         <div className="flex flex-col gap-3 max-w-full">
           {cards.length === 0 ? (
@@ -380,8 +423,10 @@ export function LiteLinkScroller({
           )}
         </div>
       </div>
+      )}
 
-      {/* Bottom bar: fixed height. Autoplay, Mute, Skip, timer input; one status line (left-aligned); progress bar. */}
+      {/* Bottom bar: fixed height. Autoplay, Mute, Skip, timer input; one status line (left-aligned); progress bar. Only in LS mode. */}
+      {mode === 'ls' && (
       <div className="flex-none border-t border-base-300 px-2 py-2 flex flex-col gap-2 min-h-[72px]">
         <div className="flex items-center gap-2 flex-wrap min-h-6">
           <button
@@ -449,6 +494,7 @@ export function LiteLinkScroller({
           title={autoAdvanceTimeLeft != null ? `Time until next card: ${autoAdvanceTimeLeft}s` : 'No timer running'}
         />
       </div>
+      )}
 
       {/* Context menu: Start autoscroll from here */}
       {contextMenu && (

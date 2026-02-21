@@ -37,6 +37,7 @@ alwaysApply: true
 - `OmniScreen.tsx` – Main screen, embed grid, combined chat pane/overlay
 - `CombinedChat.tsx` – Combined feed (primary + Kick + YouTube + Twitch). Primary chat MSG is batched (queue + queueMicrotask flush) to avoid losing messages when many arrive rapidly. Deduplication key: `platform:channel:user:timestamp`. Always ordered by arrival (seq). Primary chat emotes: cache-before-display – preload emote images before appending messages to avoid flash; preload cache cleared on `chat-websocket-reload`. Poll history: button (bar-chart-2) when extension provides `pollsApiUrl` in chatSources; lazy fetch, cached; new POLLSTOP merged; nav arrows + info in header, counter centered below poll; hidden when `hidePinnedAndPollHistory` (OBS embed).
 - `LinkScroller.tsx` – Link cards from chat
+- `LiteLinkScroller.tsx` – Compact sidebar with LS (links) / RS (RustleSearch) toggle. RustleSearch label links to https://rustlesearch.dev/
 - `Menu.tsx` – Settings modal: System, Theme, Notifications, Userscripts (collapsible dropdowns)
 
 ## Notifications & Sounds
@@ -53,6 +54,12 @@ alwaysApply: true
 - **chat-history.log**: Enable "Log chat history" in Menu. Primary chat raw messages are written here by `fileLogger.writeChatHistory` in `chatWebSocket.ts` before parsing. If a message is missing from the log, it never reached the main process.
 - **Pipeline**: destiny.gg → ChatWebSocket → broadcastChatMessage → chatServerWs (clients) → chatWsClient → CombinedChat handleMessage → appendItems. Drop points: `clients.size === 0` in broadcastChatMessage; handler not registered in chatWsClient; tryAddPrimaryChatMessage dedup; trimToLimit.
 - **Debug page "Primary chat message flow"**: Counters at each stage (main received, broadcast sent, wsClient dispatched, CombinedChat received, appended, rejected duplicate). Main process counters in `electron/primaryChatDebugCounters.ts`; renderers push to main for aggregation. Reset and compare during busy chat to find drop point.
+
+## Icon and SVG Usage
+
+- **Icon component** (`src/components/Icon.tsx`): Uses SVGs imported with `?raw` suffix (e.g. `import xSvg from '../assets/icons/feathericons/x.svg?raw'`). SVG content is stored in the `ICONS` map and rendered inline via `dangerouslySetInnerHTML`. Icons inherit `text-current` for theme support. Only predefined `IconName` keys are supported.
+- **Custom SVG icons** (e.g. LS.svg, RS.svg not in Icon): Use `?url` suffix and `<img>`: `import lsIcon from '../assets/icons/LS.svg?url'` then `<img src={lsIcon} alt="" width={20} height={20} className="..." />`. Vite's `?url` returns the asset URL. Use this when the SVG is not in the Icon component's ICONS map.
+- **Adding new Icon names**: Import with `?raw`, add to `ICONS` in Icon.tsx. For SVGs with `fill="#000000"`, add a CSS override (e.g. `[&_*]:fill-current`) so they inherit theme color.
 
 ## Conventions
 

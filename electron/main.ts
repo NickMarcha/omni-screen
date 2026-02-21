@@ -80,6 +80,9 @@ export function getAppConfigForRenderer() {
     if (c?.loginUrl) platformUrlsFromOverlay[id] = c.loginUrl
     else if (c?.baseUrl) platformUrlsFromOverlay[id] = c.baseUrl
   }
+  const primary = getPrimaryChatSource()
+  const api = primary ? getChatSourceApi(primary.id) : undefined
+
   return {
     chatSources,
     platformUrls: platformUrlsFromOverlay,
@@ -89,6 +92,7 @@ export function getAppConfigForRenderer() {
     connectionPlatforms: overlay.connectionPlatforms ?? [],
     menuTaglineTop: overlay.menuTaglineTop,
     menuTaglineBottom: overlay.menuTaglineBottom,
+    primaryChatSourceHasRustlesearch: !!api?.fetchRustlesearch,
   }
 }
 
@@ -2098,6 +2102,59 @@ ipcMain.handle('fetch-rustlesearch', async (_event, filterTerms: string[], searc
     }
   } catch (error) {
     console.error('[Main Process] Error fetching rustlesearch:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('fetch-rustlesearch-query', async (_event, params: {
+  username?: string
+  text?: string
+  start_date?: string
+  end_date?: string
+  search_after?: number
+  size?: number
+}) => {
+  try {
+    fileLogger.writeLog('info', 'main', '[RustleSearch] fetch-rustlesearch-query params', [
+      JSON.stringify(params),
+    ])
+    const primary = getPrimaryChatSource()
+    const api = primary ? getChatSourceApi(primary.id) : undefined
+    if (!api?.fetchRustlesearch) {
+      fileLogger.writeLog('warn', 'main', '[RustleSearch] No fetchRustlesearch on primary chat source', [])
+      return { success: false, error: 'Chat source does not support log search' }
+    }
+    const result = await api.fetchRustlesearch(params)
+    if (result.success) {
+      fileLogger.writeLog('info', 'main', '[RustleSearch] Success', [
+        (result.data?.length ?? 0) + ' messages',
+        'searchAfter=' + (result.searchAfter ?? 'null'),
+        'hasMore=' + (result.hasMore ?? false),
+      ])
+    } else {
+      fileLogger.writeLog('warn', 'main', '[RustleSearch] Error from extension', [
+        result.error ?? 'unknown',
+      ])
+    }
+    return result
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    fileLogger.writeLog('error', 'main', '[RustleSearch] Exception', [errMsg])
+    console.error('[Main Process] Error fetching rustlesearch query:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+})
+
+ipcMain.handle('fetch-rustlesearch-surrounds', async (_event, username: string, datetime: string, channel?: string) => {
+  try {
+    const primary = getPrimaryChatSource()
+    const api = primary ? getChatSourceApi(primary.id) : undefined
+    if (!api?.fetchRustlesearchSurrounds) {
+      return { success: false, error: 'Chat source does not support surrounds search' }
+    }
+    return await api.fetchRustlesearchSurrounds(username, datetime, channel)
+  } catch (error) {
+    console.error('[Main Process] Error fetching rustlesearch surrounds:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
 })

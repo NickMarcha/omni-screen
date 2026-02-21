@@ -1202,6 +1202,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
   const [primaryChatSourceIconUrl, setPrimaryChatSourceIconUrl] = useState<string | undefined>(undefined)
   const [pollsApiUrl, setPollsApiUrl] = useState<string | undefined>(undefined)
   const [pollsInfoUrl, setPollsInfoUrl] = useState<string | undefined>(undefined)
+  const [primaryChatSourceHasRustlesearch, setPrimaryChatSourceHasRustlesearch] = useState(false)
   const [installedExtensions, setInstalledExtensions] = useState<InstalledExtensionInfo[]>([])
   const [extensionSettingsSchemas, setExtensionSettingsSchemas] = useState<Record<string, ExtensionSettingsSection[]>>({})
   /** Per-extension settings (keyed by ext id, then field key). Persisted in localStorage omni-screen:ext-settings:${extId}. */
@@ -1211,6 +1212,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       chatSources?: Record<string, { baseUrl?: string; platformIconUrl?: string; emotesJsonUrl?: string; emotesCssUrl?: string; flairsJsonUrl?: string; flairsCssUrl?: string; pollsApiUrl?: string; pollsInfoUrl?: string }>
       extensions?: InstalledExtensionInfo[]
       extensionSettingsSchemas?: Record<string, ExtensionSettingsSection[]>
+      primaryChatSourceHasRustlesearch?: boolean
     }) => {
       const chatSources = config?.chatSources ?? {}
       const primaryId = Object.keys(chatSources)[0] ?? null
@@ -1220,6 +1222,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       setPrimaryChatSourceIconUrl(typeof primary?.platformIconUrl === 'string' ? primary.platformIconUrl : undefined)
       setPollsApiUrl(typeof primary?.pollsApiUrl === 'string' ? primary.pollsApiUrl : undefined)
       setPollsInfoUrl(typeof primary?.pollsInfoUrl === 'string' ? primary.pollsInfoUrl : undefined)
+      setPrimaryChatSourceHasRustlesearch(!!config?.primaryChatSourceHasRustlesearch)
       setInstalledExtensions(Array.isArray(config?.extensions) ? config.extensions : [])
       setExtensionSettingsSchemas(config?.extensionSettingsSchemas && typeof config.extensionSettingsSchemas === 'object' ? config.extensionSettingsSchemas : {})
     }).catch(() => {
@@ -1228,6 +1231,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
       setPrimaryChatSourceIconUrl(undefined)
       setPollsApiUrl(undefined)
       setPollsInfoUrl(undefined)
+      setPrimaryChatSourceHasRustlesearch(false)
       setInstalledExtensions([])
       setExtensionSettingsSchemas({})
     })
@@ -1438,6 +1442,7 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
 
   // ---- Lite link scroller (links from combined chat, opposite side of chat) ----
   const [liteLinkScrollerOpen, setLiteLinkScrollerOpen] = useState(false)
+  const [liteLinkScrollerMode, setLiteLinkScrollerMode] = useState<'ls' | 'rs'>('ls')
   const [liteLinkScrollerCards, setLiteLinkScrollerCards] = useState<LinkCard[]>([])
   const initialLiteLinkScrollerSettings = useMemo((): LiteLinkScrollerSettings => {
     try {
@@ -3779,6 +3784,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 setSettingsModalOpen(true)
                 setSettingsTab('liteLinkScroller')
               }}
+              mode={liteLinkScrollerMode}
+              onModeChange={setLiteLinkScrollerMode}
+              primaryChatSourceId={primaryChatSourceId}
             />
           </div>
         )}
@@ -4035,7 +4043,6 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                   </div>
                   {/* Same fixed controls as non-overlay dock - reusing same refs (pieChartButtonRef etc.) */}
                   <div className={`embed-dock-controls flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1 self-stretch' : 'gap-2'}`}>
-                    <button type="button" ref={pieChartButtonRef} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="What's being watched (by platform)" aria-label="Show watch proportions" onMouseEnter={openPiePopup} onMouseLeave={scheduleClosePiePopup} onClick={() => setPieChartPinned((p) => !p)}><Icon name="pie-chart" size={20} /></button>
                     <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
                       <label tabIndex={0} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Add embed from link (YouTube, Kick, Twitch)"><Icon name="plus-square" size={20} /></label>
                       <div tabIndex={0} className="dropdown-content z-[90] p-2 shadow bg-base-100 rounded-box border border-base-300 mt-1 w-64 right-0">
@@ -4044,8 +4051,19 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                         {(pasteLinkError || ytChannelError) ? <div className="text-xs text-error">{pasteLinkError || ytChannelError}</div> : null}
                       </div>
                     </div>
+                    <button type="button" ref={pieChartButtonRef} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="What's being watched (by platform)" aria-label="Show watch proportions" onMouseEnter={openPiePopup} onMouseLeave={scheduleClosePiePopup} onClick={() => setPieChartPinned((p) => !p)}><Icon name="pie-chart" size={20} /></button>
                     {!chatPaneOpen && !chatExternalWindowOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Chat pane" onClick={() => setChatPaneOpen(true)} aria-label="Show chat pane"><Icon name="message-circle" size={20} /></button>}
-                    {!liteLinkScrollerOpen && <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Lite link scroller (links from chat)" onClick={() => setLiteLinkScrollerOpen(true)} aria-label="Open lite link scroller"><Icon name="image" size={20} /></button>}
+                    {!liteLinkScrollerOpen && (
+                      <button
+                        type="button"
+                        className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
+                        title={primaryChatSourceHasRustlesearch ? 'Lite link scroller / RustleSearch' : 'Lite link scroller (links from chat)'}
+                        onClick={() => { setLiteLinkScrollerMode(primaryChatSourceHasRustlesearch ? 'rs' : 'ls'); setLiteLinkScrollerOpen(true) }}
+                        aria-label="Open link scroller / RustleSearch"
+                      >
+                        <Icon name="ls-rs" size={20} />
+                      </button>
+                    )}
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${autoplay ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Autoplay" onClick={() => setAutoplay((v) => !v)} aria-label="Toggle autoplay"><Icon name={autoplay ? 'play' : 'pause'} size={20} /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${mute ? 'btn-primary' : ''} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Mute" onClick={() => setMute((v) => !v)} aria-label="Toggle mute"><Icon name={mute ? 'volume-x' : 'volume-2'} size={20} /></button>
                     <button type="button" className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? `btn-primary ${EMBED_DOCK_ICON_BTN_CINEMA}` : ''}`} title="Cinema mode" onClick={() => setCinemaMode((v) => !v)} aria-label="Toggle cinema mode"><Icon name="film" size={20} /></button>
@@ -4140,20 +4158,8 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
               </div>
             </div>
 
-            {/* Fixed controls (right side): Pie chart, +, Chat pane, Autoplay, Mute, Cinema, Settings, Back */}
+            {/* Fixed controls (right side): Add embed, Pie chart, Chat pane, RS, LS, Autoplay, Mute, Cinema, Settings, Back */}
             <div className={`embed-dock-controls flex-none flex items-center ${cinemaMode ? 'gap-0 border-l border-base-300 pl-1 self-stretch' : 'gap-2'}`}>
-              <button
-                type="button"
-                ref={pieChartButtonRef}
-                className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
-                title="What's being watched (by platform)"
-                aria-label="Show watch proportions"
-                onMouseEnter={openPiePopup}
-                onMouseLeave={scheduleClosePiePopup}
-                onClick={() => setPieChartPinned((p) => !p)}
-              >
-                <Icon name="pie-chart" size={20} />
-              </button>
               <div className={`dropdown dropdown-top dropdown-end ${cinemaMode ? 'self-stretch h-full min-h-0 flex' : ''}`}>
                 <label tabIndex={0} className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`} title="Add embed from link (YouTube, Kick, Twitch)">
                   <Icon name="plus-square" size={20} />
@@ -4263,6 +4269,18 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                   </div>
                 </div>
               </div>
+              <button
+                type="button"
+                ref={pieChartButtonRef}
+                className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
+                title="What's being watched (by platform)"
+                aria-label="Show watch proportions"
+                onMouseEnter={openPiePopup}
+                onMouseLeave={scheduleClosePiePopup}
+                onClick={() => setPieChartPinned((p) => !p)}
+              >
+                <Icon name="pie-chart" size={20} />
+              </button>
               {!chatPaneOpen && !chatExternalWindowOpen && (
                 <button
                   type="button"
@@ -4278,11 +4296,11 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 <button
                   type="button"
                   className={`${EMBED_DOCK_ICON_BTN} ${cinemaMode ? EMBED_DOCK_ICON_BTN_CINEMA : ''}`}
-                  title="Lite link scroller (links from chat)"
-                  onClick={() => setLiteLinkScrollerOpen(true)}
-                  aria-label="Open lite link scroller"
+                  title={primaryChatSourceHasRustlesearch ? 'Lite link scroller / RustleSearch' : 'Lite link scroller (links from chat)'}
+                  onClick={() => { setLiteLinkScrollerMode(primaryChatSourceHasRustlesearch ? 'rs' : 'ls'); setLiteLinkScrollerOpen(true) }}
+                  aria-label="Open link scroller / RustleSearch"
                 >
-                  <Icon name="image" size={20} />
+                  <Icon name="ls-rs" size={20} />
                 </button>
               )}
               <button
@@ -4748,6 +4766,9 @@ export default function OmniScreen({ onBackToMenu, chatOnlyMode = false, chatWin
                 setSettingsModalOpen(true)
                 setSettingsTab('liteLinkScroller')
               }}
+              mode={liteLinkScrollerMode}
+              onModeChange={setLiteLinkScrollerMode}
+              primaryChatSourceId={primaryChatSourceId}
             />
           </div>
         )}

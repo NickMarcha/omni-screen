@@ -96,12 +96,35 @@ export interface ChatSourceRegistration {
 export interface ChatSourceApi {
   /** Fetch mentions for a username. Returns raw array; main process may add ids and cache. */
   fetchMentions?: (username: string, size: number, offset: number) => Promise<{ success: boolean; data?: unknown[]; error?: string }>
-  /** Search chat logs (e.g. rustlesearch). Returns mapped messages and pagination. */
+  /** Search chat logs (e.g. rustlesearch). Returns mapped messages and pagination.
+   * Legacy: (filterTerms: string[], searchAfter?, size?)
+   * Query: (params: { username?, text?, start_date?, end_date?, search_after?, size? })
+   */
   fetchRustlesearch?: (
-    filterTerms: string[],
+    filterTermsOrParams: string[] | {
+      username?: string
+      text?: string
+      start_date?: string
+      end_date?: string
+      search_after?: number
+      size?: number
+    },
     searchAfter?: number,
     size?: number
   ) => Promise<{ success: boolean; data?: unknown[]; searchAfter?: number; hasMore?: boolean; error?: string }>
+  /** Fetch surrounds (context around a message) for a username at a datetime. */
+  fetchRustlesearchSurrounds?: (
+    username: string,
+    datetime: string,
+    channel?: string
+  ) => Promise<{
+    success: boolean
+    data?: {
+      messages: Array<{ id: string; date: number; nick: string; text: string; isMatched: boolean }>
+      matchedUsername: string
+    }
+    error?: string
+  }>
 }
 
 const chatSourceRegistry = new Map<string, ChatSourceRegistration>()

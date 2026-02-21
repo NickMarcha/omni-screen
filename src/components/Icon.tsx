@@ -35,6 +35,7 @@ import changelogSvg from '../assets/icons/changelog.svg?raw'
 import barChart2Svg from '../assets/icons/feathericons/bar-chart-2.svg?raw'
 import arrowLeftSvg from '../assets/icons/feathericons/arrow-left.svg?raw'
 import arrowRightSvg from '../assets/icons/feathericons/arrow-right.svg?raw'
+import lsRsSvg from '../assets/icons/LS-RS.svg?raw'
 
 const ICONS: Record<string, string> = {
   'pie-chart': pieChartSvg,
@@ -74,6 +75,7 @@ const ICONS: Record<string, string> = {
   'bar-chart-2': barChart2Svg,
   'arrow-left': arrowLeftSvg,
   'arrow-right': arrowRightSvg,
+  'ls-rs': lsRsSvg,
 }
 
 export type IconName = keyof typeof ICONS
