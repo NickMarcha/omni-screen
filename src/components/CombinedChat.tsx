@@ -3778,7 +3778,7 @@ function CombinedChat({
               return (
                 <div
                   key={`msg-primary-broadcast-user-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${rawB?.uuid ?? ''}`}
-                  className={`msg-chat text-sm px-2 py-1 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border msg-user ${dimmed ? 'opacity-40' : ''}`}
+                  className={`msg-chat text-sm px-2 py-1 flex flex-wrap items-start gap-x-2 gap-y-1 min-w-0 overflow-hidden rounded border msg-user ${dimmed ? 'opacity-40' : ''}`}
                   style={{ borderColor: '#edea12' }}
                   {...(nick.trim().toLowerCase() ? { 'data-username': nick.trim().toLowerCase() } : {})}
                 >
@@ -3805,18 +3805,18 @@ function CombinedChat({
                       aria-hidden
                     />
                   ) : null}
-                  <span
-                    className="shrink-0 flex items-center gap-1 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (nick?.trim()) handleUsernameFocusClick(nick.trim())
-                    }}
-                    onContextMenu={(e) => openUserTooltip(e, m)}
-                    onMouseUp={(e) => e.stopPropagation()}
-                    onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
-                  >
+                  <span className="flex-1 min-w-0 flex flex-wrap items-start gap-x-2 gap-y-1">
                     {primaryChatFlairFeatures.length > 0 ? (
-                      <span className="inline-flex items-center">
+                      <span
+                        className="inline-flex items-center shrink-0 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (nick?.trim()) handleUsernameFocusClick(nick.trim())
+                        }}
+                        onContextMenu={(e) => openUserTooltip(e, m)}
+                        onMouseUp={(e) => e.stopPropagation()}
+                        onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
+                      >
                         {primaryChatFlairFeatures.map((f) => {
                           const fl = flairsMapRef.current.get(f)!
                           return (
@@ -3825,19 +3825,24 @@ function CombinedChat({
                         })}
                       </span>
                     ) : null}
-                    <span className="inline-flex items-center gap-0">
-                      <span
-                        className={`font-semibold hover:underline user ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
-                        style={primaryChatColorFlair ? undefined : { color: accent }}
-                      >
-                        {nick}
-                      </span>
-                      {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon">: </span> : null}
+                    <span
+                      className={`font-semibold hover:underline user shrink-0 cursor-pointer ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
+                      style={primaryChatColorFlair ? undefined : { color: accent }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (nick?.trim()) handleUsernameFocusClick(nick.trim())
+                      }}
+                      onContextMenu={(e) => openUserTooltip(e, m)}
+                      onMouseUp={(e) => e.stopPropagation()}
+                      onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
+                    >
+                      {nick}
                     </span>
-                  </span>
-                  <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0 flex-1">
-                    <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
-                      {renderPrimaryChatMessageContent(m.content ?? '')}
+                    {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon shrink-0">: </span> : null}
+                    <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0 flex-1">
+                      <span className="msg-chat msg-chat-inner" style={{ position: 'relative' }}>
+                        {renderPrimaryChatMessageContent(m.content ?? '')}
+                      </span>
                     </span>
                   </span>
                   <span className="shrink-0 ml-auto" aria-hidden>{broadcastIconEl}</span>
@@ -3891,7 +3896,7 @@ function CombinedChat({
             return (
               <div
                 key={`msg-${m.source}-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${'nick' in m ? m.nick : ''}`}
-                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-center gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${isPrimaryChatUserMsg ? 'msg-user' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''} ${dimmed ? 'opacity-40' : ''}`}
+                className={`msg-chat text-sm px-2 py-0.5 -mx-2 flex flex-wrap items-start gap-x-2 gap-y-1 ${isOwn ? 'msg-own' : ''} ${isPrimaryChatUserMsg ? 'msg-user' : ''} ${!isOwn && isHighlighted ? 'bg-blue-500/15' : ''} ${dimmed ? 'opacity-40' : ''}`}
                 {...(isPrimaryChatUserMsg && nickLower ? { 'data-username': nickLower } : {})}
               >
                 {isPrimaryChatUserMsg ? (
@@ -3928,68 +3933,74 @@ function CombinedChat({
                     aria-hidden
                   />
                 ) : null}
-                <span
-                  className="shrink-0 flex items-center gap-1 cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if ('nick' in m && m.nick?.trim()) handleUsernameFocusClick(m.nick.trim())
-                  }}
-                  onContextMenu={(e) => openUserTooltip(e, m)}
-                  onMouseUp={(e) => e.stopPropagation()}
-                  onDoubleClick={m.source === primaryChatSourceId && 'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
-                >
-                  {m.source === primaryChatSourceId ? (
-                    <>
-                      {primaryChatFlairFeatures.length > 0 ? (
-                        <span className="inline-flex items-center">
-                          {primaryChatFlairFeatures.map((f) => {
-                            const fl = flairsMapRef.current.get(f)!
-                            return (
-                              <i
-                                key={f}
-                                className={`flair ${fl.name}`}
-                                title={fl.label}
-                                aria-hidden
-                              />
-                            )
-                          })}
-                        </span>
-                      ) : null}
-                      <span className="inline-flex items-center gap-0">
-                        <span
-                          className={`font-semibold hover:underline user ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
-                          style={primaryChatColorFlair ? undefined : { color: accent }}
-                        >
-                          {'nick' in m ? m.nick : ''}
-                        </span>
-                        {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon">: </span> : null}
+                {m.source === primaryChatSourceId ? (
+                  <span className="flex-1 min-w-0 flex flex-wrap items-start gap-x-2 gap-y-1">
+                    {primaryChatFlairFeatures.length > 0 ? (
+                      <span
+                        className="inline-flex items-center shrink-0 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if ('nick' in m && m.nick?.trim()) handleUsernameFocusClick(m.nick.trim())
+                        }}
+                        onContextMenu={(e) => openUserTooltip(e, m)}
+                        onMouseUp={(e) => e.stopPropagation()}
+                        onDoubleClick={'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
+                      >
+                        {primaryChatFlairFeatures.map((f) => {
+                          const fl = flairsMapRef.current.get(f)!
+                          return (
+                            <i
+                              key={f}
+                              className={`flair ${fl.name}`}
+                              title={fl.label}
+                              aria-hidden
+                            />
+                          )
+                        })}
                       </span>
-                    </>
-                  ) : (
-                    <span className="inline-flex items-center gap-0">
+                    ) : null}
+                    <span
+                      className={`font-semibold hover:underline user shrink-0 cursor-pointer ${flairClassNames} ${primaryChatColorFlair ? primaryChatColorFlair.name : ''}`.trim()}
+                      style={primaryChatColorFlair ? undefined : { color: accent }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if ('nick' in m && m.nick?.trim()) handleUsernameFocusClick(m.nick.trim())
+                      }}
+                      onContextMenu={(e) => openUserTooltip(e, m)}
+                      onMouseUp={(e) => e.stopPropagation()}
+                      onDoubleClick={'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
+                    >
+                      {'nick' in m ? m.nick : ''}
+                    </span>
+                    {overlayMode || chatAreaTransparentBackground ? <span className="msg-chat-overlay-colon shrink-0">: </span> : null}
+                    <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0">
+                      <span
+                        className={`msg-chat msg-chat-inner ${isPrimaryChatUserMsg && isSuspost(m.content ?? '', rawMsg) ? 'sus' : ''}`.trim()}
+                        style={{ position: 'relative' }}
+                      >
+                        {renderPrimaryChatMessageContent(m.content ?? '')}
+                      </span>
+                    </span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="shrink-0 flex items-center gap-1">
                       <span className="font-semibold" style={{ color: accent }}>
                         {'nick' in m ? m.nick : ''}
                       </span>
                       {overlayMode ? <span className="msg-chat-overlay-colon">: </span> : null}
                     </span>
-                  )}
-                </span>
-                <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0">
-                  {m.source === primaryChatSourceId ? (
-                    <span
-                      className={`msg-chat msg-chat-inner ${isPrimaryChatUserMsg && isSuspost(m.content ?? '', rawMsg) ? 'sus' : ''}`.trim()}
-                      style={{ position: 'relative' }}
-                    >
-                      {renderPrimaryChatMessageContent(m.content ?? '')}
+                    <span className="msg-chat-content text whitespace-pre-wrap break-words min-w-0">
+                      {m.source === 'kick'
+                        ? renderKickContent(m.raw as KickChatMessage, onOpenLink).map((node, i) => (
+                            <Fragment key={`kick-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${i}`}>{node}</Fragment>
+                          ))
+                        : m.source === 'youtube'
+                          ? renderYouTubeContent(m.raw as YouTubeChatMessage, onOpenLink)
+                          : renderTextWithLinks({ text: m.content ?? '', emotePattern: null, emotesMap: new Map(), onOpenLink })}
                     </span>
-                  ) : m.source === 'kick'
-                    ? renderKickContent(m.raw as KickChatMessage, onOpenLink).map((node, i) => (
-                        <Fragment key={`kick-${(m as CombinedItemWithSeq).seq}-${m.tsMs}-${i}`}>{node}</Fragment>
-                      ))
-                    : m.source === 'youtube'
-                      ? renderYouTubeContent(m.raw as YouTubeChatMessage, onOpenLink)
-                      : renderTextWithLinks({ text: m.content ?? '', emotePattern: null, emotesMap: new Map(), onOpenLink })}
-                </span>
+                  </>
+                )}
               </div>
             )
           }
