@@ -3764,6 +3764,9 @@ function CombinedChat({
               const primaryChatColorFlair =
                 showPrimaryChatSourceFlairsAndColors ? usernameColorFlair(flairsList, { features: userFeatures }) : undefined
               const primaryChatFlairFeatures = userFeatures.filter((f: string) => flairsMapRef.current.has(f))
+              const primaryChatFlairFeaturesWithIcons = primaryChatFlairFeatures.filter(
+                (f) => !flairsMapRef.current.get(f)?.hidden
+              )
               const flairClassNames = primaryChatFlairFeatures
                 .map((f) => flairsMapRef.current.get(f)?.name)
                 .filter(Boolean)
@@ -3806,7 +3809,7 @@ function CombinedChat({
                     />
                   ) : null}
                   <span className="flex-1 min-w-0 flex flex-wrap items-start gap-x-2 gap-y-1">
-                    {primaryChatFlairFeatures.length > 0 ? (
+                    {primaryChatFlairFeaturesWithIcons.length > 0 ? (
                       <span
                         className="inline-flex items-center shrink-0 cursor-pointer"
                         onClick={(e) => {
@@ -3817,7 +3820,7 @@ function CombinedChat({
                         onMouseUp={(e) => e.stopPropagation()}
                         onDoubleClick={nick ? () => handleNickDoubleClick(nick) : undefined}
                       >
-                        {primaryChatFlairFeatures.map((f) => {
+                        {primaryChatFlairFeaturesWithIcons.map((f) => {
                           const fl = flairsMapRef.current.get(f)!
                           return (
                             <i key={f} className={`flair ${fl.name}`} title={fl.label} aria-hidden />
@@ -3881,6 +3884,9 @@ function CombinedChat({
               m.source === primaryChatSourceId && showPrimaryChatSourceFlairsAndColors
                 ? (rawMsg.features ?? []).filter((f: string) => flairsMapRef.current.has(f))
                 : []
+            const primaryChatFlairFeaturesWithIcons = primaryChatFlairFeatures.filter(
+              (f) => !flairsMapRef.current.get(f)?.hidden
+            )
             const isPrimaryChatUserMsg = m.source === primaryChatSourceId && 'nick' in m
             const nickLower = isPrimaryChatUserMsg && m.nick ? m.nick.trim().toLowerCase() : ''
             const msgNickLower = 'nick' in m ? (m.nick ?? '').trim().toLowerCase() : ''
@@ -3935,7 +3941,7 @@ function CombinedChat({
                 ) : null}
                 {m.source === primaryChatSourceId ? (
                   <span className="flex-1 min-w-0 flex flex-wrap items-start gap-x-2 gap-y-1">
-                    {primaryChatFlairFeatures.length > 0 ? (
+                    {primaryChatFlairFeaturesWithIcons.length > 0 ? (
                       <span
                         className="inline-flex items-center shrink-0 cursor-pointer"
                         onClick={(e) => {
@@ -3946,7 +3952,7 @@ function CombinedChat({
                         onMouseUp={(e) => e.stopPropagation()}
                         onDoubleClick={'nick' in m ? () => handleNickDoubleClick(m.nick) : undefined}
                       >
-                        {primaryChatFlairFeatures.map((f) => {
+                        {primaryChatFlairFeaturesWithIcons.map((f) => {
                           const fl = flairsMapRef.current.get(f)!
                           return (
                             <i
