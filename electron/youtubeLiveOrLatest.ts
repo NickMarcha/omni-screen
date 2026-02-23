@@ -325,7 +325,23 @@ async function fetchRssXml(url: string): Promise<string> {
       Referer: 'https://www.youtube.com/',
     },
   })
-  if (!res.ok) throw new Error(`RSS HTTP ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text()
+    if (fileLogger.getLogLevel() === 'debug') {
+      const preview = body.length > 800 ? body.slice(0, 800) + '...[truncated]' : body
+      const headersObj: Record<string, string> = {}
+      res.headers.forEach((v, k) => {
+        headersObj[k] = v
+      })
+      fileLogger.writeLog('debug', 'main', '[url-is-live] RSS HTTP error', [
+        url,
+        res.status,
+        res.statusText,
+        { headers: headersObj, bodyPreview: preview },
+      ])
+    }
+    throw new Error(`RSS HTTP ${res.status}`)
+  }
   return res.text()
 }
 
